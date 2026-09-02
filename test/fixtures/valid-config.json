@@ -1,0 +1,10 @@
+{
+  "jira": {
+    "jql": "project = GGJ AND labels = \"ggjira\" AND status = \"To Do\"",
+    "inProgressTransitionName": "In Progress",
+    "successTransitionName": "In Review"
+  },
+  "targetRepo": {
+    "path": "/tmp/target-repo"
+  }
+}

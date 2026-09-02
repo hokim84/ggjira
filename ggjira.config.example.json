@@ -1,0 +1,26 @@
+{
+  "jira": {
+    "jql": "project = GGJ AND labels = \"ggjira\" AND status = \"To Do\" ORDER BY created ASC",
+    "inProgressTransitionName": "In Progress",
+    "successTransitionName": "In Review",
+    "failureLabel": "ggjira-failed"
+  },
+  "polling": {
+    "intervalMs": 60000
+  },
+  "targetRepo": {
+    "path": "/absolute/path/to/target-repo",
+    "baseBranch": "main"
+  },
+  "worker": {
+    "command": "claude",
+    "model": "sonnet",
+    "effort": "high",
+    "timeoutMs": 1800000,
+    "permissionMode": "acceptEdits",
+    "allowedTools": ["Edit", "Write", "Read", "Glob", "Grep", "Bash(git *)", "Bash(npm *)"]
+  },
+  "concurrency": {
+    "maxConcurrentJobs": 1
+  }
+}
