@@ -10,10 +10,26 @@ export class JiraApiError extends Error {
     readonly status: number,
     readonly endpoint: string,
     readonly body?: unknown,
+    /** Parsed from a `Retry-After` response header, when present (ms). */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "JiraApiError";
   }
+}
+
+const MAX_RETRY_AFTER_MS = 30_000;
+
+/** Parses a `Retry-After` header (seconds, or an HTTP-date) into milliseconds. */
+export function parseRetryAfterMs(headerValue: string | null): number | undefined {
+  if (!headerValue) return undefined;
+  const seconds = Number(headerValue);
+  if (Number.isFinite(seconds)) {
+    return Math.min(Math.max(seconds, 0) * 1000, MAX_RETRY_AFTER_MS);
+  }
+  const dateMs = Date.parse(headerValue);
+  if (Number.isNaN(dateMs)) return undefined;
+  return Math.min(Math.max(dateMs - Date.now(), 0), MAX_RETRY_AFTER_MS);
 }
 
 export class TransitionNotFoundError extends Error {
@@ -66,10 +82,15 @@ function mapRawIssue(raw: RawJiraIssue): JiraIssue {
 
 const DEFAULT_FIELDS = ["summary", "description", "status", "labels"];
 
-/** Transient failures worth retrying: 5xx responses and network-level errors. */
+/** Transient failures worth retrying: 429 (rate limited), 5xx, and network-level errors. */
 function isTransientJiraError(error: unknown): boolean {
-  if (error instanceof JiraApiError) return error.status >= 500;
+  if (error instanceof JiraApiError) return error.status === 429 || error.status >= 500;
   return error instanceof TypeError; // fetch's network-failure shape
+}
+
+/** Honors a 429's Retry-After header instead of the default exponential backoff. */
+function jiraRetryDelayMs(error: unknown): number | undefined {
+  return error instanceof JiraApiError ? error.retryAfterMs : undefined;
 }
 
 export class JiraClient implements JiraGateway {
@@ -115,7 +136,8 @@ export class JiraClient implements JiraGateway {
         Array.isArray((parsedBody as { errorMessages?: unknown }).errorMessages)
           ? (parsedBody as { errorMessages: string[] }).errorMessages.join("; ")
           : `Jira request failed with status ${res.status}`;
-      throw new JiraApiError(message, res.status, path, parsedBody);
+      const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
+      throw new JiraApiError(message, res.status, path, parsedBody, retryAfterMs);
     }
 
     if (res.status === 204) {
@@ -132,7 +154,7 @@ export class JiraClient implements JiraGateway {
           maxResults: opts.maxResults ?? 50,
           fields: opts.fields ?? DEFAULT_FIELDS,
         }),
-      { isRetryable: isTransientJiraError },
+      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
     );
     return response.issues.map(mapRawIssue);
   }
@@ -144,7 +166,7 @@ export class JiraClient implements JiraGateway {
           "GET",
           `/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields.join(",")}`,
         ),
-      { isRetryable: isTransientJiraError },
+      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
     );
     return mapRawIssue(raw);
   }
@@ -162,7 +184,7 @@ export class JiraClient implements JiraGateway {
           "GET",
           `/rest/api/2/issue/${encodeURIComponent(key)}/transitions`,
         ),
-      { isRetryable: isTransientJiraError },
+      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
     );
     return response.transitions.map((t) => ({
       id: t.id,

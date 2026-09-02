@@ -3,6 +3,12 @@ export interface RetryOptions {
   baseDelayMs?: number;
   /** Only errors this returns true for are retried; everything else rethrows immediately. */
   isRetryable?: (error: unknown) => boolean;
+  /**
+   * Lets a retryable error (e.g. a 429 carrying `Retry-After`) override the
+   * delay before the next attempt. Returning undefined falls back to the
+   * default exponential backoff.
+   */
+  getDelayMs?: (error: unknown, attempt: number) => number | undefined;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -14,7 +20,8 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
- * Retries a read-only/idempotent Jira call with exponential backoff.
+ * Retries a read-only/idempotent Jira call with exponential backoff (or a
+ * server-specified delay via `getDelayMs`, e.g. a 429's Retry-After header).
  * Never use this around a call with side effects that aren't safe to repeat
  * (e.g. addComment) — see ADR 0006.
  */
@@ -33,7 +40,8 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       if (attempt === attempts || !isRetryable(error)) {
         throw error;
       }
-      await sleep(baseDelayMs * 2 ** (attempt - 1));
+      const delayMs = opts.getDelayMs?.(error, attempt) ?? baseDelayMs * 2 ** (attempt - 1);
+      await sleep(delayMs);
     }
   }
   throw lastError;

@@ -47,4 +47,27 @@ describe("withRetry", () => {
     expect(fn).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
   });
+
+  it("uses getDelayMs's value instead of exponential backoff when it returns one", async () => {
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const fn = vi.fn().mockRejectedValueOnce(new Error("rate limited")).mockResolvedValueOnce("ok");
+
+    const result = await withRetry(fn, {
+      sleep,
+      baseDelayMs: 100,
+      getDelayMs: () => 5000,
+    });
+
+    expect(result).toBe("ok");
+    expect(sleep).toHaveBeenCalledWith(5000);
+  });
+
+  it("falls back to exponential backoff when getDelayMs returns undefined", async () => {
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const fn = vi.fn().mockRejectedValueOnce(new Error("transient")).mockResolvedValueOnce("ok");
+
+    await withRetry(fn, { sleep, baseDelayMs: 100, getDelayMs: () => undefined });
+
+    expect(sleep).toHaveBeenCalledWith(100);
+  });
 });

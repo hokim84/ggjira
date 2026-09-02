@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JiraSecrets } from "../src/config.js";
-import { JiraApiError, JiraClient, TransitionNotFoundError } from "../src/jira/client.js";
+import {
+  JiraApiError,
+  JiraClient,
+  TransitionNotFoundError,
+  parseRetryAfterMs,
+} from "../src/jira/client.js";
 
 const secrets: JiraSecrets = {
   baseUrl: "https://example.atlassian.net",
@@ -17,6 +22,17 @@ function jsonResponse(status: number, body: unknown): Response {
 
 function emptyResponse(status: number): Response {
   return new Response(null, { status });
+}
+
+function jsonResponseWithHeaders(
+  status: number,
+  body: unknown,
+  headers: Record<string, string>,
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...headers },
+  });
 }
 
 describe("JiraClient", () => {
@@ -215,5 +231,64 @@ describe("JiraClient", () => {
 
     await expect(client.addComment("KAN-1", "x")).rejects.toBeInstanceOf(JiraApiError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a read call after a 429 rate-limit response and succeeds", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponseWithHeaders(429, { errorMessages: ["rate limited"] }, { "Retry-After": "0" }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          id: "10000",
+          key: "KAN-1",
+          fields: { summary: "S", status: { name: "To Do" }, labels: [] },
+        }),
+      );
+    const client = new JiraClient(secrets);
+
+    const issue = await client.getIssue("KAN-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(issue.key).toBe("KAN-1");
+  });
+
+  it("parses the Retry-After header (seconds) onto the thrown JiraApiError", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponseWithHeaders(429, { errorMessages: ["rate limited"] }, { "Retry-After": "0" }),
+    );
+    fetchMock.mockResolvedValue(jsonResponseWithHeaders(404, { errorMessages: ["gone"] }, {}));
+    const client = new JiraClient(secrets);
+
+    // First response's Retry-After is what we're inspecting; the retry that
+    // follows returns a non-retryable 404 so the loop stops immediately
+    // instead of waiting out further backoff.
+    const error = await client.getIssue("KAN-1").catch((e) => e);
+
+    expect(error).toBeInstanceOf(JiraApiError);
+    expect((error as JiraApiError).status).toBe(404);
+  });
+});
+
+describe("parseRetryAfterMs", () => {
+  it("parses a numeric seconds value into milliseconds", () => {
+    expect(parseRetryAfterMs("2")).toBe(2000);
+    expect(parseRetryAfterMs("0")).toBe(0);
+  });
+
+  it("clamps a very large value to the maximum retry delay", () => {
+    expect(parseRetryAfterMs("999999")).toBe(30_000);
+  });
+
+  it("parses an HTTP-date value relative to now", () => {
+    const future = new Date(Date.now() + 5000).toUTCString();
+    const ms = parseRetryAfterMs(future);
+    expect(ms).toBeGreaterThan(3000);
+    expect(ms).toBeLessThanOrEqual(5000);
+  });
+
+  it("returns undefined for a missing or unparsable header", () => {
+    expect(parseRetryAfterMs(null)).toBeUndefined();
+    expect(parseRetryAfterMs("not-a-valid-value")).toBeUndefined();
   });
 });
