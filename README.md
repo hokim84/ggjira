@@ -12,6 +12,23 @@ Jira Issue → Poller → Job → Worker(Claude Code CLI) → 결과 → Jira �
 
 ## 설치
 
+### 요구 사항
+
+- Node 20 (`.nvmrc`에 고정)
+- git
+- [Claude Code CLI](https://claude.com/claude-code)가 설치되어 있고, `claude` 명령으로 로그인된
+  상태 — GGJIRA는 이 CLI를 subprocess로 실행해 Worker로 쓴다 (`claude --version`으로 확인)
+- Jira Cloud 사이트 접근 권한과 API 토큰 (아래 [설정](#설정) 참고)
+
+### 저장소 받기
+
+```bash
+git clone https://github.com/hokim84/ggjira.git
+cd ggjira
+```
+
+### 의존성 설치
+
 ```bash
 nvm use        # Node 20 (.nvmrc)
 npm install
