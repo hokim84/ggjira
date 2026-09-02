@@ -2,6 +2,7 @@
 import { mkdirSync, appendFileSync } from "node:fs";
 import path from "node:path";
 import { ConfigError, loadAppConfig, loadJiraSecretsFromEnv } from "./config.js";
+import { JobStore } from "./job/store.js";
 import { JiraApiError, JiraClient } from "./jira/client.js";
 import { rootLogger } from "./logger.js";
 import { ClaudeCodeCliProvider } from "./worker/claude-code-cli.js";
@@ -32,7 +33,7 @@ Commands:
   worker:run         Run the worker provider once, outside the Jira loop
                        --prompt <text>   (required) task instruction for the worker
                        --timeout <ms>    override worker.timeoutMs from config
-  status             Show current job state (not yet implemented)
+  status             Show current job claims and recorded runs
 
 Options:
   -h, --help         Show this help message
@@ -206,6 +207,36 @@ async function runWorkerRun(args: string[]): Promise<void> {
   process.exitCode = result.exitReason === "completed" && !result.isError ? 0 : 1;
 }
 
+async function runStatus(): Promise<void> {
+  const store = new JobStore();
+  const claims = store.listClaims();
+  const issueKeys = new Set([...Object.keys(claims), ...store.listIssueKeys()]);
+
+  if (issueKeys.size === 0) {
+    process.stdout.write("No jobs recorded yet.\n");
+    return;
+  }
+
+  for (const issueKey of [...issueKeys].sort()) {
+    const claimedRunId = claims[issueKey];
+    process.stdout.write(`${issueKey}${claimedRunId ? `  (claimed by ${claimedRunId})` : ""}\n`);
+
+    const runIds = store.listRunIds(issueKey);
+    if (runIds.length === 0) {
+      process.stdout.write("  (no recorded runs)\n");
+      continue;
+    }
+    for (const runId of runIds) {
+      const job = store.loadJob(issueKey, runId);
+      if (!job) continue;
+      const summarySuffix = job.summary ? `  "${job.summary}"` : "";
+      process.stdout.write(
+        `  - ${runId}  ${job.status}  updated ${job.updatedAt}${summarySuffix}\n`,
+      );
+    }
+  }
+}
+
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
 
@@ -228,6 +259,11 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "worker:run") {
     await runWorkerRun(rest);
+    return;
+  }
+
+  if (command === "status") {
+    await runStatus();
     return;
   }
 
