@@ -32,6 +32,11 @@ npm install
    # jira.jql, targetRepo.path 등 채우기
    ```
 
+   **주의**: Jira의 상태/transition 이름은 사이트 로케일에 따라 지역화되어 있을 수 있다
+   (예: "In Progress"가 아니라 "진행 중"). `inProgressTransitionName` /
+   `successTransitionName`을 채우기 전에 아래 `jira:smoke`를 실행해 실제 이름을 확인한다.
+   자세한 내용은 [`docs/decisions/0002-jira-rest-api-v2.md`](./docs/decisions/0002-jira-rest-api-v2.md) 참고.
+
 ## 실행 (개발 중 검증용)
 
 ```bash
