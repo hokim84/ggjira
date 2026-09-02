@@ -47,23 +47,61 @@ npm install
    `.env`와 마찬가지로 실제 `ggjira.config.json`은 머신/인스턴스별 설정(대상 저장소 경로 등)이라
    `.gitignore`에 포함되어 커밋되지 않는다.
 
-## 실행 (개발 중 검증용)
+## 처음 실행할 때: 3단계 검증 순서
+
+설정을 끝냈다면 순서대로 실행해서 각 단계를 확인한다. 한 번에 `run`부터 돌리지 않는다 —
+아래 순서대로 하면 문제가 생겨도 어느 단계인지 바로 알 수 있다.
 
 ```bash
-npm run dev -- jira:smoke <ISSUE-KEY>                      # Jira 연동 확인
-npm run dev -- worker:run --prompt "<지시문>" [--timeout <ms>]  # Worker 단독 실행
-npm run dev -- once                                          # 폴링 1회 실행
-npm run dev -- run                                            # 폴링 데몬 실행
-npm run dev -- status                                         # 현재 Job 상태 확인
+# 1. Jira 연동 확인 (이슈 조회 → 테스트 댓글 → transition 목록 출력)
+npm run dev -- jira:smoke <ISSUE-KEY>
+
+# 2. Worker(Claude Code CLI) 단독 실행 확인 — 이 저장소가 target repo라면
+#    npm run dev로 실행해도 되고, 실제 대상 repo를 향하게 하려면 dist를 빌드해 실행한다.
+npm run dev -- worker:run --prompt "README.md 맨 끝에 한 줄만 추가해줘"
+
+# 3. Jira 이슈에 ggjira.config.json의 jira.jql에 맞는 라벨/상태를 걸어둔 뒤, 폴링 1회 실행
+npm run dev -- once
+```
+
+`once`가 기대한 대로 동작하면(이슈 상태 전이 + 댓글 + 로컬 브랜치 커밋) 데몬으로 넘어간다.
+
+## 평소 실행
+
+```bash
+npm run dev -- run       # 폴링 데몬. config의 polling.intervalMs 주기로 계속 돈다.
+                          # Ctrl+C(SIGINT) 또는 SIGTERM을 보내면 진행 중인 사이클을 마치고 종료한다.
+```
+
+빌드해서 실행할 수도 있다.
+
+```bash
+npm run build
+node dist/cli.js run
+```
+
+daemon(`run`)은 시작할 때마다 `data/state.json`에 남은 claim을 먼저 점검한다. 이전 실행이
+비정상 종료(kill, 크래시)로 이슈를 "진행 중"으로 남겨뒀다면, 다시 실행하지 않고 실패로 정리한 뒤
+Jira에 알리고 넘어간다 — 자세한 동작은 [`docs/runbook.md`](./docs/runbook.md) §5 참고.
+
+## 그 밖의 명령
+
+```bash
+npm run dev -- status                                          # 현재 claim과 최근 실행 목록
+npm run dev -- worktrees:prune [--olderThanDays N]              # 오래된 워크트리 정리 (기본 7일, 브랜치는 안 지움)
+npm run dev -- worker:run --prompt "<지시문>" [--timeout <ms>]    # Worker만 단독 실행 (Jira 이슈 없이)
 ```
 
 `worker:run`은 `ggjira.config.json`의 `targetRepo.path`에 새 git worktree
-(`data/worktrees/ggjira-manual-<timestamp>`)를 만들고, 그 안에서 Worker(Claude Code CLI)를
-실행한 뒤 변경 사항을 GGJIRA가 직접 커밋한다. 워크트리 정리는 아직 자동화되지 않았다(M4 예정)므로
-수동 스파이크 실행 후에는 `git worktree remove --force <path>`로 직접 정리한다.
+(`data/worktrees/ggjira-manual-<timestamp>`)를 만들고, 그 안에서 Worker를 실행한 뒤 변경
+사항을 GGJIRA가 직접 커밋한다. `once`/`run`이 이슈별로 만드는 워크트리도 동일한 방식이다.
 
-각 명령은 `PLAN.md`의 milestone 순서(M0 → M4)대로 구현된다. 아직 구현되지 않은 명령은
-"not implemented yet"을 출력한다.
+## 무엇을 확인하면 되는가
+
+- 이슈에 댓글이 달리고 상태가 바뀌었는지 — Jira에서 직접 확인한다.
+- 실제로 무슨 작업을 했는지 — `data/runs/<ISSUE-KEY>/<runId>/summary.md`.
+- 실패했을 때 — `npm run dev -- status`로 어떤 이슈가 실패했는지 먼저 보고,
+  [`docs/runbook.md`](./docs/runbook.md)의 계층별 진단 순서를 따라간다.
 
 ## 개발
 
