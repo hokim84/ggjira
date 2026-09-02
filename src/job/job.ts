@@ -19,6 +19,9 @@ export interface Job {
   summary?: string;
   failureStage?: FailureStage;
   error?: string;
+  /** True when the job itself finished, but writing the outcome back to Jira failed. */
+  reportingFailed?: boolean;
+  reportingError?: string;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<JobStatus> = new Set([
@@ -60,6 +63,20 @@ export function createJob(issueKey: string, runId: string, now: Date = new Date(
     status: "queued",
     createdAt: timestamp,
     updatedAt: timestamp,
+  };
+}
+
+/**
+ * Records that reporting the (already-terminal) job outcome back to Jira
+ * failed. Does not change `status` — the job itself already succeeded or
+ * failed; this only flags that Jira was never told.
+ */
+export function markReportingFailed(job: Job, error: unknown, now: Date = new Date()): Job {
+  return {
+    ...job,
+    reportingFailed: true,
+    reportingError: error instanceof Error ? error.message : String(error),
+    updatedAt: now.toISOString(),
   };
 }
 

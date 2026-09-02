@@ -36,10 +36,11 @@ npm run build         # dist/ 빌드
 
 1. `npm run check`가 통과한다.
 2. 해당 milestone의 검증 명령(`PLAN.md` §8 "테스트" 항목)을 실제로 실행해 확인했다.
-3. 아키텍처나 결정이 바뀌었다면 `docs/architecture.md` 또는 `docs/decisions/`를 같은 커밋/PR에서 갱신했다.
+3. 아키텍처나 결정이 바뀌었다면 `docs/architecture.md`, `docs/decisions/`, 실패 진단 방법이
+   바뀌었다면 `docs/runbook.md`를 같은 커밋/PR에서 갱신했다.
 4. 외부 서비스(Jira, Claude Code CLI)에 대한 실제 호출은 자동 테스트에 넣지 않는다.
-   자동 테스트는 Fake(`FakeProvider`, fetch mock)만 사용하고, 실제 연동 확인은
-   `jira:smoke`, `worker:run` 같은 수동 CLI 명령으로 한다.
+   자동 테스트는 Fake(`FakeJiraGateway`, `FakeWorkerProvider`, fetch mock)만 사용하고,
+   실제 연동 확인은 `jira:smoke`, `worker:run` 같은 수동 CLI 명령으로 한다.
 
 ## 결정 기록
 

@@ -190,4 +190,30 @@ describe("JiraClient", () => {
 
     await expect(client.addComment("KAN-1", "x")).resolves.toBeUndefined();
   });
+
+  it("retries a read call after a transient 503 and succeeds", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(503, { errorMessages: ["temporarily unavailable"] }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          id: "10000",
+          key: "KAN-1",
+          fields: { summary: "S", status: { name: "To Do" }, labels: [] },
+        }),
+      );
+    const client = new JiraClient(secrets);
+
+    const issue = await client.getIssue("KAN-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(issue.key).toBe("KAN-1");
+  });
+
+  it("does not retry a write call (addComment) on failure", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, { errorMessages: ["down"] }));
+    const client = new JiraClient(secrets);
+
+    await expect(client.addComment("KAN-1", "x")).rejects.toBeInstanceOf(JiraApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

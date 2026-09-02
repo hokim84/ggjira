@@ -7,7 +7,8 @@ MVP는 다음 vertical slice를 완성하는 것을 목표로 한다.
 Jira Issue → Poller → Job → Worker(Claude Code CLI) → 결과 → Jira 기록
 ```
 
-자세한 배경과 설계는 [`PLAN.md`](./PLAN.md), 아키텍처는 [`docs/architecture.md`](./docs/architecture.md)를 참고한다.
+자세한 배경과 설계는 [`PLAN.md`](./PLAN.md), 아키텍처는 [`docs/architecture.md`](./docs/architecture.md)를,
+문제 해결은 [`docs/runbook.md`](./docs/runbook.md)를 참고한다.
 
 ## 설치
 

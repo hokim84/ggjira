@@ -1,6 +1,7 @@
 import type { JiraSecrets } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { JiraGateway } from "./gateway.js";
+import { withRetry } from "./retry.js";
 import type { JiraIssue, JiraTransition, SearchIssuesOptions } from "./types.js";
 
 export class JiraApiError extends Error {
@@ -65,6 +66,12 @@ function mapRawIssue(raw: RawJiraIssue): JiraIssue {
 
 const DEFAULT_FIELDS = ["summary", "description", "status", "labels"];
 
+/** Transient failures worth retrying: 5xx responses and network-level errors. */
+function isTransientJiraError(error: unknown): boolean {
+  if (error instanceof JiraApiError) return error.status >= 500;
+  return error instanceof TypeError; // fetch's network-failure shape
+}
+
 export class JiraClient implements JiraGateway {
   private readonly baseUrl: string;
   private readonly authHeader: string;
@@ -118,18 +125,26 @@ export class JiraClient implements JiraGateway {
   }
 
   async searchIssues(jql: string, opts: SearchIssuesOptions = {}): Promise<JiraIssue[]> {
-    const response = await this.request<RawSearchResponse>("POST", "/rest/api/2/search/jql", {
-      jql,
-      maxResults: opts.maxResults ?? 50,
-      fields: opts.fields ?? DEFAULT_FIELDS,
-    });
+    const response = await withRetry(
+      () =>
+        this.request<RawSearchResponse>("POST", "/rest/api/2/search/jql", {
+          jql,
+          maxResults: opts.maxResults ?? 50,
+          fields: opts.fields ?? DEFAULT_FIELDS,
+        }),
+      { isRetryable: isTransientJiraError },
+    );
     return response.issues.map(mapRawIssue);
   }
 
   async getIssue(key: string, fields: string[] = DEFAULT_FIELDS): Promise<JiraIssue> {
-    const raw = await this.request<RawJiraIssue>(
-      "GET",
-      `/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields.join(",")}`,
+    const raw = await withRetry(
+      () =>
+        this.request<RawJiraIssue>(
+          "GET",
+          `/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields.join(",")}`,
+        ),
+      { isRetryable: isTransientJiraError },
     );
     return mapRawIssue(raw);
   }
@@ -141,9 +156,13 @@ export class JiraClient implements JiraGateway {
   }
 
   async getTransitions(key: string): Promise<JiraTransition[]> {
-    const response = await this.request<RawTransitionsResponse>(
-      "GET",
-      `/rest/api/2/issue/${encodeURIComponent(key)}/transitions`,
+    const response = await withRetry(
+      () =>
+        this.request<RawTransitionsResponse>(
+          "GET",
+          `/rest/api/2/issue/${encodeURIComponent(key)}/transitions`,
+        ),
+      { isRetryable: isTransientJiraError },
     );
     return response.transitions.map((t) => ({
       id: t.id,

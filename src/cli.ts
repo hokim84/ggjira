@@ -3,11 +3,10 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { type AppConfig, ConfigError, loadAppConfig, loadJiraSecretsFromEnv } from "./config.js";
 import { JiraApiError, JiraClient } from "./jira/client.js";
-import { runJobForIssue } from "./job/runner.js";
+import { type CycleDeps, recoverStaleClaims, runPollCycle } from "./job/cycle.js";
 import { JobStore } from "./job/store.js";
 import type { Logger } from "./logger.js";
 import { rootLogger } from "./logger.js";
-import { findCandidateIssues } from "./poller/poller.js";
 import { ClaudeCodeCliProvider } from "./worker/claude-code-cli.js";
 import { buildTaskSystemPrompt } from "./worker/prompt.js";
 import type { WorkerRequest } from "./worker/provider.js";
@@ -16,6 +15,8 @@ import {
   commitAll,
   createWorktree,
   hasUncommittedChanges,
+  listManagedWorktrees,
+  removeWorktree,
 } from "./worker/worktree.js";
 
 try {
@@ -37,6 +38,8 @@ Commands:
                        --prompt <text>   (required) task instruction for the worker
                        --timeout <ms>    override worker.timeoutMs from config
   status             Show current job claims and recorded runs
+  worktrees:prune    Remove old worktrees under data/worktrees/
+                       --olderThanDays <n>  default 7
 
 Options:
   -h, --help         Show this help message
@@ -46,7 +49,14 @@ Config:
   from environment variables (see .env.example).
 `;
 
-const KNOWN_COMMANDS = new Set(["run", "once", "jira:smoke", "worker:run", "status"]);
+const KNOWN_COMMANDS = new Set([
+  "run",
+  "once",
+  "jira:smoke",
+  "worker:run",
+  "status",
+  "worktrees:prune",
+]);
 
 function loadConfigOrPrintError(): AppConfig | undefined {
   const configPath = path.resolve("ggjira.config.json");
@@ -246,8 +256,43 @@ async function runStatus(): Promise<void> {
           ? `${oneLineSummary.slice(0, 100)}…`
           : oneLineSummary;
       const summarySuffix = truncated ? `  "${truncated}"` : "";
+      const reportingFlag = job.reportingFailed ? "  [reporting to Jira failed]" : "";
       process.stdout.write(
-        `  - ${runId}  ${job.status}  updated ${job.updatedAt}${summarySuffix}\n`,
+        `  - ${runId}  ${job.status}  updated ${job.updatedAt}${summarySuffix}${reportingFlag}\n`,
+      );
+    }
+  }
+}
+
+async function runWorktreesPrune(args: string[]): Promise<void> {
+  let olderThanDays = 7;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--olderThanDays") {
+      const raw = args[++i];
+      if (raw) olderThanDays = Number(raw);
+    }
+  }
+
+  const config = loadConfigOrPrintError();
+  if (!config) return;
+
+  const worktreesRoot = path.resolve("data/worktrees");
+  const thresholdMs = olderThanDays * 24 * 60 * 60 * 1000;
+  const candidates = listManagedWorktrees(worktreesRoot).filter((w) => w.ageMs > thresholdMs);
+
+  if (candidates.length === 0) {
+    process.stdout.write(`Nothing to prune (nothing older than ${olderThanDays}d).\n`);
+    return;
+  }
+
+  for (const worktree of candidates) {
+    const ageDays = (worktree.ageMs / (24 * 60 * 60 * 1000)).toFixed(1);
+    process.stdout.write(`Removing ${worktree.path} (age ${ageDays}d)...\n`);
+    try {
+      await removeWorktree(config.targetRepo.path, worktree.path);
+    } catch (error) {
+      process.stderr.write(
+        `  failed to remove: ${error instanceof Error ? error.message : String(error)}\n`,
       );
     }
   }
@@ -261,45 +306,39 @@ function cancellableSleep(ms: number): { promise: Promise<void>; cancel: () => v
   return { promise, cancel: () => clearTimeout(timer) };
 }
 
-async function runPollCycle(
-  config: AppConfig,
-  jira: JiraClient,
-  store: JobStore,
-  worker: ClaudeCodeCliProvider,
-  worktreesRoot: string,
-  logger: Logger,
-): Promise<void> {
-  const candidates = await findCandidateIssues(jira, config, store);
-  if (candidates.length === 0) {
+async function printPollCycle(config: AppConfig, deps: CycleDeps): Promise<void> {
+  const outcomes = await runPollCycle(config, deps);
+  if (outcomes.length === 0) {
     process.stdout.write("No candidate issues.\n");
     return;
   }
 
-  for (const issue of candidates) {
+  for (const { issue, job } of outcomes) {
     process.stdout.write(`Processing ${issue.key}: ${issue.summary}\n`);
-    const job = await runJobForIssue(issue, config, { jira, store, worker, worktreesRoot, logger });
     if (!job) {
       process.stdout.write("  skipped (already claimed locally)\n");
       continue;
     }
-    process.stdout.write(`  -> ${job.status}${job.summary ? `: ${job.summary}` : ""}\n`);
+    const reportingFlag = job.reportingFailed ? " [reporting to Jira failed — see job.json]" : "";
+    process.stdout.write(
+      `  -> ${job.status}${job.summary ? `: ${job.summary}` : ""}${reportingFlag}\n`,
+    );
   }
 }
 
 interface PollSetup {
   config: AppConfig;
-  jira: JiraClient;
-  store: JobStore;
-  worker: ClaudeCodeCliProvider;
-  worktreesRoot: string;
-  logger: Logger;
+  deps: CycleDeps;
 }
 
-function setUpPolling(): PollSetup | undefined {
+async function setUpPolling(): Promise<PollSetup | undefined> {
   const config = loadConfigOrPrintError();
   if (!config) return undefined;
 
-  const logger = rootLogger.child({ layer: "poller" });
+  // Not layer-tagged here: each component (jira/worker/job/reporter/poller)
+  // binds its own "layer" field per call, so a pre-bound value here would
+  // just show up as a redundant duplicate key alongside it in the JSON logs.
+  const logger = rootLogger;
   const jira = createJiraClientOrPrintError(logger);
   if (!jira) return undefined;
 
@@ -308,26 +347,29 @@ function setUpPolling(): PollSetup | undefined {
   const worktreesRoot = path.resolve("data/worktrees");
   mkdirSync(worktreesRoot, { recursive: true });
 
-  return { config, jira, store, worker, worktreesRoot, logger };
+  const deps: CycleDeps = { jira, store, worker, worktreesRoot, logger };
+
+  const staleClaims = Object.keys(store.listClaims());
+  if (staleClaims.length > 0) {
+    process.stdout.write(
+      `Recovering ${staleClaims.length} stale claim(s) from a previous run: ${staleClaims.join(", ")}\n`,
+    );
+    await recoverStaleClaims(config, deps);
+  }
+
+  return { config, deps };
 }
 
 async function runOnce(): Promise<void> {
-  const setup = setUpPolling();
+  const setup = await setUpPolling();
   if (!setup) return;
-  await runPollCycle(
-    setup.config,
-    setup.jira,
-    setup.store,
-    setup.worker,
-    setup.worktreesRoot,
-    setup.logger,
-  );
+  await printPollCycle(setup.config, setup.deps);
 }
 
 async function runDaemon(): Promise<void> {
-  const setup = setUpPolling();
+  const setup = await setUpPolling();
   if (!setup) return;
-  const { config, jira, store, worker, worktreesRoot, logger } = setup;
+  const { config, deps } = setup;
 
   let stopping = false;
   let resolveStopSignal: () => void = () => {};
@@ -346,7 +388,7 @@ async function runDaemon(): Promise<void> {
 
   process.stdout.write(`Polling every ${config.polling.intervalMs}ms. Press Ctrl+C to stop.\n`);
   while (!stopping) {
-    await runPollCycle(config, jira, store, worker, worktreesRoot, logger);
+    await printPollCycle(config, deps);
     if (stopping) break;
     // Racing against stopSignal means a signal during the idle wait stops us
     // immediately instead of waiting out the rest of the poll interval; the
@@ -395,6 +437,11 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "run") {
     await runDaemon();
+    return;
+  }
+
+  if (command === "worktrees:prune") {
+    await runWorktreesPrune(rest);
     return;
   }
 

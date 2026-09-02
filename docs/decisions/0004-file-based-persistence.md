@@ -58,3 +58,16 @@ interface Job {
 디스크에 즉시(임시 파일 + rename으로 원자적) 반영되므로, 프로세스가 재시작돼도 같은 이슈를 두 번
 claim하지 못한다 — `test/job-store.test.ts`의 "재시작 후 이중 claim 거부" 테스트로 검증했다.
 `claimIssue`는 같은 `runId`로 다시 부르면 멱등이다(재시도 로직에서 안전하게 재호출 가능).
+
+## 버그 수정 (T7): state.json이 없을 때의 fallback 객체 공유 문제
+
+T7에서 `recoverStaleClaims`의 다중 이슈 시나리오를 테스트하다가 발견했다: `state.json` 파일이
+아직 없는 상태에서 여러 `JobStore` 인스턴스가 존재하면(예: 같은 프로세스에서 서로 다른
+`dataDir`를 가리키는 인스턴스 여러 개), `claimIssue`가 claim 기록을 **다른 인스턴스의 claim과
+공유하는 하나의 객체에 직접 mutate**하는 버그가 있었다. `readState()`가 "파일 없음" 폴백으로
+매번 같은 모듈 레벨 상수 객체(`EMPTY_STATE`)를 반환했고, `claimIssue`가 그 객체의 `claims`를
+그 자리에서 수정한 뒤 저장했기 때문이다. 실사용에서는 `data/state.json`이 최초 claim 시점에
+바로 생성되므로 두 번째 읽기부터는 실제 파일을 읽어 문제가 드러나지 않지만(잠복 버그), 여러
+`JobStore` 인스턴스를 함께 쓰는 테스트/향후 시나리오에서는 claim이 인스턴스 간에 새는 심각한
+결함이었다. `readJsonFile`의 폴백을 값이 아니라 **매번 새 객체를 만드는 팩토리 함수**로 바꿔
+고쳤고, `test/job-store.test.ts`에 회귀 테스트를 추가했다.

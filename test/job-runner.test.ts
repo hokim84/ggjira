@@ -184,6 +184,33 @@ describe("runJobForIssue", () => {
     expect(jira.labelChanges).toHaveLength(1);
   });
 
+  it("keeps the job succeeded but flags reportingFailed when the success comment fails", async () => {
+    const issue = sampleIssue({ key: "KAN-9" });
+    jira.seedIssue(issue, [
+      { id: "21", name: "In Progress", toStatusName: "In Progress" },
+      { id: "31", name: "In Review", toStatusName: "In Review" },
+    ]);
+    // let the claim/start comment through, but fail the success comment that follows
+    jira.failNextComment(issue.key, (body) => body.includes("완료되었습니다"));
+
+    const job = await runJobForIssue(issue, config, {
+      jira,
+      store,
+      worker: new WritesFileWorkerProvider(),
+      worktreesRoot,
+    });
+
+    if (!job) throw new Error("expected job to be defined");
+    expect(job.status).toBe("succeeded");
+    expect(job.reportingFailed).toBe(true);
+    expect(job.reportingError).toContain("addComment rejected");
+    // the success transition never ran, since the comment before it threw
+    expect(jira.transitions.map((t) => t.transitionName)).toEqual(["In Progress"]);
+
+    // persisted to disk too, not just the in-memory return value
+    expect(store.loadJob(issue.key, job.runId)?.reportingFailed).toBe(true);
+  });
+
   it("fails the job and never invokes the worker when Jira rejects the claim transition", async () => {
     const issue = sampleIssue({ key: "KAN-4" });
     jira.seedIssue(issue, [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);

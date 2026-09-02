@@ -114,4 +114,23 @@ describe("JobStore", () => {
 
     expect(store.listClaims()).toEqual({ "KAN-1": "run-1", "KAN-2": "run-5" });
   });
+
+  it("does not leak claims between separate JobStore instances whose state.json does not exist yet", () => {
+    // Regression test: the "file missing" fallback used to be a single shared
+    // object that claimIssue mutated in place, so a second store (pointed at
+    // a different data dir, also with no state.json yet) would inherit
+    // claims made by the first store before either had written to disk.
+    const otherDataDir = mkdtempSync(path.join(tmpdir(), "ggjira-store-test-other-"));
+    try {
+      const storeA = new JobStore(dataDir);
+      const storeB = new JobStore(otherDataDir);
+
+      storeA.claimIssue("KAN-1", "run-a");
+
+      expect(storeB.listClaims()).toEqual({});
+      expect(storeB.getClaim("KAN-1")).toBeUndefined();
+    } finally {
+      rmSync(otherDataDir, { recursive: true, force: true });
+    }
+  });
 });

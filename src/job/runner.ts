@@ -13,7 +13,7 @@ import {
   createWorktree,
   hasUncommittedChanges,
 } from "../worker/worktree.js";
-import { type Job, type JobStatus, createJob, transitionJob } from "./job.js";
+import { type Job, type JobStatus, createJob, markReportingFailed, transitionJob } from "./job.js";
 import type { JobStore } from "./store.js";
 
 export interface RunnerDeps {
@@ -101,7 +101,12 @@ export async function runJobForIssue(
     logger?.error({ err: error }, "failed to create worktree");
     job = transitionJob(job, "failed", { failureStage: "job", error: errorMessage(error) });
     deps.store.saveJob(job);
-    await safeReport(() => reportFailure(deps.jira, config, issue, job), logger);
+    job = await safeReport(
+      job,
+      deps.store,
+      () => reportFailure(deps.jira, config, issue, job),
+      logger,
+    );
     deps.store.releaseClaim(issue.key);
     return job;
   }
@@ -141,7 +146,9 @@ export async function runJobForIssue(
       buildSummaryMarkdown(job, changedFiles, workerLogPath),
     );
 
-    await safeReport(
+    job = await safeReport(
+      job,
+      deps.store,
       () => reportSuccess(deps.jira, config, issue, job, changedFiles, workerLogPath),
       logger,
     );
@@ -154,18 +161,37 @@ export async function runJobForIssue(
   deps.store.saveJob(job);
   deps.store.writeSummary(issue.key, runId, buildSummaryMarkdown(job, changedFiles, workerLogPath));
 
-  await safeReport(() => reportFailure(deps.jira, config, issue, job), logger);
+  job = await safeReport(
+    job,
+    deps.store,
+    () => reportFailure(deps.jira, config, issue, job),
+    logger,
+  );
   deps.store.releaseClaim(issue.key);
   return job;
 }
 
-async function safeReport(fn: () => Promise<void>, logger: Logger | undefined): Promise<void> {
+/**
+ * Runs a Jira-reporting call and swallows any failure: the job already
+ * reached a terminal status and job.json/summary.md are already saved, so a
+ * failed comment/transition must not be treated as the job itself failing.
+ * Instead it's recorded on the job as reportingFailed for later follow-up.
+ */
+async function safeReport(
+  job: Job,
+  store: JobStore,
+  fn: () => Promise<void>,
+  logger: Logger | undefined,
+): Promise<Job> {
   try {
     await fn();
+    return job;
   } catch (error) {
-    logger?.error(
-      { err: error },
-      "failed to report job outcome to Jira (job.json/summary.md already saved)",
-    );
+    logger
+      ?.child({ layer: "reporter" })
+      .error({ err: error }, "failed to report job outcome to Jira");
+    const updated = markReportingFailed(job, error);
+    store.saveJob(updated);
+    return updated;
   }
 }

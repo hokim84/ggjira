@@ -26,6 +26,7 @@ export class FakeJiraGateway implements JiraGateway {
   private readonly issues = new Map<string, JiraIssue>();
   private readonly transitionsByKey = new Map<string, JiraTransition[]>();
   private readonly failingTransitions = new Set<string>();
+  private readonly commentFailurePredicates = new Map<string, (body: string) => boolean>();
 
   seedIssue(issue: JiraIssue, availableTransitions: JiraTransition[] = []): void {
     this.issues.set(issue.key, issue);
@@ -35,6 +36,14 @@ export class FakeJiraGateway implements JiraGateway {
   /** Makes the next transitionIssue call for this key throw, simulating a claim race. */
   failNextTransition(key: string): void {
     this.failingTransitions.add(key);
+  }
+
+  /**
+   * Makes the next addComment call for this key whose body matches `predicate`
+   * throw, simulating a Jira write outage. Defaults to matching any body.
+   */
+  failNextComment(key: string, predicate: (body: string) => boolean = () => true): void {
+    this.commentFailurePredicates.set(key, predicate);
   }
 
   async searchIssues(_jql: string, opts: SearchIssuesOptions = {}): Promise<JiraIssue[]> {
@@ -49,6 +58,11 @@ export class FakeJiraGateway implements JiraGateway {
   }
 
   async addComment(key: string, body: string): Promise<void> {
+    const predicate = this.commentFailurePredicates.get(key);
+    if (predicate?.(body)) {
+      this.commentFailurePredicates.delete(key);
+      throw new Error(`FakeJiraGateway: addComment rejected for ${key}`);
+    }
     this.comments.push({ key, body });
   }
 

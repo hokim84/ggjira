@@ -1,8 +1,15 @@
 import { spawn } from "node:child_process";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
 
 export interface WorktreeHandle {
   path: string;
   branch: string;
+}
+
+export interface ManagedWorktreeInfo {
+  path: string;
+  ageMs: number;
 }
 
 class GitCommandError extends Error {
@@ -92,6 +99,24 @@ export async function changedFilesSince(
       ),
     );
   });
+}
+
+/**
+ * Lists worktree directories GGJIRA has created under `worktreesRoot`, with
+ * how long ago each was last modified — used by `worktrees:prune` to decide
+ * what's old enough to remove. Cleanup itself stays a manual/scheduled
+ * command (see ADR 0004); this just answers "what's there and how old".
+ */
+export function listManagedWorktrees(worktreesRoot: string): ManagedWorktreeInfo[] {
+  if (!existsSync(worktreesRoot)) return [];
+  const now = Date.now();
+  return readdirSync(worktreesRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const entryPath = path.join(worktreesRoot, entry.name);
+      const { mtimeMs } = statSync(entryPath);
+      return { path: entryPath, ageMs: now - mtimeMs };
+    });
 }
 
 export { GitCommandError };

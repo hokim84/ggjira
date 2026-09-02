@@ -13,10 +13,11 @@ interface StateFile {
   claims: Record<string, string>;
 }
 
-const EMPTY_STATE: StateFile = { claims: {} };
-
-function readJsonFile<T>(filePath: string, fallback: T): T {
-  if (!existsSync(filePath)) return fallback;
+function readJsonFile<T>(filePath: string, makeFallback: () => T): T {
+  // makeFallback is a factory, not a value: the caller may mutate what comes
+  // back (as claimIssue does), so returning a shared object here would leak
+  // state across every JobStore instance whose file doesn't exist yet.
+  if (!existsSync(filePath)) return makeFallback();
   const raw = readFileSync(filePath, "utf-8");
   return JSON.parse(raw) as T;
 }
@@ -88,7 +89,7 @@ export class JobStore {
   }
 
   private readState(): StateFile {
-    return readJsonFile(this.statePath, EMPTY_STATE);
+    return readJsonFile(this.statePath, () => ({ claims: {} }));
   }
 
   private writeState(state: StateFile): void {
