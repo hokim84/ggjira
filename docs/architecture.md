@@ -58,9 +58,11 @@ claim은 Jira transition이 성공한 주체만 진행권을 갖는 방식으로
 
 ## Provider 경계
 
-`WorkerProvider` 인터페이스 하나에 `ClaudeCodeCliProvider`(실제 구현)와 `FakeProvider`(테스트용)를
+`WorkerProvider` 인터페이스 하나에 `ClaudeCodeCliProvider`(실제 구현)와 `FakeWorkerProvider`(테스트용)를
 둔다. 향후 다른 CLI 기반 Worker(예: Codex CLI)를 추가할 때 이 경계만 교체하면 된다.
 자세한 배경은 [`decisions/0003-worker-provider-boundary.md`](./decisions/0003-worker-provider-boundary.md).
+Worker 실행 방식을 실제로 검증한 스파이크 결과는
+[`decisions/0005-worker-cli-spike-findings.md`](./decisions/0005-worker-cli-spike-findings.md) 참고.
 
 ## Persistence
 

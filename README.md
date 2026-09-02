@@ -37,15 +37,23 @@ npm install
    `successTransitionName`을 채우기 전에 아래 `jira:smoke`를 실행해 실제 이름을 확인한다.
    자세한 내용은 [`docs/decisions/0002-jira-rest-api-v2.md`](./docs/decisions/0002-jira-rest-api-v2.md) 참고.
 
+   `.env`와 마찬가지로 실제 `ggjira.config.json`은 머신/인스턴스별 설정(대상 저장소 경로 등)이라
+   `.gitignore`에 포함되어 커밋되지 않는다.
+
 ## 실행 (개발 중 검증용)
 
 ```bash
-npm run dev -- jira:smoke <ISSUE-KEY>   # Jira 연동 확인
-npm run dev -- worker:run                # Worker 단독 실행
-npm run dev -- once                      # 폴링 1회 실행
-npm run dev -- run                       # 폴링 데몬 실행
-npm run dev -- status                    # 현재 Job 상태 확인
+npm run dev -- jira:smoke <ISSUE-KEY>                      # Jira 연동 확인
+npm run dev -- worker:run --prompt "<지시문>" [--timeout <ms>]  # Worker 단독 실행
+npm run dev -- once                                          # 폴링 1회 실행
+npm run dev -- run                                            # 폴링 데몬 실행
+npm run dev -- status                                         # 현재 Job 상태 확인
 ```
+
+`worker:run`은 `ggjira.config.json`의 `targetRepo.path`에 새 git worktree
+(`data/worktrees/ggjira-manual-<timestamp>`)를 만들고, 그 안에서 Worker(Claude Code CLI)를
+실행한 뒤 변경 사항을 GGJIRA가 직접 커밋한다. 워크트리 정리는 아직 자동화되지 않았다(M4 예정)므로
+수동 스파이크 실행 후에는 `git worktree remove --force <path>`로 직접 정리한다.
 
 각 명령은 `PLAN.md`의 milestone 순서(M0 → M4)대로 구현된다. 아직 구현되지 않은 명령은
 "not implemented yet"을 출력한다.
