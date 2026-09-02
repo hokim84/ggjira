@@ -40,6 +40,32 @@ markup 댓글을 그대로 받는다. GGJIRA가 실제로 필요한 호출은 6�
   확인해 config에 반영해야 한다.** `JiraClient.transitionIssue`는 이름이 일치하지 않으면
   `TransitionNotFoundError`로 사용 가능한 이름 목록을 함께 던진다.
 
+## M3 스파이크로 추가 확인한 사실: JQL `status =`는 지역화된 표시 이름을 인식하지 못함
+
+`ggjira.config.json`의 `jira.jql`에 `status = "해야 할 일"`(REST API가 실제로 돌려주는
+`fields.status.name` 값 그대로)을 넣었더니 **일치하는 이슈가 있는데도 0건**이 나왔다. 같은
+이슈가 `statusCategory = "To Do"`(카테고리는 로케일 무관 고정 3종: To Do/In Progress/Done)나
+`status = "To Do"`(시스템 기본 상태의 **영문 canonical 이름**)로는 정상적으로 조회됐다.
+
+즉 이 사이트의 "해야 할 일" 상태는:
+
+- `GET /rest/api/2/issue/{key}` 같은 필드 조회 API → 지역화된 이름("해야 할 일")을 돌려준다.
+- `GET .../transitions`도 지역화된 이름을 돌려주고, `POST .../transitions`도 그 이름으로 정상
+  동작한다 (M1에서 이미 확인, 위 단락).
+- 하지만 **JQL의 `status = "..."` 절은 지역화된 이름이 아니라 시스템 기본 상태의 영문 canonical
+  이름("To Do"/"In Progress"/"Done")으로만 매칭된다.** 지역화된 이름 문자열을 그대로 넣으면
+  조용히 0건을 반환할 뿐 에러가 나지 않아 알아채기 어렵다.
+
+이는 §"transition/status 이름은 로케일에 따라 지역화" 항목과는 다른, 더 미묘한 함정이다.
+transition 이름 매칭(`transitionIssue`)은 같은 지역화된 문자열끼리 비교하므로 문제가 없지만,
+`jira.jql`에 넣는 상태 이름은 **REST API가 보여주는 이름이 아니라 Jira 워크플로우의 실제 상태
+이름(커스텀 워크플로우면 그 이름, 기본/심플 워크플로우면 영문 "To Do" 등)을 써야 한다.**
+확실하지 않으면 `statusCategory = "To Do"`처럼 카테고리로 필터링하는 편이 로케일에 안전하다.
+
+`ggjira.config.example.json`과 실제 `ggjira.config.json`은 이제 `status = "To Do"`를 쓴다.
+커스텀 워크플로우를 쓰는 프로젝트라면 Jira 프로젝트 설정의 워크플로우 화면에서 실제 상태 이름을
+확인하거나, `statusCategory` 기반 JQL로 대체해야 한다.
+
 ## Consequences
 
 - SDK 추상화 비용 없이 필요한 호출만 최소로 구현한다.
@@ -47,3 +73,6 @@ markup 댓글을 그대로 받는다. GGJIRA가 실제로 필요한 호출은 6�
 - 댓글 서식은 wiki markup 수준으로 제한된다 (충분히 MVP 요구를 만족).
 - transition/status 이름의 지역화는 설정 실수의 흔한 원인이 될 수 있으므로, `jira:smoke`를
   프로젝트 설정 전 필수 절차로 README/runbook에 명시한다.
+- `jira.jql`의 `status =` 절은 지역화된 표시 이름이 아니라 워크플로우의 실제(대개 영문) 상태
+  이름을 써야 한다. 이 함정은 에러 없이 조용히 0건을 반환하므로, config 작성 시 반드시 JQL을
+  한 번 직접(`jira:smoke`나 `once`) 실행해 후보 이슈가 실제로 잡히는지 확인해야 한다.

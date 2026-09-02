@@ -35,6 +35,12 @@ npm install
    **주의**: Jira의 상태/transition 이름은 사이트 로케일에 따라 지역화되어 있을 수 있다
    (예: "In Progress"가 아니라 "진행 중"). `inProgressTransitionName` /
    `successTransitionName`을 채우기 전에 아래 `jira:smoke`를 실행해 실제 이름을 확인한다.
+
+   **더 주의**: `jira.jql`의 `status = "..."` 절은 REST API가 보여주는 지역화된 이름이 아니라
+   워크플로우의 실제(대개 영문) 상태 이름을 써야 한다 — 틀려도 에러 없이 조용히 0건을 반환한다.
+   확실하지 않으면 `statusCategory = "To Do"`처럼 카테고리로 걸러도 된다. `jira:smoke` 또는
+   `once`를 한 번 실행해 후보 이슈가 실제로 잡히는지 반드시 확인한다.
+
    자세한 내용은 [`docs/decisions/0002-jira-rest-api-v2.md`](./docs/decisions/0002-jira-rest-api-v2.md) 참고.
 
    `.env`와 마찬가지로 실제 `ggjira.config.json`은 머신/인스턴스별 설정(대상 저장소 경로 등)이라

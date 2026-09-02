@@ -1,5 +1,6 @@
-import type { Logger } from "../logger.js";
 import type { JiraSecrets } from "../config.js";
+import type { Logger } from "../logger.js";
+import type { JiraGateway } from "./gateway.js";
 import type { JiraIssue, JiraTransition, SearchIssuesOptions } from "./types.js";
 
 export class JiraApiError extends Error {
@@ -64,7 +65,7 @@ function mapRawIssue(raw: RawJiraIssue): JiraIssue {
 
 const DEFAULT_FIELDS = ["summary", "description", "status", "labels"];
 
-export class JiraClient {
+export class JiraClient implements JiraGateway {
   private readonly baseUrl: string;
   private readonly authHeader: string;
   private readonly logger: Logger | undefined;

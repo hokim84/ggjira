@@ -1,13 +1,16 @@
 #!/usr/bin/env node
-import { mkdirSync, appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { ConfigError, loadAppConfig, loadJiraSecretsFromEnv } from "./config.js";
-import { JobStore } from "./job/store.js";
+import { type AppConfig, ConfigError, loadAppConfig, loadJiraSecretsFromEnv } from "./config.js";
 import { JiraApiError, JiraClient } from "./jira/client.js";
+import { runJobForIssue } from "./job/runner.js";
+import { JobStore } from "./job/store.js";
+import type { Logger } from "./logger.js";
 import { rootLogger } from "./logger.js";
+import { findCandidateIssues } from "./poller/poller.js";
 import { ClaudeCodeCliProvider } from "./worker/claude-code-cli.js";
-import type { WorkerRequest } from "./worker/provider.js";
 import { buildTaskSystemPrompt } from "./worker/prompt.js";
+import type { WorkerRequest } from "./worker/provider.js";
 import {
   changedFilesSince,
   commitAll,
@@ -27,8 +30,8 @@ Usage:
   ggjira <command> [options]
 
 Commands:
-  run                Start the polling daemon (not yet implemented)
-  once               Run a single poll cycle (not yet implemented)
+  run                Start the polling daemon (Ctrl+C to stop after the current cycle)
+  once               Run a single poll cycle and exit
   jira:smoke <KEY>   Verify Jira connectivity against one issue
   worker:run         Run the worker provider once, outside the Jira loop
                        --prompt <text>   (required) task instruction for the worker
@@ -45,6 +48,34 @@ Config:
 
 const KNOWN_COMMANDS = new Set(["run", "once", "jira:smoke", "worker:run", "status"]);
 
+function loadConfigOrPrintError(): AppConfig | undefined {
+  const configPath = path.resolve("ggjira.config.json");
+  try {
+    return loadAppConfig(configPath);
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      process.stderr.write(`Config error: ${error.message}\n`);
+      process.exitCode = 1;
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function createJiraClientOrPrintError(logger: Logger): JiraClient | undefined {
+  try {
+    const secrets = loadJiraSecretsFromEnv();
+    return new JiraClient(secrets, { logger });
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      process.stderr.write(`Config error: ${error.message}\n`);
+      process.exitCode = 1;
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 async function runJiraSmoke(issueKey: string | undefined): Promise<void> {
   if (!issueKey) {
     process.stderr.write("Usage: ggjira jira:smoke <ISSUE-KEY>\n");
@@ -54,18 +85,8 @@ async function runJiraSmoke(issueKey: string | undefined): Promise<void> {
 
   const logger = rootLogger.child({ layer: "jira", issueKey });
 
-  let client: JiraClient;
-  try {
-    const secrets = loadJiraSecretsFromEnv();
-    client = new JiraClient(secrets, { logger });
-  } catch (error) {
-    if (error instanceof ConfigError) {
-      process.stderr.write(`Config error: ${error.message}\n`);
-      process.exitCode = 1;
-      return;
-    }
-    throw error;
-  }
+  const client = createJiraClientOrPrintError(logger);
+  if (!client) return;
 
   try {
     process.stdout.write(`Fetching ${issueKey}...\n`);
@@ -123,18 +144,8 @@ async function runWorkerRun(args: string[]): Promise<void> {
     return;
   }
 
-  const configPath = path.resolve("ggjira.config.json");
-  let config: ReturnType<typeof loadAppConfig>;
-  try {
-    config = loadAppConfig(configPath);
-  } catch (error) {
-    if (error instanceof ConfigError) {
-      process.stderr.write(`Config error: ${error.message}\n`);
-      process.exitCode = 1;
-      return;
-    }
-    throw error;
-  }
+  const config = loadConfigOrPrintError();
+  if (!config) return;
 
   const runId = `manual-${Date.now()}`;
   const branch = `ggjira/${runId}`;
@@ -229,12 +240,122 @@ async function runStatus(): Promise<void> {
     for (const runId of runIds) {
       const job = store.loadJob(issueKey, runId);
       if (!job) continue;
-      const summarySuffix = job.summary ? `  "${job.summary}"` : "";
+      const oneLineSummary = job.summary?.replace(/\s+/g, " ").trim();
+      const truncated =
+        oneLineSummary && oneLineSummary.length > 100
+          ? `${oneLineSummary.slice(0, 100)}…`
+          : oneLineSummary;
+      const summarySuffix = truncated ? `  "${truncated}"` : "";
       process.stdout.write(
         `  - ${runId}  ${job.status}  updated ${job.updatedAt}${summarySuffix}\n`,
       );
     }
   }
+}
+
+function cancellableSleep(ms: number): { promise: Promise<void>; cancel: () => void } {
+  let timer: NodeJS.Timeout;
+  const promise = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  return { promise, cancel: () => clearTimeout(timer) };
+}
+
+async function runPollCycle(
+  config: AppConfig,
+  jira: JiraClient,
+  store: JobStore,
+  worker: ClaudeCodeCliProvider,
+  worktreesRoot: string,
+  logger: Logger,
+): Promise<void> {
+  const candidates = await findCandidateIssues(jira, config, store);
+  if (candidates.length === 0) {
+    process.stdout.write("No candidate issues.\n");
+    return;
+  }
+
+  for (const issue of candidates) {
+    process.stdout.write(`Processing ${issue.key}: ${issue.summary}\n`);
+    const job = await runJobForIssue(issue, config, { jira, store, worker, worktreesRoot, logger });
+    if (!job) {
+      process.stdout.write("  skipped (already claimed locally)\n");
+      continue;
+    }
+    process.stdout.write(`  -> ${job.status}${job.summary ? `: ${job.summary}` : ""}\n`);
+  }
+}
+
+interface PollSetup {
+  config: AppConfig;
+  jira: JiraClient;
+  store: JobStore;
+  worker: ClaudeCodeCliProvider;
+  worktreesRoot: string;
+  logger: Logger;
+}
+
+function setUpPolling(): PollSetup | undefined {
+  const config = loadConfigOrPrintError();
+  if (!config) return undefined;
+
+  const logger = rootLogger.child({ layer: "poller" });
+  const jira = createJiraClientOrPrintError(logger);
+  if (!jira) return undefined;
+
+  const store = new JobStore();
+  const worker = new ClaudeCodeCliProvider(logger);
+  const worktreesRoot = path.resolve("data/worktrees");
+  mkdirSync(worktreesRoot, { recursive: true });
+
+  return { config, jira, store, worker, worktreesRoot, logger };
+}
+
+async function runOnce(): Promise<void> {
+  const setup = setUpPolling();
+  if (!setup) return;
+  await runPollCycle(
+    setup.config,
+    setup.jira,
+    setup.store,
+    setup.worker,
+    setup.worktreesRoot,
+    setup.logger,
+  );
+}
+
+async function runDaemon(): Promise<void> {
+  const setup = setUpPolling();
+  if (!setup) return;
+  const { config, jira, store, worker, worktreesRoot, logger } = setup;
+
+  let stopping = false;
+  let resolveStopSignal: () => void = () => {};
+  const stopSignal = new Promise<void>((resolve) => {
+    resolveStopSignal = resolve;
+  });
+  const requestStop = () => {
+    if (!stopping) {
+      stopping = true;
+      process.stdout.write("\nShutting down after the current poll cycle...\n");
+      resolveStopSignal();
+    }
+  };
+  process.once("SIGINT", requestStop);
+  process.once("SIGTERM", requestStop);
+
+  process.stdout.write(`Polling every ${config.polling.intervalMs}ms. Press Ctrl+C to stop.\n`);
+  while (!stopping) {
+    await runPollCycle(config, jira, store, worker, worktreesRoot, logger);
+    if (stopping) break;
+    // Racing against stopSignal means a signal during the idle wait stops us
+    // immediately instead of waiting out the rest of the poll interval; the
+    // timer is cancelled either way so it doesn't keep the process alive.
+    const { promise: idle, cancel: cancelIdle } = cancellableSleep(config.polling.intervalMs);
+    await Promise.race([idle, stopSignal]);
+    cancelIdle();
+  }
+  process.stdout.write("Stopped.\n");
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -264,6 +385,16 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "status") {
     await runStatus();
+    return;
+  }
+
+  if (command === "once") {
+    await runOnce();
+    return;
+  }
+
+  if (command === "run") {
+    await runDaemon();
     return;
   }
 
