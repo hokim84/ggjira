@@ -144,6 +144,26 @@ Worker를 실행한 뒤 변경 사항을 GGJIRA가 직접 커밋한다(`--read-o
 - 실패했을 때 — `npm run dev -- status`로 어떤 이슈가 실패했는지 먼저 보고,
   [`docs/runbook.md`](./docs/runbook.md)의 계층별 진단 순서를 따라간다.
 
+## 구현 상태 / 알려진 제한사항
+
+이 저장소는 MVP(T1~T8) + 2차 구현(Plan Mode, Assignee Dispatch, Multi-Machine, `ggjira
+setup`)까지 코드와 자동 테스트(`npm run check`, 142개)가 완료된 상태다. 무엇이 실제
+Jira/CLI로 검증됐고 무엇이 아직 아닌지는 [`docs/phase2-completion-report.md`](./docs/phase2-completion-report.md)에
+정리되어 있다. 프로덕션에 쓰기 전 알아둘 것:
+
+- **Codex CLI Provider는 실제 `codex` 바이너리로 검증되지 않았다** — 인자 형식과 결과
+  파싱은 공개 문서 기준 추정([`docs/decisions/0010-provider-request-generalization-and-codex.md`](./docs/decisions/0010-provider-request-generalization-and-codex.md)).
+  `provider.type: "codex"`를 쓰기 전 반드시 `worker:run --schema`로 단독 확인한다.
+- **Claim은 완전한 원자적 락이 아니다** — Jira transition 실패를 항상 "경쟁 패배"로
+  해석한다([`docs/decisions/0008-assignee-dispatch-and-transition-claim.md`](./docs/decisions/0008-assignee-dispatch-and-transition-claim.md)).
+  같은 이슈에서 반복적으로 실패하면 `claimTransitionName` 설정 오류를 의심한다
+  (`docs/runbook.md` §8).
+- **Replan은 완전한 plan diff가 아니다** — 아직 시작하지 않은 하위 이슈만 superseded
+  처리한다([`docs/decisions/0009-plan-mode-as-jira-workflow.md`](./docs/decisions/0009-plan-mode-as-jira-workflow.md)).
+- **실제 다중 머신 시나리오(Scenario C)는 이 세션에서 실측하지 않았다** — 코드는 여러
+  머신에서 독립 실행되도록 작성했지만, 실제 2대 이상의 머신으로 검증하는 것은 사용자가
+  [`docs/runbook.md`](./docs/runbook.md)와 위 "Multi-Machine" 절을 따라 직접 확인해야 한다.
+
 ## 개발
 
 ```bash
