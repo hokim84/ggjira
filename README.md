@@ -46,9 +46,27 @@ npm install
 1. 역할별 Jira 계정(예: `ggjira-pm`, `ggjira-implement`) — 각 계정으로 로그인해
    API 토큰을 발급한다. 필요 권한: Browse, Transition Issues, Add Comments, Edit Issues
    (라벨), `pm` 역할이면 추가로 Create Issues, Assign Issues.
-2. (pm 역할을 쓸 경우) 워크플로우에 `Needs Decision` 상태와 `<진행 중> → Needs Decision`,
+2. **워크플로우 상태/전이 이름을 맞춘다.** `ggjira setup`이 기본값으로 제안하는 이름은
+   다음과 같다 — 보드에 아래 이름 그대로 컬럼/전이를 만들면 별도 설정 없이 바로 동작한다.
+
+   | 설정 필드 | 기본값 | 의미 |
+   |---|---|---|
+   | `workflow.readyStatus` | `To Do` | 이 상태에 있고 이 Agent 계정에 assign된 이슈만 폴링 대상이 됨 |
+   | `workflow.claimTransitionName` | `In Progress` | claim 시 `readyStatus`에서 이 전이로 이동 |
+   | `workflow.doneTransitionName` | `In Review` | 성공 시 이 전이로 이동 |
+   | `workflow.needsDecisionTransitionName`(pm) | `Needs Decision` | 결정이 필요할 때 이 전이로 이동 |
+
+   보드의 실제 상태/전이 이름이 다르면(한글 컬럼명, 다른 워크플로우 템플릿 등) 위 값을 꼭
+   맞출 필요는 없다 — `ggjira setup` 진행 중 해당 질문에서 실제 이름을 그대로 입력하면
+   된다. 나중에 값만 바꾸고 싶으면 `ggjira setup`을 다시 실행한다 — **기존
+   `ggjira.config.json`/`.env`가 있으면 그 값들이 각 질문의 기본값으로 자동 채워지므로**,
+   바꾸고 싶은 항목에서만 새 값을 입력하고 나머지는 Enter로 넘기면 그대로 유지된다(API
+   토큰도 Enter만 누르면 기존 값을 유지하며, 화면에 다시 노출되지 않는다).
+   이미 이 문제로 이슈가 하나도 안 잡힌다면(`No assigned issues ready to claim.`)
+   [`docs/runbook.md`](./docs/runbook.md) §3 "아무 이슈도 안 잡힘"을 참고한다.
+3. (pm 역할을 쓸 경우) 워크플로우에 `Needs Decision` 상태와 `<진행 중> → Needs Decision`,
    `Needs Decision → <준비 상태>` 전이를 추가한다.
-3. (pm 역할을 쓸 경우) 프로젝트에 Sub-task 이슈 타입이 활성화되어 있는지 확인한다.
+4. (pm 역할을 쓸 경우) 프로젝트에 Sub-task 이슈 타입이 활성화되어 있는지 확인한다.
 
 ## 설정: `ggjira setup`
 
@@ -62,7 +80,9 @@ npm run dev -- setup
 Jira URL → 이메일 → API 토큰(연결 자동 확인) → Agent Identity → Role(`pm`/`implement`) →
 Machine 이름 → Workspace(대상 저장소) 경로 → Provider(`claude-code`/`codex`) → Workflow
 상태/전이 이름 → (role이 `pm`이면) Needs Decision 전이명과 implement 계정 이메일 순으로
-묻는다. 이미 설정이 있다면 다시 실행해 값을 바꿀 수 있다 — 기존 파일은 `.bak`으로 남는다.
+묻는다. 이미 설정이 있다면 다시 실행해 값을 바꿀 수 있다 — 각 질문은 기존
+`ggjira.config.json`/`.env` 값을 기본값으로 보여주므로, 바꾸려는 항목만 새로 입력하고
+나머지는 Enter로 넘기면 된다. 기존 파일은 덮어쓰지 않고 `.bak`으로 남는다.
 
 설정을 바꾸지 않고 현재 상태(Jira 연결, 워크스페이스, Provider 실행 가능 여부)만 다시
 확인하려면:

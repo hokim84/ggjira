@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 // The classic callback-based readline module, not `node:readline/promises`:
@@ -42,6 +43,30 @@ async function askChoice<T extends string>(
   return (choices as readonly string[]).includes(answer) ? (answer as T) : defaultValue;
 }
 
+/**
+ * Parses the `KEY=value` lines GGJIRA's own writeEnvFile produces (not a
+ * general dotenv parser -- no quoting/escaping/multiline support needed for
+ * that). Missing file -> empty object, so callers can treat "no existing
+ * .env" the same as "no existing values to prefill from".
+ */
+function loadEnvFileVars(envPath: string): NodeJS.ProcessEnv {
+  let content: string;
+  try {
+    content = readFileSync(envPath, "utf-8");
+  } catch {
+    return {};
+  }
+  const result: NodeJS.ProcessEnv = {};
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    result[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+  }
+  return result;
+}
+
 /** Promisified `rl.question`, since this file uses the callback-based readline module. */
 function question(rl: Interface, query: string): Promise<string> {
   return new Promise((resolve) => rl.question(query, resolve));
@@ -56,14 +81,22 @@ function question(rl: Interface, query: string): Promise<string> {
  * it, so every ask() call after the secret prompt hung forever waiting for
  * input that could no longer arrive.
  */
-async function askSecretViaInterface(rl: Interface, questionText: string): Promise<string> {
+async function askSecretViaInterface(
+  rl: Interface,
+  questionText: string,
+  defaultValue?: string,
+): Promise<string> {
+  // Never show the actual secret as a visible default (unlike ask()'s `[value]`
+  // suffix) -- just note that pressing Enter keeps whatever is already saved.
+  const label = defaultValue ? `${questionText} [keep existing]` : questionText;
   const rlInternal = rl as unknown as {
     _writeToOutput?: (s: string) => void;
     output: NodeJS.WritableStream;
   };
   const original = rlInternal._writeToOutput?.bind(rl);
   if (!original || !process.stdin.isTTY) {
-    return (await question(rl, `${questionText}: `)).trim();
+    const answer = (await question(rl, `${label}: `)).trim();
+    return answer || defaultValue || "";
   }
 
   let masking = false;
@@ -82,9 +115,10 @@ async function askSecretViaInterface(rl: Interface, questionText: string): Promi
     // and passing an empty query does NOT work: readline's own redraw on
     // the first keystroke repositions the cursor and clears the line,
     // erasing a prompt it doesn't know it's supposed to redraw.
-    const pending = question(rl, `${questionText}: `);
+    const pending = question(rl, `${label}: `);
     masking = true;
-    return (await pending).trim();
+    const answer = (await pending).trim();
+    return answer || defaultValue || "";
   } finally {
     masking = false;
     rlInternal._writeToOutput = original;
@@ -167,15 +201,44 @@ export async function runSetupWizard(opts: SetupOptions): Promise<void> {
       return answer || defaultValue || "";
     };
     askSecret =
-      opts.askSecret ?? ((questionText) => askSecretViaInterface(rlInstance, questionText));
+      opts.askSecret ??
+      ((questionText, defaultValue) =>
+        askSecretViaInterface(rlInstance, questionText, defaultValue));
+  }
+
+  // Best-effort: an existing config/.env (this machine's own prior setup, or
+  // one copied from another machine) becomes the default for every prompt
+  // below, instead of always resetting to hardcoded English defaults. This
+  // is what makes "just fix workflow.readyStatus to match our board" a
+  // matter of pressing Enter through everything else. A missing or v1
+  // config/env is not an error here -- runCheck / loadAppConfig's own
+  // ConfigError is what surfaces migration problems; here we just have
+  // nothing to prefill from.
+  let existingConfig: ReturnType<typeof loadAppConfig> | undefined;
+  try {
+    existingConfig = loadAppConfig(configPath);
+  } catch {
+    existingConfig = undefined;
+  }
+  let existingSecrets: ReturnType<typeof loadJiraSecretsFromEnv> | undefined;
+  try {
+    existingSecrets = loadJiraSecretsFromEnv(loadEnvFileVars(envPath));
+  } catch {
+    existingSecrets = undefined;
   }
 
   try {
     print("Welcome to GGJIRA setup.\n");
+    if (existingConfig) {
+      print(`Found an existing setup at ${configPath} -- reusing its values as defaults.\n`);
+    }
 
-    const baseUrl = await ask("Jira URL", "https://your-domain.atlassian.net");
-    const email = await ask("Jira account email");
-    const apiToken = await askSecret("Jira API token");
+    const baseUrl = await ask(
+      "Jira URL",
+      existingConfig?.jira.baseUrl ?? "https://your-domain.atlassian.net",
+    );
+    const email = await ask("Jira account email", existingSecrets?.email);
+    const apiToken = await askSecret("Jira API token", existingSecrets?.apiToken);
 
     print("Checking Jira connection...");
     const connection = await checkJiraConnection(baseUrl, email, apiToken);
@@ -186,40 +249,61 @@ export async function runSetupWizard(opts: SetupOptions): Promise<void> {
 
     const identity = await ask(
       "Agent identity",
-      connection.self?.displayName ?? "ggjira-implement",
+      existingConfig?.agent.identity ?? connection.self?.displayName ?? "ggjira-implement",
     );
-    const role = await askChoice<AgentRole>(ask, "Role", AGENT_ROLES, "implement");
-    const machine = await ask("Machine name", os.hostname());
+    const role = await askChoice<AgentRole>(
+      ask,
+      "Role",
+      AGENT_ROLES,
+      existingConfig?.agent.role ?? "implement",
+    );
+    const machine = await ask("Machine name", existingConfig?.agent.machine ?? os.hostname());
 
-    const workspacePath = await ask("Workspace (target repo) path");
+    const workspacePath = await ask("Workspace (target repo) path", existingConfig?.workspace.path);
     const workspaceCheck = checkWorkspacePath(workspacePath);
     if (!workspaceCheck.ok) print(`  warning: ${workspaceCheck.message}`);
     else if (!(await checkIsGitRepo(workspacePath))) print("  warning: not a git repository");
-    const baseBranch = await ask("Base branch", "main");
+    const baseBranch = await ask("Base branch", existingConfig?.workspace.baseBranch ?? "main");
 
     const providerType = await askChoice(
       ask,
       "Provider",
       ["claude-code", "codex"] as const,
-      "claude-code",
+      existingConfig?.provider.type ?? "claude-code",
     );
     const providerCommand = providerType === "codex" ? "codex" : "claude";
     const providerCheck = await checkProviderCommand(providerCommand);
     if (!providerCheck.ok) {
       print(`  warning: could not run "${providerCommand} --version" (${providerCheck.message})`);
     }
-    const model = await ask("Model", "sonnet");
+    const model = await ask("Model", existingConfig?.provider.model ?? "sonnet");
 
-    const readyStatus = await ask("Ready-to-claim Jira status", "To Do");
-    const claimTransitionName = await ask("Claim transition name", "In Progress");
-    const doneTransitionName = await ask("Done transition name", "In Review");
+    // Defaults match GGJIRA's own suggested Jira workflow (README "Jira 준비"):
+    // create a board with these exact status/transition names, or override
+    // them here to match an existing board.
+    const readyStatus = await ask(
+      "Ready-to-claim Jira status",
+      existingConfig?.workflow.readyStatus ?? "To Do",
+    );
+    const claimTransitionName = await ask(
+      "Claim transition name",
+      existingConfig?.workflow.claimTransitionName ?? "In Progress",
+    );
+    const doneTransitionName = await ask(
+      "Done transition name",
+      existingConfig?.workflow.doneTransitionName ?? "In Review",
+    );
 
     let needsDecisionTransitionName: string | undefined;
     let implementAssignee: string | undefined;
     if (role === "pm") {
-      needsDecisionTransitionName = await ask("Needs-decision transition name", "Needs Decision");
+      needsDecisionTransitionName = await ask(
+        "Needs-decision transition name",
+        existingConfig?.workflow.needsDecisionTransitionName ?? "Needs Decision",
+      );
       implementAssignee = await ask(
         "Implement agent's Jira email (assignee for generated subtasks)",
+        existingConfig?.pm.implementAssignee,
       );
     }
 
