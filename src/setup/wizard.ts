@@ -1,6 +1,9 @@
-import { createInterface } from "node:readline/promises";
 import os from "node:os";
 import path from "node:path";
+// The classic callback-based readline module, not `node:readline/promises`:
+// the promises Interface doesn't expose `_writeToOutput` (needed to mask
+// secret input, see askSecretViaInterface) on this Node version.
+import { type Interface, createInterface } from "node:readline";
 import { AGENT_ROLES, type AgentRole } from "../agent/role.js";
 import {
   AppConfigSchema,
@@ -39,50 +42,46 @@ async function askChoice<T extends string>(
   return (choices as readonly string[]).includes(answer) ? (answer as T) : defaultValue;
 }
 
-/** Best-effort masked prompt for secrets; falls back to a plain prompt when stdin isn't a TTY. */
-async function promptSecret(question: string): Promise<string> {
-  if (!process.stdin.isTTY) {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      return (await rl.question(`${question}: `)).trim();
-    } finally {
-      rl.close();
-    }
+/** Promisified `rl.question`, since this file uses the callback-based readline module. */
+function question(rl: Interface, query: string): Promise<string> {
+  return new Promise((resolve) => rl.question(query, resolve));
+}
+
+/**
+ * Ask a secret via the wizard's single shared readline interface, masking the
+ * echoed input with `*` on a TTY. Deliberately reuses `rl` rather than
+ * creating a second readline.Interface (or a competing raw-mode `data`
+ * listener) on `process.stdin` -- a second consumer of the same stdin stream
+ * previously caused a real hang: its cleanup paused stdin and never resumed
+ * it, so every ask() call after the secret prompt hung forever waiting for
+ * input that could no longer arrive.
+ */
+async function askSecretViaInterface(rl: Interface, questionText: string): Promise<string> {
+  const rlInternal = rl as unknown as {
+    _writeToOutput?: (s: string) => void;
+    output: NodeJS.WritableStream;
+  };
+  const original = rlInternal._writeToOutput?.bind(rl);
+  if (!original || !process.stdin.isTTY) {
+    return (await question(rl, `${questionText}: `)).trim();
   }
 
-  return await new Promise((resolve) => {
-    process.stdout.write(`${question}: `);
-    const stdin = process.stdin;
-    stdin.resume();
-    stdin.setRawMode?.(true);
-    stdin.setEncoding("utf-8");
-    let value = "";
-    const onData = (char: string) => {
-      if (char === "\n" || char === "\r" || char === "\u0004") {
-        stdin.setRawMode?.(false);
-        stdin.pause();
-        stdin.removeListener("data", onData);
-        process.stdout.write("\n");
-        resolve(value.trim());
-        return;
-      }
-      if (char === "\u0003") {
-        stdin.setRawMode?.(false);
-        stdin.pause();
-        stdin.removeListener("data", onData);
-        process.stdout.write("\n");
-        resolve("");
-        return;
-      }
-      if (char === "\u007f") {
-        value = value.slice(0, -1);
-        return;
-      }
-      value += char;
-      process.stdout.write("*");
-    };
-    stdin.on("data", onData);
-  });
+  let masking = false;
+  rlInternal._writeToOutput = (stringToWrite: string) => {
+    if (masking) {
+      rlInternal.output.write("*");
+    } else {
+      original(stringToWrite);
+    }
+  };
+  try {
+    process.stdout.write(`${questionText}: `);
+    masking = true;
+    return (await question(rl, "")).trim();
+  } finally {
+    masking = false;
+    rlInternal._writeToOutput = original;
+  }
 }
 
 async function runCheck(
@@ -143,16 +142,26 @@ export async function runSetupWizard(opts: SetupOptions): Promise<void> {
     return;
   }
 
-  let rl: ReturnType<typeof createInterface> | undefined;
-  const ask: AskFn =
-    opts.ask ??
-    (async (question, defaultValue) => {
-      rl ??= createInterface({ input: process.stdin, output: process.stdout });
+  // A single shared readline interface for the whole wizard: see
+  // askSecretViaInterface's comment for why a second one on the same stdin
+  // is not safe to create.
+  let rl: Interface | undefined;
+  let ask: AskFn;
+  let askSecret: AskFn;
+  if (opts.ask) {
+    ask = opts.ask;
+    askSecret = opts.askSecret ?? opts.ask;
+  } else {
+    const rlInstance = createInterface({ input: process.stdin, output: process.stdout });
+    rl = rlInstance;
+    ask = async (questionText, defaultValue) => {
       const suffix = defaultValue ? ` [${defaultValue}]` : "";
-      const answer = (await rl.question(`${question}${suffix}: `)).trim();
+      const answer = (await question(rlInstance, `${questionText}${suffix}: `)).trim();
       return answer || defaultValue || "";
-    });
-  const askSecret: AskFn = opts.askSecret ?? opts.ask ?? ((question) => promptSecret(question));
+    };
+    askSecret =
+      opts.askSecret ?? ((questionText) => askSecretViaInterface(rlInstance, questionText));
+  }
 
   try {
     print("Welcome to GGJIRA setup.\n");
