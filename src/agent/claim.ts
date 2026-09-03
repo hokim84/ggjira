@@ -17,9 +17,18 @@ export class ClaimLostError extends Error {
   constructor(
     readonly issueKey: string,
     readonly actualStatus: string,
+    /**
+     * The transition rejection that triggered this, when there was one (vs.
+     * a plain re-fetch showing the status already moved). A repeated
+     * `TransitionNotFoundError` here — same issue, every attempt — means
+     * `workflow.claimTransitionName` doesn't match a real Jira transition
+     * name, not an actual claim race (runbook.md §8).
+     */
+    readonly cause?: unknown,
   ) {
     super(
       `${issueKey} could not be claimed (current status "${actualStatus}") — another agent or a human likely handled it first.`,
+      cause !== undefined ? { cause } : undefined,
     );
     this.name = "ClaimLostError";
   }
@@ -47,8 +56,8 @@ export async function claimJob(
 
   try {
     await jira.transitionIssue(issue.key, config.workflow.claimTransitionName);
-  } catch {
-    throw new ClaimLostError(issue.key, fresh.statusName);
+  } catch (error) {
+    throw new ClaimLostError(issue.key, fresh.statusName, error);
   }
 
   try {

@@ -124,10 +124,18 @@ npm run dev -- worktrees:prune --olderThanDays 3   # 임계값 직접 지정
 
 - Job 상태는 `cancelled`로 남고, `data/state.json`의 claim은 즉시 해제된다.
 - **Jira에는 아무것도 기록하지 않는다** — 이미 다른 Agent가 처리 중인 이슈에 댓글/라벨을
-  남기지 않기 위해서다. 로그에 `layer:"job"`, `"claim lost to another agent"`만 남는다.
-- 같은 이슈에 대해 이 로그가 **한 번만** 나오면 정상(경쟁 패배). **반복적으로** 같은 이슈에
-  대해 나오면 `workflow.claimTransitionName`이 실제 사용 가능한 transition과 다른(설정
-  오류) 경우일 수 있다 — `jira:smoke <KEY>`로 그 이슈의 실제 transition 목록을 확인한다.
+  남기지 않기 위해서다. 로그에 `layer:"job"`이 남는데, 원인에 따라 메시지가 다르다:
+  - `"claim transition ... is not a valid transition from this issue's current status"` —
+    Jira가 실제로 "그 이름의 transition이 없다"고 응답한 경우다. 로그의
+    `availableTransitions`에 실제 사용 가능한 이름 목록이 함께 찍힌다. **거의 항상**
+    `workflow.claimTransitionName`이 실제 워크플로우와 다른(설정 오류) 경우이지 진짜
+    경쟁이 아니다 — 이 로그가 뜨면 `jira:smoke <KEY>`를 별도로 실행할 필요 없이 바로
+    `availableTransitions` 목록에 있는 이름으로 config를 고친다(`ggjira setup` 재실행,
+    이제 기존 값이 기본값으로 채워지므로 이 필드만 새로 입력하면 된다).
+  - `"claim lost to another agent"` — 재조회 시 상태가 이미 바뀌어 있었거나, transition은
+    유효했지만 그 사이 다른 주체가 먼저 처리해 거부된 경우다. 이게 진짜 경쟁 패배다.
+- 위 어느 쪽이든 같은 이슈에 대해 **한 번만** 나오면 정상(경쟁 패배). 첫 번째 메시지가
+  **반복적으로** 나오면 설정 오류가 거의 확실하다.
 
 완전한 분산 락은 구현하지 않는다 — Jira transition 성공 여부 자체가 claim 메커니즘이다
 (`GGJira_Phase2_Implementation_Plan.md` §5.4).

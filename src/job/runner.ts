@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { JobHandler } from "../agent/handler.js";
 import { ClaimLostError, claimJob } from "../agent/claim.js";
+import type { JobHandler } from "../agent/handler.js";
 import type { ExecutionResult } from "../agent/result.js";
 import type { AppConfig } from "../config.js";
+import { TransitionNotFoundError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { Logger } from "../logger.js";
@@ -78,10 +79,23 @@ export async function runJobForIssue(
     await claimJob(deps.jira, config, issue, runId, logger);
   } catch (error) {
     if (error instanceof ClaimLostError) {
-      logger?.info(
-        { actualStatus: error.actualStatus },
-        "claim lost to another agent; releasing local claim",
-      );
+      const cause = error.cause;
+      if (cause instanceof TransitionNotFoundError) {
+        // A wrong workflow.claimTransitionName looks identical to a real claim
+        // race from the outside (both make the transition call fail) — this
+        // is the one case where we actually know which one it was, so say so
+        // instead of leaving the operator to guess and re-run jira:smoke
+        // themselves (runbook.md §8).
+        logger?.info(
+          { actualStatus: error.actualStatus, availableTransitions: cause.availableNames },
+          `claim transition "${config.workflow.claimTransitionName}" is not a valid transition from this issue's current status — check workflow.claimTransitionName against the list above (if this repeats on every attempt, it's a config error, not a claim race)`,
+        );
+      } else {
+        logger?.info(
+          { actualStatus: error.actualStatus, ...(cause ? { cause } : {}) },
+          "claim lost to another agent; releasing local claim",
+        );
+      }
       job = transitionJob(job, "cancelled");
       deps.store.saveJob(job);
       deps.store.releaseClaim(issue.key);
