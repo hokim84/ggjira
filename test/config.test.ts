@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  AppConfigSchema,
   ConfigError,
   loadAppConfig,
   loadJiraSecretsFromEnv,
@@ -53,6 +55,24 @@ describe("loadAppConfig", () => {
 
   it("points at 'ggjira setup' when the config looks like a pre-agent (v1) config", () => {
     expect(() => loadAppConfig("test/fixtures/legacy-v1-config.json")).toThrow(/ggjira setup/);
+  });
+
+  it("normalizes workflow status/transition names to NFC, so an NFD-typed value still matches Jira's own NFC value", () => {
+    // "해야 할 일" (Korean for "to do") typed or pasted through some editors/IMEs
+    // can land as NFD (decomposed jamo) instead of NFC (precomposed) -- the two
+    // render identically but are different code points, so an un-normalized
+    // config value would never string-match what Jira's REST API returns
+    // (which is NFC). This is exactly the bug a Korean-language board hit.
+    const nfd = "해야 할 일".normalize("NFD");
+    const nfc = "해야 할 일".normalize("NFC");
+    expect(nfd).not.toBe(nfc); // sanity check that the fixture actually differs at the byte level
+
+    const raw = JSON.parse(readFileSync("test/fixtures/valid-config.json", "utf-8"));
+    raw.workflow = { ...raw.workflow, readyStatus: nfd };
+    const result = AppConfigSchema.safeParse(raw);
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.workflow.readyStatus).toBe(nfc);
   });
 });
 

@@ -45,10 +45,21 @@ GGJIRA가 실패하거나 예상과 다르게 동작할 때, 어디를 보고 �
   목록에 맞춰 고친다(`ggjira setup`을 다시 실행해도 된다). 배경:
   [`decisions/0002-jira-rest-api-v2.md`](./decisions/0002-jira-rest-api-v2.md).
 - **아무 이슈도 안 잡힘**: 기본 JQL은 `assignee = currentUser() AND status =
-  "<workflow.readyStatus>"`다. `workflow.readyStatus`가 REST API가 보여주는 지역화된 이름이
-  아니라 워크플로우의 실제(대개 영문) 상태 이름과 일치하는지, 그리고 이슈가 실제로 이 Agent의
-  Jira 계정에 assign되어 있는지 확인한다. `jira:smoke <KEY>`로 인증 계정과 이슈의 assignee를
-  비교해본다. `jira.jql`을 config에 직접 지정하면 이 기본 JQL을 override할 수 있다.
+  "<workflow.readyStatus>"`다. 두 가지를 확인한다.
+  - 이슈가 실제로 이 Agent의 Jira 계정에 assign되어 있는지 — `jira:smoke <KEY>`로 인증
+    계정과 이슈의 assignee를 비교해본다.
+  - **`workflow.readyStatus`가 Jira 보드에 보이는 "컬럼 이름"이 아니라, 그 이슈의 실제
+    status 이름과 일치하는지.** Company-managed(클래식) 프로젝트의 칸반 보드는 컬럼 표시
+    이름을 실제 워크플로우 status 이름과 독립적으로 커스터마이징할 수 있어서, 보드에는
+    "To Do"라고 보여도 이슈 내부의 실제 status는 다른 이름(예: 로캘라이즈된 이름)일 수
+    있다. `jira:smoke <KEY>` 출력의 `status:` 값(REST API가 그대로 돌려주는 값)이
+    진짜 기준이다 — 보드가 아니라 이 값을 `workflow.readyStatus`에 그대로
+    복사해 넣는다(손으로 다시 입력하면 한글 등 비-라틴 문자에서 미묘한 차이가 생기기
+    쉽다).
+  - 값을 정확히 맞춘 것 같은데도 계속 안 잡히면 Unicode 정규화 문제일 수 있었지만, 지금은
+    `workflow.*`/`pm.subtaskIssueType`/`pm.taskReadyTransitionName`을 config 로딩 시점에
+    자동으로 NFC로 정규화하므로(`config.ts`) 더는 원인이 아니다.
+  - `jira.jql`을 config에 직접 지정하면 이 기본 JQL을 override할 수 있다.
 - **claim이 계속 실패함(진짜 실패, `failureStage:"jira"`)**: 재조회/transition 과정에서
   claim이 안 되는 것 자체는 정상 동작(§8)이지만, `job.json`에 `status:"failed"` +
   `failureStage:"jira"`로 남았다면 transition 자체가 아니라 다른 이유(권한, 네트워크)로

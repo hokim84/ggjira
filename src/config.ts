@@ -16,15 +16,38 @@ const AgentConfigSchema = z.object({
   machine: z.string().min(1),
 });
 
+/**
+ * Normalizes to NFC (Unicode's precomposed form). These fields are compared
+ * for exact equality against status/transition names Jira's REST API
+ * returns (agent/claim.ts, poller/poller.ts's JQL) -- Jira's own values are
+ * NFC, but text typed or pasted through some editors/IMEs (this bites
+ * non-Latin scripts especially, e.g. Korean Hangul) can end up NFD instead.
+ * NFC and NFD render identically but are different byte sequences, so an
+ * un-normalized value silently never matches even when it looks correct on
+ * screen.
+ */
+function nfc(value: string): string {
+  return value.normalize("NFC");
+}
+
 const WorkflowConfigSchema = z.object({
-  readyStatus: z.string().min(1).default("To Do"),
-  claimTransitionName: z.string().min(1).default("In Progress"),
-  doneTransitionName: z.string().min(1).default("In Review"),
+  readyStatus: z.string().min(1).default("To Do").transform(nfc),
+  claimTransitionName: z.string().min(1).default("In Progress").transform(nfc),
+  doneTransitionName: z.string().min(1).default("In Review").transform(nfc),
   failureLabel: z.string().min(1).default("ggjira-failed"),
   /** Required when agent.role is "pm". */
-  needsDecisionTransitionName: z.string().min(1).optional(),
+  needsDecisionTransitionName: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s === undefined ? s : nfc(s))),
   /** Optional transition applied to a parent issue once its plan has been applied. */
-  plannedTransitionName: z.string().min(1).nullable().default(null),
+  plannedTransitionName: z
+    .string()
+    .min(1)
+    .nullable()
+    .default(null)
+    .transform((s) => (s === null ? s : nfc(s))),
 });
 
 const WorkspaceConfigSchema = z.object({
@@ -69,8 +92,13 @@ const ProviderConfigSchema = z
 const PmConfigSchema = z.object({
   /** Jira account email or accountId assigned to executable subtasks the PM creates. */
   implementAssignee: z.string().min(1).optional(),
-  subtaskIssueType: z.string().min(1).default("Subtask"),
-  taskReadyTransitionName: z.string().min(1).nullable().default(null),
+  subtaskIssueType: z.string().min(1).default("Subtask").transform(nfc),
+  taskReadyTransitionName: z
+    .string()
+    .min(1)
+    .nullable()
+    .default(null)
+    .transform((s) => (s === null ? s : nfc(s))),
   maxTasksPerPlan: z.number().int().positive().default(20),
 });
 
