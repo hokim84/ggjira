@@ -1,10 +1,10 @@
+import type { JobHandler } from "../agent/handler.js";
 import type { AppConfig } from "../config.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { Logger } from "../logger.js";
-import { findCandidateIssues } from "../poller/poller.js";
-import { reportFailure } from "../reporter/reporter.js";
-import type { WorkerProvider } from "../worker/provider.js";
+import { findAssignedJobs } from "../poller/poller.js";
+import { reportForResult } from "../reporter/reporter.js";
 import { isTerminalStatus, type Job, transitionJob, createJob } from "./job.js";
 import { runJobForIssue } from "./runner.js";
 import type { JobStore } from "./store.js";
@@ -12,8 +12,7 @@ import type { JobStore } from "./store.js";
 export interface CycleDeps {
   jira: JiraGateway;
   store: JobStore;
-  worker: WorkerProvider;
-  worktreesRoot: string;
+  handler: JobHandler;
   logger?: Logger;
 }
 
@@ -24,7 +23,7 @@ export interface PollCycleOutcome {
 }
 
 /**
- * Runs one poll cycle: fetch candidate issues, then process each
+ * Runs one poll cycle: fetch issues assigned to this agent, then process each
  * sequentially (GGJIRA never runs more than one job at a time in the MVP).
  * A failure fetching candidates from Jira is logged and yields an empty
  * cycle rather than crashing the caller — the next cycle gets another try.
@@ -35,11 +34,11 @@ export async function runPollCycle(
 ): Promise<PollCycleOutcome[]> {
   let candidates: JiraIssue[];
   try {
-    candidates = await findCandidateIssues(deps.jira, config, deps.store);
+    candidates = await findAssignedJobs(deps.jira, config, deps.store);
   } catch (error) {
     deps.logger
       ?.child({ layer: "poller" })
-      .error({ err: error }, "failed to fetch candidate issues from Jira");
+      .error({ err: error }, "failed to fetch assigned issues from Jira");
     return [];
   }
 
@@ -91,7 +90,11 @@ export async function recoverStaleClaims(config: AppConfig, deps: CycleDeps): Pr
 
     try {
       const issue = await deps.jira.getIssue(issueKey);
-      await reportFailure(deps.jira, config, issue, recovered);
+      await reportForResult(deps.jira, config, issue, recovered, {
+        status: "failed",
+        summary: "Execution failed: GGJIRA restarted mid-run.",
+        failureReason: recovered.error ?? "unknown",
+      });
     } catch (error) {
       logger?.error({ err: error }, "failed to report recovered job outcome to Jira");
     }

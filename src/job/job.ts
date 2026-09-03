@@ -32,7 +32,7 @@ const TERMINAL_STATUSES: ReadonlySet<JobStatus> = new Set([
 ]);
 
 const ALLOWED_TRANSITIONS: Readonly<Record<JobStatus, ReadonlySet<JobStatus>>> = {
-  queued: new Set(["claimed", "failed"]),
+  queued: new Set(["claimed", "failed", "cancelled"]),
   claimed: new Set(["running", "failed"]),
   running: new Set(["succeeded", "failed", "timed_out", "cancelled"]),
   succeeded: new Set(),

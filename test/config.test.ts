@@ -1,17 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { ConfigError, loadAppConfig, loadJiraSecretsFromEnv } from "../src/config.js";
+import {
+  ConfigError,
+  loadAppConfig,
+  loadJiraSecretsFromEnv,
+  resolveJiraSecrets,
+} from "../src/config.js";
 
 describe("loadAppConfig", () => {
-  it("loads and applies defaults for a valid config file", () => {
+  it("loads and applies defaults for a valid implement config file", () => {
     const config = loadAppConfig("test/fixtures/valid-config.json");
 
-    expect(config.jira.jql).toContain("project = GGJ");
-    expect(config.targetRepo.path).toBe("/tmp/target-repo");
-    expect(config.targetRepo.baseBranch).toBe("main");
-    expect(config.worker.command).toBe("claude");
-    expect(config.worker.model).toBe("sonnet");
+    expect(config.jira.baseUrl).toBe("https://example.atlassian.net");
+    expect(config.agent).toEqual({
+      identity: "ggjira-implement",
+      role: "implement",
+      machine: "test-machine",
+    });
+    expect(config.workflow.readyStatus).toBe("To Do");
+    expect(config.workflow.claimTransitionName).toBe("In Progress");
+    expect(config.workspace.path).toBe("/tmp/target-repo");
+    expect(config.workspace.baseBranch).toBe("main");
+    expect(config.provider.type).toBe("claude-code");
+    expect(config.provider.command).toBe("claude");
+    expect(config.provider.model).toBe("sonnet");
     expect(config.polling.intervalMs).toBe(60000);
-    expect(config.concurrency.maxConcurrentJobs).toBe(1);
+  });
+
+  it("defaults provider.command to codex when provider.type is codex", () => {
+    const config = loadAppConfig("test/fixtures/valid-config.json");
+    expect(config.provider.codex.sandbox).toBe("workspace-write");
+  });
+
+  it("loads a valid pm config with its required fields", () => {
+    const config = loadAppConfig("test/fixtures/valid-config-pm.json");
+
+    expect(config.agent.role).toBe("pm");
+    expect(config.pm.implementAssignee).toBe("ggjira-implement@example.com");
+    expect(config.workflow.needsDecisionTransitionName).toBe("Needs Decision");
+  });
+
+  it("throws ConfigError when a pm config is missing implementAssignee/needsDecisionTransitionName", () => {
+    expect(() => loadAppConfig("test/fixtures/invalid-config-pm.json")).toThrow(ConfigError);
   });
 
   it("throws ConfigError immediately when required fields are missing", () => {
@@ -22,25 +51,52 @@ describe("loadAppConfig", () => {
     expect(() => loadAppConfig("test/fixtures/does-not-exist.json")).toThrow(ConfigError);
   });
 
-  it("throws ConfigError when the config file is not valid JSON", () => {
-    expect(() => loadAppConfig("test/fixtures/invalid-config.json").constructor).toBeDefined();
+  it("points at 'ggjira setup' when the config looks like a pre-agent (v1) config", () => {
+    expect(() => loadAppConfig("test/fixtures/legacy-v1-config.json")).toThrow(/ggjira setup/);
   });
 });
 
 describe("loadJiraSecretsFromEnv", () => {
   it("loads valid Jira credentials from environment variables", () => {
     const secrets = loadJiraSecretsFromEnv({
-      JIRA_BASE_URL: "https://example.atlassian.net",
       JIRA_EMAIL: "user@example.com",
       JIRA_API_TOKEN: "token-123",
     } as NodeJS.ProcessEnv);
 
-    expect(secrets.baseUrl).toBe("https://example.atlassian.net");
     expect(secrets.email).toBe("user@example.com");
     expect(secrets.apiToken).toBe("token-123");
+    expect(secrets.baseUrlOverride).toBeUndefined();
+  });
+
+  it("captures JIRA_BASE_URL as an override when present", () => {
+    const secrets = loadJiraSecretsFromEnv({
+      JIRA_EMAIL: "user@example.com",
+      JIRA_API_TOKEN: "token-123",
+      JIRA_BASE_URL: "https://override.atlassian.net",
+    } as NodeJS.ProcessEnv);
+
+    expect(secrets.baseUrlOverride).toBe("https://override.atlassian.net");
   });
 
   it("throws ConfigError when Jira credentials are missing", () => {
     expect(() => loadJiraSecretsFromEnv({} as NodeJS.ProcessEnv)).toThrow(ConfigError);
+  });
+});
+
+describe("resolveJiraSecrets", () => {
+  const config = loadAppConfig("test/fixtures/valid-config.json");
+
+  it("uses config.jira.baseUrl when there is no env override", () => {
+    const secrets = resolveJiraSecrets(config, { email: "a@b.com", apiToken: "t" });
+    expect(secrets.baseUrl).toBe(config.jira.baseUrl);
+  });
+
+  it("prefers the env override when present", () => {
+    const secrets = resolveJiraSecrets(config, {
+      email: "a@b.com",
+      apiToken: "t",
+      baseUrlOverride: "https://override.atlassian.net",
+    });
+    expect(secrets.baseUrl).toBe("https://override.atlassian.net");
   });
 });

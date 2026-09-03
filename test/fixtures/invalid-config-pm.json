@@ -1,0 +1,13 @@
+{
+  "jira": {
+    "baseUrl": "https://example.atlassian.net"
+  },
+  "agent": {
+    "identity": "ggjira-pm",
+    "role": "pm",
+    "machine": "test-machine"
+  },
+  "workspace": {
+    "path": "/tmp/target-repo"
+  }
+}

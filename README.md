@@ -1,13 +1,20 @@
 # GGJIRA
 
-Jira를 인간과 AI Agent가 공유하는 작업 인터페이스로 사용하는 경량 프로젝트 오케스트레이션 시스템이다.
-MVP는 다음 vertical slice를 완성하는 것을 목표로 한다.
+Jira를 인간과 AI Agent가 공유하는 작업 인터페이스로 사용하는 경량 프로젝트 오케스트레이션
+시스템이다. 동일한 Agent Runtime이 설정만으로 두 역할 중 하나로 동작한다.
 
 ```
-Jira Issue → Poller → Job → Worker(Claude Code CLI) → 결과 → Jira 기록
+pm          — 요구사항 이슈를 분석해 Plan을 만들고, 실행 가능한 하위 티켓을 만들어
+              implement 역할의 Jira 계정에 할당한다. 중요한 선택이 필요하면 이슈를
+              "Needs Decision"으로 넘기고 인간의 결정을 기다린다.
+implement   — 자신에게 할당된(assignee) 준비 상태 이슈를 발견해 claim하고, Claude Code
+              CLI 또는 Codex CLI로 구현한 뒤 결과를 Jira에 기록한다.
 ```
 
-자세한 배경과 설계는 [`PLAN.md`](./PLAN.md), 아키텍처는 [`docs/architecture.md`](./docs/architecture.md)를,
+PM은 Implement 프로세스를 직접 실행하지 않는다 — Jira의 Assignee/Workflow State를 통해
+작업이 전달되며, 여러 머신의 Implement Agent가 각자 독립적으로 작업을 가져간다. 설계
+배경은 [`GGJira_Phase2_Implementation_Plan.md`](./GGJira_Phase2_Implementation_Plan.md)
+(2차)와 [`PLAN.md`](./PLAN.md)(MVP)를, 실행 흐름은 [`docs/architecture.md`](./docs/architecture.md)를,
 문제 해결은 [`docs/runbook.md`](./docs/runbook.md)를 참고한다.
 
 ## 설치
@@ -16,72 +23,80 @@ Jira Issue → Poller → Job → Worker(Claude Code CLI) → 결과 → Jira �
 
 - Node 20 (`.nvmrc`에 고정)
 - git
-- [Claude Code CLI](https://claude.com/claude-code)가 설치되어 있고, `claude` 명령으로 로그인된
-  상태 — GGJIRA는 이 CLI를 subprocess로 실행해 Worker로 쓴다 (`claude --version`으로 확인)
-- Jira Cloud 사이트 접근 권한과 API 토큰 (아래 [설정](#설정) 참고)
+- 다음 중 하나 이상의 Worker CLI가 설치되어 로그인된 상태
+  - [Claude Code CLI](https://claude.com/claude-code) (`claude --version`으로 확인)
+  - [Codex CLI](https://github.com/openai/codex) (`codex --version`으로 확인) — 이 저장소에서는
+    실제 CLI로 검증되지 않았으므로(`docs/architecture.md` 참고), 먼저 `worker:run`으로
+    단독 확인을 권장한다
+- Jira Cloud 사이트 접근 권한과, 사용할 각 Agent Identity(역할)마다 API 토큰
 
 ### 저장소 받기
 
 ```bash
 git clone https://github.com/hokim84/ggjira.git
 cd ggjira
-```
-
-### 의존성 설치
-
-```bash
 nvm use        # Node 20 (.nvmrc)
 npm install
 ```
 
-## 설정
+### Jira 준비 (사이트 관리자)
 
-1. Jira 자격증명을 `.env`에 채운다.
+여러 머신/역할로 운영하려면 Jira 쪽에 다음을 미리 준비해 둔다.
 
-   ```bash
-   cp .env.example .env
-   # JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN 채우기
-   ```
+1. 역할별 Jira 계정(예: `ggjira-pm`, `ggjira-implement`) — 각 계정으로 로그인해
+   API 토큰을 발급한다. 필요 권한: Browse, Transition Issues, Add Comments, Edit Issues
+   (라벨), `pm` 역할이면 추가로 Create Issues, Assign Issues.
+2. (pm 역할을 쓸 경우) 워크플로우에 `Needs Decision` 상태와 `<진행 중> → Needs Decision`,
+   `Needs Decision → <준비 상태>` 전이를 추가한다.
+3. (pm 역할을 쓸 경우) 프로젝트에 Sub-task 이슈 타입이 활성화되어 있는지 확인한다.
 
-2. 프로젝트/트리거/대상 저장소 설정을 `ggjira.config.json`에 채운다.
+## 설정: `ggjira setup`
 
-   ```bash
-   cp ggjira.config.example.json ggjira.config.json
-   # jira.jql, targetRepo.path 등 채우기
-   ```
+머신마다 `ggjira setup`을 실행해 대화형으로 `.env`와 `ggjira.config.json`을 만든다. 설정
+파일을 직접 편집할 필요가 없다.
 
-   **주의**: Jira의 상태/transition 이름은 사이트 로케일에 따라 지역화되어 있을 수 있다
-   (예: "In Progress"가 아니라 "진행 중"). `inProgressTransitionName` /
-   `successTransitionName`을 채우기 전에 아래 `jira:smoke`를 실행해 실제 이름을 확인한다.
+```bash
+npm run dev -- setup
+```
 
-   **더 주의**: `jira.jql`의 `status = "..."` 절은 REST API가 보여주는 지역화된 이름이 아니라
-   워크플로우의 실제(대개 영문) 상태 이름을 써야 한다 — 틀려도 에러 없이 조용히 0건을 반환한다.
-   확실하지 않으면 `statusCategory = "To Do"`처럼 카테고리로 걸러도 된다. `jira:smoke` 또는
-   `once`를 한 번 실행해 후보 이슈가 실제로 잡히는지 반드시 확인한다.
+Jira URL → 이메일 → API 토큰(연결 자동 확인) → Agent Identity → Role(`pm`/`implement`) →
+Machine 이름 → Workspace(대상 저장소) 경로 → Provider(`claude-code`/`codex`) → Workflow
+상태/전이 이름 → (role이 `pm`이면) Needs Decision 전이명과 implement 계정 이메일 순으로
+묻는다. 이미 설정이 있다면 다시 실행해 값을 바꿀 수 있다 — 기존 파일은 `.bak`으로 남는다.
 
-   자세한 내용은 [`docs/decisions/0002-jira-rest-api-v2.md`](./docs/decisions/0002-jira-rest-api-v2.md) 참고.
+설정을 바꾸지 않고 현재 상태(Jira 연결, 워크스페이스, Provider 실행 가능 여부)만 다시
+확인하려면:
 
-   `.env`와 마찬가지로 실제 `ggjira.config.json`은 머신/인스턴스별 설정(대상 저장소 경로 등)이라
-   `.gitignore`에 포함되어 커밋되지 않는다.
+```bash
+npm run dev -- setup --check
+```
+
+`.env`는 비밀(`JIRA_EMAIL`, `JIRA_API_TOKEN`)만 담고 0600 권한으로 생성된다.
+`ggjira.config.json`은 나머지 설정을 담으며, 둘 다 `.gitignore`에 포함되어 커밋되지 않는다.
 
 ## 처음 실행할 때: 3단계 검증 순서
 
-설정을 끝냈다면 순서대로 실행해서 각 단계를 확인한다. 한 번에 `run`부터 돌리지 않는다 —
+`setup`을 끝냈다면 순서대로 실행해서 각 단계를 확인한다. 한 번에 `run`부터 돌리지 않는다 —
 아래 순서대로 하면 문제가 생겨도 어느 단계인지 바로 알 수 있다.
 
 ```bash
-# 1. Jira 연동 확인 (이슈 조회 → 테스트 댓글 → transition 목록 출력)
+# 1. Jira 연동 확인 (인증 계정 → 이슈 조회 → 테스트 댓글 → transition 목록 출력)
 npm run dev -- jira:smoke <ISSUE-KEY>
 
-# 2. Worker(Claude Code CLI) 단독 실행 확인 — 이 저장소가 target repo라면
-#    npm run dev로 실행해도 되고, 실제 대상 repo를 향하게 하려면 dist를 빌드해 실행한다.
+# 2. Worker(Claude Code CLI 또는 Codex CLI) 단독 실행 확인
 npm run dev -- worker:run --prompt "README.md 맨 끝에 한 줄만 추가해줘"
 
-# 3. Jira 이슈에 ggjira.config.json의 jira.jql에 맞는 라벨/상태를 걸어둔 뒤, 폴링 1회 실행
+# 3. Jira에서 이 Agent의 계정에 이슈를 assign(준비 상태로)한 뒤, 폴링 1회 실행
 npm run dev -- once
 ```
 
-`once`가 기대한 대로 동작하면(이슈 상태 전이 + 댓글 + 로컬 브랜치 커밋) 데몬으로 넘어간다.
+`once`가 기대한 대로 동작하면(claim 전이 + 시작 댓글 + 실행 결과 댓글 + 완료 전이) 데몬으로
+넘어간다. `pm` 역할이면 `once` 대신 특정 이슈만 시험해볼 수 있다.
+
+```bash
+npm run dev -- pm:plan <ISSUE-KEY> --dry-run   # Jira에 아무것도 쓰지 않고 Plan만 출력
+npm run dev -- pm:plan <ISSUE-KEY>             # 실제로 하위 티켓 생성 또는 Needs Decision 전이
+```
 
 ## 평소 실행
 
@@ -101,17 +116,26 @@ daemon(`run`)은 시작할 때마다 `data/state.json`에 남은 claim을 먼저
 비정상 종료(kill, 크래시)로 이슈를 "진행 중"으로 남겨뒀다면, 다시 실행하지 않고 실패로 정리한 뒤
 Jira에 알리고 넘어간다 — 자세한 동작은 [`docs/runbook.md`](./docs/runbook.md) §5 참고.
 
+## Multi-Machine
+
+같은 저장소를 여러 머신에 clone하고 각각 `ggjira setup`을 실행하면 된다. 머신 간 직접
+통신은 없다 — 각 Agent는 Jira의 Assignee + Workflow State만 보고 독립적으로 작업을
+발견한다. 예를 들어 머신 A는 `role: pm`, 머신 B/C는 `role: implement`(같은 Jira 계정도
+가능)로 설정해 PM이 만든 하위 티켓을 여러 Implement Agent가 나눠 처리하게 할 수 있다.
+동시에 같은 이슈를 발견했을 때의 동작은 [`docs/runbook.md`](./docs/runbook.md) §8 참고.
+
 ## 그 밖의 명령
 
 ```bash
 npm run dev -- status                                          # 현재 claim과 최근 실행 목록
 npm run dev -- worktrees:prune [--olderThanDays N]              # 오래된 워크트리 정리 (기본 7일, 브랜치는 안 지움)
-npm run dev -- worker:run --prompt "<지시문>" [--timeout <ms>]    # Worker만 단독 실행 (Jira 이슈 없이)
+npm run dev -- worker:run --prompt "<지시문>" [--timeout <ms>] [--schema <path>] [--read-only]
+                                                                 # Worker만 단독 실행 (Jira 이슈 없이)
 ```
 
-`worker:run`은 `ggjira.config.json`의 `targetRepo.path`에 새 git worktree
-(`data/worktrees/ggjira-manual-<timestamp>`)를 만들고, 그 안에서 Worker를 실행한 뒤 변경
-사항을 GGJIRA가 직접 커밋한다. `once`/`run`이 이슈별로 만드는 워크트리도 동일한 방식이다.
+`worker:run`은 `ggjira.config.json`의 `workspace.path`에 새 git worktree를 만들고, 그 안에서
+Worker를 실행한 뒤 변경 사항을 GGJIRA가 직접 커밋한다(`--read-only`면 커밋하지 않는다).
+`once`/`run`이 이슈별로 만드는 워크트리도 동일한 방식이다.
 
 ## 무엇을 확인하면 되는가
 

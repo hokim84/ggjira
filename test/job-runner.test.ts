@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AppConfig } from "../src/config.js";
+import { createImplementHandler } from "../src/implement/executor.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
-import type { JiraIssue } from "../src/jira/types.js";
-import { JobStore } from "../src/job/store.js";
 import { runJobForIssue } from "../src/job/runner.js";
+import { JobStore } from "../src/job/store.js";
 import { fakeFailureResult, fakeSuccessResult, fakeTimeoutResult } from "../src/worker/fake.js";
 import type {
   WorkerProvider,
@@ -15,6 +15,7 @@ import type {
   WorkerResult,
   WorkerRunHooks,
 } from "../src/worker/provider.js";
+import { buildTestConfig, buildTestIssue } from "./helpers/fixtures.js";
 
 function git(cwd: string, args: string[]): void {
   execFileSync("git", args, { cwd, stdio: "ignore" });
@@ -30,39 +31,7 @@ function initTargetRepo(dir: string): void {
   git(dir, ["commit", "-q", "-m", "initial commit"]);
 }
 
-function baseConfig(targetRepoPath: string): AppConfig {
-  return {
-    jira: {
-      jql: 'project = KAN AND labels = "ggjira"',
-      inProgressTransitionName: "In Progress",
-      successTransitionName: "In Review",
-      failureLabel: "ggjira-failed",
-    },
-    polling: { intervalMs: 60000 },
-    targetRepo: { path: targetRepoPath, baseBranch: "main" },
-    worker: {
-      command: "unused-in-these-tests",
-      model: "sonnet",
-      effort: "high",
-      timeoutMs: 60000,
-      permissionMode: "acceptEdits",
-      allowedTools: [],
-    },
-    concurrency: { maxConcurrentJobs: 1 },
-  };
-}
-
-function sampleIssue(overrides: Partial<JiraIssue> = {}): JiraIssue {
-  return {
-    key: "KAN-1",
-    id: "10000",
-    summary: "Do the thing",
-    description: "Please do the thing.",
-    statusName: "To Do",
-    labels: ["ggjira"],
-    ...overrides,
-  };
-}
+const SELF = { accountId: "self-id", displayName: "GGJIRA Test Agent", emailAddress: null };
 
 class WritesFileWorkerProvider implements WorkerProvider {
   async run(request: WorkerRequest, _hooks?: WorkerRunHooks): Promise<WorkerResult> {
@@ -101,15 +70,22 @@ describe("runJobForIssue", () => {
     initTargetRepo(targetRepoPath);
     store = new JobStore(dataDir);
     jira = new FakeJiraGateway();
-    config = baseConfig(targetRepoPath);
+    jira.setSelf(SELF);
+    config = buildTestConfig({
+      workspace: { path: targetRepoPath, baseBranch: "main", validateCommand: null },
+    });
   });
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  function handlerFor(provider: WorkerProvider) {
+    return createImplementHandler({ config, provider, store, worktreesRoot });
+  }
+
   it("runs the success path: claims in Jira, commits the change, reports success", async () => {
-    const issue = sampleIssue();
+    const issue = buildTestIssue({ key: "KAN-1", assigneeAccountId: SELF.accountId });
     jira.seedIssue(issue, [
       { id: "21", name: "In Progress", toStatusName: "In Progress" },
       { id: "31", name: "In Review", toStatusName: "In Review" },
@@ -118,8 +94,7 @@ describe("runJobForIssue", () => {
     const job = await runJobForIssue(issue, config, {
       jira,
       store,
-      worker: new WritesFileWorkerProvider(),
-      worktreesRoot,
+      handler: handlerFor(new WritesFileWorkerProvider()),
     });
 
     if (!job) throw new Error("expected job to be defined");
@@ -150,14 +125,13 @@ describe("runJobForIssue", () => {
   });
 
   it("reports failure and labels the issue when the worker exits non-zero", async () => {
-    const issue = sampleIssue({ key: "KAN-2" });
+    const issue = buildTestIssue({ key: "KAN-2", assigneeAccountId: SELF.accountId });
     jira.seedIssue(issue, [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);
 
     const job = await runJobForIssue(issue, config, {
       jira,
       store,
-      worker: new StaticWorkerProvider(fakeFailureResult({ summary: "boom" })),
-      worktreesRoot,
+      handler: handlerFor(new StaticWorkerProvider(fakeFailureResult({ summary: "boom" }))),
     });
 
     expect(job?.status).toBe("failed");
@@ -170,14 +144,13 @@ describe("runJobForIssue", () => {
   });
 
   it("marks the job timed_out when the worker times out", async () => {
-    const issue = sampleIssue({ key: "KAN-3" });
+    const issue = buildTestIssue({ key: "KAN-3", assigneeAccountId: SELF.accountId });
     jira.seedIssue(issue, [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);
 
     const job = await runJobForIssue(issue, config, {
       jira,
       store,
-      worker: new StaticWorkerProvider(fakeTimeoutResult()),
-      worktreesRoot,
+      handler: handlerFor(new StaticWorkerProvider(fakeTimeoutResult())),
     });
 
     expect(job?.status).toBe("timed_out");
@@ -185,19 +158,18 @@ describe("runJobForIssue", () => {
   });
 
   it("keeps the job succeeded but flags reportingFailed when the success comment fails", async () => {
-    const issue = sampleIssue({ key: "KAN-9" });
+    const issue = buildTestIssue({ key: "KAN-9", assigneeAccountId: SELF.accountId });
     jira.seedIssue(issue, [
       { id: "21", name: "In Progress", toStatusName: "In Progress" },
       { id: "31", name: "In Review", toStatusName: "In Review" },
     ]);
     // let the claim/start comment through, but fail the success comment that follows
-    jira.failNextComment(issue.key, (body) => body.includes("완료되었습니다"));
+    jira.failNextComment(issue.key, (body) => body.includes("Implementation completed."));
 
     const job = await runJobForIssue(issue, config, {
       jira,
       store,
-      worker: new WritesFileWorkerProvider(),
-      worktreesRoot,
+      handler: handlerFor(new WritesFileWorkerProvider()),
     });
 
     if (!job) throw new Error("expected job to be defined");
@@ -211,35 +183,51 @@ describe("runJobForIssue", () => {
     expect(store.loadJob(issue.key, job.runId)?.reportingFailed).toBe(true);
   });
 
-  it("fails the job and never invokes the worker when Jira rejects the claim transition", async () => {
-    const issue = sampleIssue({ key: "KAN-4" });
+  it("cancels (not fails) the job when Jira rejects the claim transition — another agent got there first", async () => {
+    const issue = buildTestIssue({ key: "KAN-4", assigneeAccountId: SELF.accountId });
     jira.seedIssue(issue, [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);
     jira.failNextTransition(issue.key);
 
     const job = await runJobForIssue(issue, config, {
       jira,
       store,
-      worker: new NeverCalledWorkerProvider(),
-      worktreesRoot,
+      handler: handlerFor(new NeverCalledWorkerProvider()),
     });
 
-    expect(job?.status).toBe("failed");
-    expect(job?.failureStage).toBe("jira");
+    expect(job?.status).toBe("cancelled");
     expect(store.getClaim(issue.key)).toBeUndefined();
-    // no success/failure comment was attempted since we never got past claiming
+    // no comment/label was attempted since a claim loss is not reported to Jira
     expect(jira.comments).toHaveLength(0);
+    expect(jira.labelChanges).toHaveLength(0);
+  });
+
+  it("cancels the job without attempting a transition when the issue already moved off the ready status", async () => {
+    const issue = buildTestIssue({
+      key: "KAN-6",
+      assigneeAccountId: SELF.accountId,
+      statusName: "In Progress",
+    });
+    jira.seedIssue(issue, [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);
+
+    const job = await runJobForIssue(issue, config, {
+      jira,
+      store,
+      handler: handlerFor(new NeverCalledWorkerProvider()),
+    });
+
+    expect(job?.status).toBe("cancelled");
+    expect(jira.transitions).toHaveLength(0);
   });
 
   it("skips the issue without touching Jira when it is already claimed locally", async () => {
-    const issue = sampleIssue({ key: "KAN-5" });
+    const issue = buildTestIssue({ key: "KAN-5", assigneeAccountId: SELF.accountId });
     jira.seedIssue(issue, [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);
     store.claimIssue(issue.key, "some-other-run");
 
     const job = await runJobForIssue(issue, config, {
       jira,
       store,
-      worker: new NeverCalledWorkerProvider(),
-      worktreesRoot,
+      handler: handlerFor(new NeverCalledWorkerProvider()),
     });
 
     expect(job).toBeUndefined();

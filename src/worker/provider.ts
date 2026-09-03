@@ -1,17 +1,15 @@
-export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
-
 export interface WorkerRequest {
   /** The task instruction passed to the CLI as its prompt. */
   prompt: string;
   /** Working directory the CLI should run in (a git worktree). */
   cwd: string;
   timeoutMs: number;
-  command: string;
-  model: string;
-  effort: WorkerEffort;
-  permissionMode: string;
-  allowedTools: string[];
-  appendSystemPrompt?: string;
+  /** Role-specific instructions layered on top of the CLI's default system prompt. */
+  systemPrompt?: string;
+  /** When set, the provider asks the CLI for a final answer matching this JSON Schema. */
+  outputSchema?: unknown;
+  /** Restricts the run to non-mutating tools (used by planning/analysis roles). */
+  readOnly?: boolean;
 }
 
 export type WorkerExitReason = "completed" | "timeout" | "crashed" | "nonzero";
@@ -25,6 +23,8 @@ export interface WorkerResult {
   sessionId?: string;
   totalCostUsd?: number;
   numTurns?: number;
+  /** Parsed from the CLI's final answer when `WorkerRequest.outputSchema` was set. */
+  structuredOutput?: unknown;
 }
 
 export interface WorkerRunHooks {

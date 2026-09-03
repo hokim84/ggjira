@@ -2,7 +2,14 @@ import type { JiraSecrets } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { JiraGateway } from "./gateway.js";
 import { withRetry } from "./retry.js";
-import type { JiraIssue, JiraTransition, SearchIssuesOptions } from "./types.js";
+import type {
+  CreateIssueInput,
+  JiraComment,
+  JiraIssue,
+  JiraTransition,
+  JiraUser,
+  SearchIssuesOptions,
+} from "./types.js";
 
 export class JiraApiError extends Error {
   constructor(
@@ -51,6 +58,10 @@ interface RawJiraFields {
   description?: string | null;
   status?: { name?: string };
   labels?: string[];
+  assignee?: { accountId?: string } | null;
+  issuetype?: { name?: string };
+  parent?: { key?: string };
+  project?: { key?: string };
 }
 
 interface RawJiraIssue {
@@ -69,6 +80,27 @@ interface RawTransitionsResponse {
   transitions: Array<{ id: string; name: string; to?: { name?: string } }>;
 }
 
+interface RawUser {
+  accountId: string;
+  displayName?: string;
+  emailAddress?: string;
+}
+
+interface RawComment {
+  id: string;
+  author?: { accountId?: string; displayName?: string };
+  body?: string;
+  created: string;
+}
+
+interface RawCommentsResponse {
+  comments: RawComment[];
+}
+
+interface RawCreateIssueResponse {
+  key: string;
+}
+
 function mapRawIssue(raw: RawJiraIssue): JiraIssue {
   return {
     key: raw.key,
@@ -77,10 +109,41 @@ function mapRawIssue(raw: RawJiraIssue): JiraIssue {
     description: raw.fields.description ?? null,
     statusName: raw.fields.status?.name ?? "",
     labels: raw.fields.labels ?? [],
+    assigneeAccountId: raw.fields.assignee?.accountId ?? null,
+    issueTypeName: raw.fields.issuetype?.name ?? null,
+    parentKey: raw.fields.parent?.key ?? null,
+    projectKey: raw.fields.project?.key ?? null,
   };
 }
 
-const DEFAULT_FIELDS = ["summary", "description", "status", "labels"];
+function mapRawUser(raw: RawUser): JiraUser {
+  return {
+    accountId: raw.accountId,
+    displayName: raw.displayName ?? "",
+    emailAddress: raw.emailAddress ?? null,
+  };
+}
+
+function mapRawComment(raw: RawComment): JiraComment {
+  return {
+    id: raw.id,
+    authorAccountId: raw.author?.accountId ?? null,
+    authorDisplayName: raw.author?.displayName ?? null,
+    body: raw.body ?? "",
+    created: raw.created,
+  };
+}
+
+const DEFAULT_FIELDS = [
+  "summary",
+  "description",
+  "status",
+  "labels",
+  "assignee",
+  "issuetype",
+  "parent",
+  "project",
+];
 
 /** Transient failures worth retrying: 429 (rate limited), 5xx, and network-level errors. */
 function isTransientJiraError(error: unknown): boolean {
@@ -177,6 +240,18 @@ export class JiraClient implements JiraGateway {
     });
   }
 
+  async getComments(key: string): Promise<JiraComment[]> {
+    const response = await withRetry(
+      () =>
+        this.request<RawCommentsResponse>(
+          "GET",
+          `/rest/api/2/issue/${encodeURIComponent(key)}/comment`,
+        ),
+      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+    );
+    return response.comments.map(mapRawComment);
+  }
+
   async getTransitions(key: string): Promise<JiraTransition[]> {
     const response = await withRetry(
       () =>
@@ -219,6 +294,46 @@ export class JiraClient implements JiraGateway {
   async removeLabel(key: string, label: string): Promise<void> {
     await this.request<unknown>("PUT", `/rest/api/2/issue/${encodeURIComponent(key)}`, {
       update: { labels: [{ remove: label }] },
+    });
+  }
+
+  async getMyself(): Promise<JiraUser> {
+    const raw = await withRetry(() => this.request<RawUser>("GET", "/rest/api/2/myself"), {
+      isRetryable: isTransientJiraError,
+      getDelayMs: jiraRetryDelayMs,
+    });
+    return mapRawUser(raw);
+  }
+
+  async searchUsers(query: string): Promise<JiraUser[]> {
+    const raw = await withRetry(
+      () =>
+        this.request<RawUser[]>(
+          "GET",
+          `/rest/api/2/user/search?query=${encodeURIComponent(query)}`,
+        ),
+      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+    );
+    return raw.map(mapRawUser);
+  }
+
+  async createIssue(input: CreateIssueInput): Promise<{ key: string }> {
+    const fields: Record<string, unknown> = {
+      project: { key: input.projectKey },
+      issuetype: { name: input.issueTypeName },
+      summary: input.summary,
+    };
+    if (input.description !== undefined) fields.description = input.description;
+    if (input.parentKey) fields.parent = { key: input.parentKey };
+    if (input.assigneeAccountId) fields.assignee = { accountId: input.assigneeAccountId };
+
+    const raw = await this.request<RawCreateIssueResponse>("POST", "/rest/api/2/issue", { fields });
+    return { key: raw.key };
+  }
+
+  async assignIssue(key: string, accountId: string | null): Promise<void> {
+    await this.request<unknown>("PUT", `/rest/api/2/issue/${encodeURIComponent(key)}/assignee`, {
+      accountId,
     });
   }
 }

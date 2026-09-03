@@ -13,11 +13,6 @@ function baseRequest(overrides: Partial<WorkerRequest> = {}): WorkerRequest {
     prompt: "do the thing",
     cwd: process.cwd(),
     timeoutMs: 5000,
-    command: path.join(FIXTURES_DIR, "succeeds.sh"),
-    model: "sonnet",
-    effort: "high",
-    permissionMode: "acceptEdits",
-    allowedTools: [],
     ...overrides,
   };
 }
@@ -41,7 +36,9 @@ describe("ClaudeCodeCliProvider", () => {
   });
 
   it("parses stream-json lines and extracts the final result on success", async () => {
-    const provider = new ClaudeCodeCliProvider();
+    const provider = new ClaudeCodeCliProvider(undefined, {
+      command: path.join(FIXTURES_DIR, "succeeds.sh"),
+    });
     const events: string[] = [];
 
     const result = await provider.run(baseRequest(), { onEvent: (line) => events.push(line) });
@@ -59,11 +56,11 @@ describe("ClaudeCodeCliProvider", () => {
   });
 
   it("maps a non-zero exit with a result event to exitReason 'nonzero'", async () => {
-    const provider = new ClaudeCodeCliProvider();
+    const provider = new ClaudeCodeCliProvider(undefined, {
+      command: path.join(FIXTURES_DIR, "fails.sh"),
+    });
 
-    const result = await provider.run(
-      baseRequest({ command: path.join(FIXTURES_DIR, "fails.sh") }),
-    );
+    const result = await provider.run(baseRequest());
 
     expect(result.exitReason).toBe("nonzero");
     expect(result.isError).toBe(true);
@@ -72,15 +69,12 @@ describe("ClaudeCodeCliProvider", () => {
   });
 
   it("preserves unparsable stdout lines via onEvent without crashing", async () => {
-    const provider = new ClaudeCodeCliProvider();
+    const provider = new ClaudeCodeCliProvider(undefined, {
+      command: path.join(FIXTURES_DIR, "crashes.sh"),
+    });
     const events: string[] = [];
 
-    const result = await provider.run(
-      baseRequest({ command: path.join(FIXTURES_DIR, "crashes.sh") }),
-      {
-        onEvent: (line) => events.push(line),
-      },
-    );
+    const result = await provider.run(baseRequest(), { onEvent: (line) => events.push(line) });
 
     expect(events).toEqual(["not json, this line should be preserved raw but fail to parse"]);
     expect(result.exitReason).toBe("nonzero");
@@ -89,11 +83,11 @@ describe("ClaudeCodeCliProvider", () => {
   });
 
   it("reports 'crashed' when the command cannot be spawned at all", async () => {
-    const provider = new ClaudeCodeCliProvider();
+    const provider = new ClaudeCodeCliProvider(undefined, {
+      command: "/nonexistent/path/to/binary-xyz-ggjira",
+    });
 
-    const result = await provider.run(
-      baseRequest({ command: "/nonexistent/path/to/binary-xyz-ggjira" }),
-    );
+    const result = await provider.run(baseRequest());
 
     expect(result.exitReason).toBe("crashed");
     expect(result.isError).toBe(true);
@@ -107,13 +101,11 @@ describe("ClaudeCodeCliProvider", () => {
     const previousPidFile = process.env.PID_FILE;
     process.env.PID_FILE = pidFile;
 
-    const provider = new ClaudeCodeCliProvider(undefined, 500);
-    const result = await provider.run(
-      baseRequest({
-        command: path.join(FIXTURES_DIR, "hangs-ignoring-sigterm.sh"),
-        timeoutMs: 800,
-      }),
-    );
+    const provider = new ClaudeCodeCliProvider(undefined, {
+      command: path.join(FIXTURES_DIR, "hangs-ignoring-sigterm.sh"),
+      killGraceMs: 500,
+    });
+    const result = await provider.run(baseRequest({ timeoutMs: 800 }));
 
     process.env.PID_FILE = previousPidFile;
 

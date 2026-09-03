@@ -92,6 +92,10 @@ describe("JiraClient", () => {
         description: null,
         statusName: "To Do",
         labels: ["ggjira"],
+        assigneeAccountId: null,
+        issueTypeName: null,
+        parentKey: null,
+        projectKey: null,
       },
     ]);
   });
@@ -171,6 +175,111 @@ describe("JiraClient", () => {
     const client = new JiraClient(secrets);
 
     await expect(client.transitionIssue("KAN-1", "Done")).rejects.toThrow(TransitionNotFoundError);
+  });
+
+  it("getMyself fetches and maps the authenticated user", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        accountId: "acc-1",
+        displayName: "GGJIRA Implement",
+        emailAddress: "a@b.com",
+      }),
+    );
+    const client = new JiraClient(secrets);
+
+    const self = await client.getMyself();
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://example.atlassian.net/rest/api/2/myself");
+    expect(self).toEqual({
+      accountId: "acc-1",
+      displayName: "GGJIRA Implement",
+      emailAddress: "a@b.com",
+    });
+  });
+
+  it("searchUsers queries by string and maps results", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, [{ accountId: "acc-2", displayName: "Someone", emailAddress: "s@b.com" }]),
+    );
+    const client = new JiraClient(secrets);
+
+    const users = await client.searchUsers("someone@b.com");
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://example.atlassian.net/rest/api/2/user/search?query=someone%40b.com");
+    expect(users).toEqual([
+      { accountId: "acc-2", displayName: "Someone", emailAddress: "s@b.com" },
+    ]);
+  });
+
+  it("getComments fetches and maps a comment list", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        comments: [
+          {
+            id: "1",
+            author: { accountId: "acc-1", displayName: "A" },
+            body: "hi",
+            created: "2026-01-01T00:00:00Z",
+          },
+        ],
+      }),
+    );
+    const client = new JiraClient(secrets);
+
+    const comments = await client.getComments("KAN-1");
+
+    expect(comments).toEqual([
+      {
+        id: "1",
+        authorAccountId: "acc-1",
+        authorDisplayName: "A",
+        body: "hi",
+        created: "2026-01-01T00:00:00Z",
+      },
+    ]);
+  });
+
+  it("createIssue posts project/issuetype/summary and returns the new key", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { key: "KAN-2" }));
+    const client = new JiraClient(secrets);
+
+    const result = await client.createIssue({
+      projectKey: "KAN",
+      issueTypeName: "Subtask",
+      summary: "Do part of the thing",
+      description: "details",
+      parentKey: "KAN-1",
+      assigneeAccountId: "acc-2",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://example.atlassian.net/rest/api/2/issue");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      fields: {
+        project: { key: "KAN" },
+        issuetype: { name: "Subtask" },
+        summary: "Do part of the thing",
+        description: "details",
+        parent: { key: "KAN-1" },
+        assignee: { accountId: "acc-2" },
+      },
+    });
+    expect(result).toEqual({ key: "KAN-2" });
+  });
+
+  it("assignIssue PUTs the accountId, including null to unassign", async () => {
+    fetchMock.mockResolvedValueOnce(emptyResponse(204));
+    const client = new JiraClient(secrets);
+
+    await client.assignIssue("KAN-1", null);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://example.atlassian.net/rest/api/2/issue/KAN-1/assignee");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ accountId: null });
   });
 
   it("addLabel and removeLabel PUT the labels update op", async () => {

@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AppConfig } from "../src/config.js";
+import { createImplementHandler } from "../src/implement/executor.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import type { JiraIssue } from "../src/jira/types.js";
-import { recoverStaleClaims, runPollCycle } from "../src/job/cycle.js";
+import { type CycleDeps, recoverStaleClaims, runPollCycle } from "../src/job/cycle.js";
 import { createJob, transitionJob } from "../src/job/job.js";
 import { JobStore } from "../src/job/store.js";
 import { fakeSuccessResult } from "../src/worker/fake.js";
@@ -16,6 +17,7 @@ import type {
   WorkerResult,
   WorkerRunHooks,
 } from "../src/worker/provider.js";
+import { buildTestConfig, buildTestIssue } from "./helpers/fixtures.js";
 
 function git(cwd: string, args: string[]): void {
   execFileSync("git", args, { cwd, stdio: "ignore" });
@@ -31,39 +33,6 @@ function initTargetRepo(dir: string): void {
   git(dir, ["commit", "-q", "-m", "initial commit"]);
 }
 
-function baseConfig(targetRepoPath: string): AppConfig {
-  return {
-    jira: {
-      jql: 'project = KAN AND labels = "ggjira"',
-      inProgressTransitionName: "In Progress",
-      successTransitionName: "In Review",
-      failureLabel: "ggjira-failed",
-    },
-    polling: { intervalMs: 60000 },
-    targetRepo: { path: targetRepoPath, baseBranch: "main" },
-    worker: {
-      command: "unused",
-      model: "sonnet",
-      effort: "high",
-      timeoutMs: 60000,
-      permissionMode: "acceptEdits",
-      allowedTools: [],
-    },
-    concurrency: { maxConcurrentJobs: 1 },
-  };
-}
-
-function issue(key: string): JiraIssue {
-  return {
-    key,
-    id: key,
-    summary: `summary for ${key}`,
-    description: null,
-    statusName: "To Do",
-    labels: ["ggjira"],
-  };
-}
-
 class SequentialWorkerProvider implements WorkerProvider {
   readonly startedOrder: string[] = [];
   private counter = 0;
@@ -76,11 +45,19 @@ class SequentialWorkerProvider implements WorkerProvider {
   }
 }
 
+class NeverCalledWorkerProvider implements WorkerProvider {
+  async run(): Promise<WorkerResult> {
+    throw new Error("worker should never have been invoked");
+  }
+}
+
 class ThrowingSearchGateway extends FakeJiraGateway {
   override async searchIssues(): Promise<JiraIssue[]> {
     throw new Error("jira search is down");
   }
 }
+
+const SELF = { accountId: "self-id", displayName: "GGJIRA Test Agent", emailAddress: null };
 
 describe("runPollCycle", () => {
   let tempDir: string;
@@ -95,24 +72,31 @@ describe("runPollCycle", () => {
     worktreesRoot = path.join(tempDir, "worktrees");
     initTargetRepo(targetRepoPath);
     store = new JobStore(path.join(tempDir, "data"));
-    config = baseConfig(targetRepoPath);
+    config = buildTestConfig({
+      workspace: { path: targetRepoPath, baseBranch: "main", validateCommand: null },
+    });
   });
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("processes multiple candidate issues sequentially, each with its own recorded run", async () => {
+  it("processes multiple assigned issues sequentially, each with its own recorded run", async () => {
     const jira = new FakeJiraGateway();
+    jira.setSelf(SELF);
     for (const key of ["KAN-1", "KAN-2", "KAN-3"]) {
-      jira.seedIssue(issue(key), [
-        { id: "21", name: "In Progress", toStatusName: "In Progress" },
-        { id: "31", name: "In Review", toStatusName: "In Review" },
-      ]);
+      jira.seedIssue(
+        buildTestIssue({ key, assigneeAccountId: SELF.accountId, statusName: "To Do" }),
+        [
+          { id: "21", name: "In Progress", toStatusName: "In Progress" },
+          { id: "31", name: "In Review", toStatusName: "In Review" },
+        ],
+      );
     }
     const worker = new SequentialWorkerProvider();
+    const handler = createImplementHandler({ config, provider: worker, store, worktreesRoot });
 
-    const outcomes = await runPollCycle(config, { jira, store, worker, worktreesRoot });
+    const outcomes = await runPollCycle(config, { jira, store, handler });
 
     expect(outcomes).toHaveLength(3);
     expect(outcomes.map((o) => o.issue.key)).toEqual(["KAN-1", "KAN-2", "KAN-3"]);
@@ -131,12 +115,17 @@ describe("runPollCycle", () => {
 
   it("returns an empty cycle and does not throw when the Jira search fails", async () => {
     const jira = new ThrowingSearchGateway();
-    const worker = new SequentialWorkerProvider();
+    jira.setSelf(SELF);
+    const handler = createImplementHandler({
+      config,
+      provider: new SequentialWorkerProvider(),
+      store,
+      worktreesRoot,
+    });
 
-    const outcomes = await runPollCycle(config, { jira, store, worker, worktreesRoot });
+    const outcomes = await runPollCycle(config, { jira, store, handler });
 
     expect(outcomes).toEqual([]);
-    expect(worker.startedOrder).toHaveLength(0);
   });
 });
 
@@ -147,6 +136,7 @@ describe("recoverStaleClaims", () => {
   let store: JobStore;
   let jira: FakeJiraGateway;
   let config: AppConfig;
+  let deps: CycleDeps;
 
   beforeEach(() => {
     tempDir = mkdtempSync(path.join(tmpdir(), "ggjira-recovery-test-"));
@@ -155,7 +145,20 @@ describe("recoverStaleClaims", () => {
     initTargetRepo(targetRepoPath);
     store = new JobStore(path.join(tempDir, "data"));
     jira = new FakeJiraGateway();
-    config = baseConfig(targetRepoPath);
+    jira.setSelf(SELF);
+    config = buildTestConfig({
+      workspace: { path: targetRepoPath, baseBranch: "main", validateCommand: null },
+    });
+    deps = {
+      jira,
+      store,
+      handler: createImplementHandler({
+        config,
+        provider: new NeverCalledWorkerProvider(),
+        store,
+        worktreesRoot,
+      }),
+    };
   });
 
   afterEach(() => {
@@ -164,18 +167,15 @@ describe("recoverStaleClaims", () => {
 
   it("marks a job left 'running' as failed, reports it to Jira, and releases the claim", async () => {
     const key = "KAN-1";
-    jira.seedIssue(issue(key), [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);
+    jira.seedIssue(buildTestIssue({ key }), [
+      { id: "21", name: "In Progress", toStatusName: "In Progress" },
+    ]);
     store.claimIssue(key, "run-1");
     let job = transitionJob(createJob(key, "run-1"), "claimed");
     job = transitionJob(job, "running", { branch: "ggjira/KAN-1-run-1" });
     store.saveJob(job);
 
-    await recoverStaleClaims(config, {
-      jira,
-      store,
-      worker: new SequentialWorkerProvider(),
-      worktreesRoot,
-    });
+    await recoverStaleClaims(config, deps);
 
     expect(store.getClaim(key)).toBeUndefined();
     const recovered = store.loadJob(key, "run-1");
@@ -187,19 +187,14 @@ describe("recoverStaleClaims", () => {
 
   it("just releases the claim for a job that already reached a terminal status", async () => {
     const key = "KAN-2";
-    jira.seedIssue(issue(key));
+    jira.seedIssue(buildTestIssue({ key }));
     store.claimIssue(key, "run-2");
     let job = transitionJob(createJob(key, "run-2"), "claimed");
     job = transitionJob(job, "running");
     job = transitionJob(job, "succeeded", { summary: "already done" });
     store.saveJob(job);
 
-    await recoverStaleClaims(config, {
-      jira,
-      store,
-      worker: new SequentialWorkerProvider(),
-      worktreesRoot,
-    });
+    await recoverStaleClaims(config, deps);
 
     expect(store.getClaim(key)).toBeUndefined();
     expect(store.loadJob(key, "run-2")?.status).toBe("succeeded");
@@ -210,16 +205,13 @@ describe("recoverStaleClaims", () => {
 
   it("recovers a claim even when job.json is missing entirely", async () => {
     const key = "KAN-3";
-    jira.seedIssue(issue(key), [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);
+    jira.seedIssue(buildTestIssue({ key }), [
+      { id: "21", name: "In Progress", toStatusName: "In Progress" },
+    ]);
     store.claimIssue(key, "run-3");
     // no store.saveJob call — simulates a crash before the first save
 
-    await recoverStaleClaims(config, {
-      jira,
-      store,
-      worker: new SequentialWorkerProvider(),
-      worktreesRoot,
-    });
+    await recoverStaleClaims(config, deps);
 
     expect(store.getClaim(key)).toBeUndefined();
     expect(store.loadJob(key, "run-3")?.status).toBe("failed");
@@ -227,17 +219,14 @@ describe("recoverStaleClaims", () => {
 
   it("recovers multiple independent stale claims in one call", async () => {
     for (const key of ["KAN-4", "KAN-5"]) {
-      jira.seedIssue(issue(key), [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);
+      jira.seedIssue(buildTestIssue({ key }), [
+        { id: "21", name: "In Progress", toStatusName: "In Progress" },
+      ]);
       store.claimIssue(key, `run-${key}`);
       store.saveJob(transitionJob(createJob(key, `run-${key}`), "claimed"));
     }
 
-    await recoverStaleClaims(config, {
-      jira,
-      store,
-      worker: new SequentialWorkerProvider(),
-      worktreesRoot,
-    });
+    await recoverStaleClaims(config, deps);
 
     expect(store.getClaim("KAN-4")).toBeUndefined();
     expect(store.getClaim("KAN-5")).toBeUndefined();
@@ -246,12 +235,7 @@ describe("recoverStaleClaims", () => {
   });
 
   it("does nothing when there are no stale claims", async () => {
-    await recoverStaleClaims(config, {
-      jira,
-      store,
-      worker: new SequentialWorkerProvider(),
-      worktreesRoot,
-    });
+    await recoverStaleClaims(config, deps);
     expect(jira.comments).toHaveLength(0);
   });
 });

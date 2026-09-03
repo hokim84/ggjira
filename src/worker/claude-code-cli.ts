@@ -1,8 +1,24 @@
-import { spawn } from "node:child_process";
 import type { Logger } from "../logger.js";
 import type { WorkerProvider, WorkerRequest, WorkerResult, WorkerRunHooks } from "./provider.js";
+import { runProcessWithTimeout } from "./spawn.js";
 
-const DEFAULT_KILL_GRACE_MS = 5000;
+export type ClaudeCodeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type ClaudeCodePermissionMode =
+  | "acceptEdits"
+  | "auto"
+  | "bypassPermissions"
+  | "manual"
+  | "dontAsk"
+  | "plan";
+
+export interface ClaudeCodeCliProviderOptions {
+  command?: string;
+  model?: string;
+  effort?: ClaudeCodeEffort;
+  permissionMode?: ClaudeCodePermissionMode;
+  allowedTools?: string[];
+  killGraceMs?: number;
+}
 
 interface RawResultEvent {
   type: "result";
@@ -20,91 +36,83 @@ function isRawResultEvent(value: unknown): value is RawResultEvent {
   );
 }
 
-function buildArgs(request: WorkerRequest): string[] {
-  const args = [
-    "-p",
-    request.prompt,
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--permission-mode",
-    request.permissionMode,
-    "--allowedTools",
-    request.allowedTools.join(" "),
-    "--no-session-persistence",
-    "--model",
-    request.model,
-    "--effort",
-    request.effort,
-  ];
-  if (request.appendSystemPrompt) {
-    args.push("--append-system-prompt", request.appendSystemPrompt);
-  }
-  return args;
-}
-
-/** Splits a stream of chunks into complete lines, buffering any trailing partial line. */
-class LineSplitter {
-  private buffer = "";
-
-  push(chunk: string, onLine: (line: string) => void): void {
-    this.buffer += chunk;
-    const lines = this.buffer.split("\n");
-    this.buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (line.length > 0) onLine(line);
-    }
-  }
-
-  flush(onLine: (line: string) => void): void {
-    if (this.buffer.length > 0) onLine(this.buffer);
-    this.buffer = "";
+/**
+ * Best-effort extraction of a JSON value from free text: a fenced ```json
+ * block if present, otherwise the largest {...} span. Used when --json-schema
+ * output doesn't land as clean, directly-parseable JSON in `result`.
+ */
+function extractJsonBlock(text: string): unknown {
+  const fenced = text.match(/```json\s*([\s\S]*?)```/i);
+  const candidate = fenced?.[1] ?? text.match(/(\{[\s\S]*\})/)?.[1];
+  if (!candidate) return undefined;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return undefined;
   }
 }
+
+const DEFAULT_ALLOWED_TOOLS = ["Edit", "Write", "Read", "Glob", "Grep"];
+const READ_ONLY_TOOLS = ["Read", "Glob", "Grep"];
 
 export class ClaudeCodeCliProvider implements WorkerProvider {
-  private readonly killGraceMs: number;
+  private readonly command: string;
+  private readonly model: string;
+  private readonly effort: ClaudeCodeEffort;
+  private readonly permissionMode: ClaudeCodePermissionMode;
+  private readonly allowedTools: string[];
+  private readonly killGraceMs: number | undefined;
 
   constructor(
     private readonly logger?: Logger,
-    killGraceMs: number = DEFAULT_KILL_GRACE_MS,
+    options: ClaudeCodeCliProviderOptions = {},
   ) {
-    this.killGraceMs = killGraceMs;
+    this.command = options.command ?? "claude";
+    this.model = options.model ?? "sonnet";
+    this.effort = options.effort ?? "high";
+    this.permissionMode = options.permissionMode ?? "acceptEdits";
+    this.allowedTools = options.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
+    this.killGraceMs = options.killGraceMs;
+  }
+
+  private buildArgs(request: WorkerRequest): string[] {
+    const permissionMode = request.readOnly ? "dontAsk" : this.permissionMode;
+    const allowedTools = request.readOnly ? READ_ONLY_TOOLS : this.allowedTools;
+    const args = [
+      "-p",
+      request.prompt,
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      permissionMode,
+      "--allowedTools",
+      allowedTools.join(" "),
+      "--no-session-persistence",
+      "--model",
+      this.model,
+      "--effort",
+      this.effort,
+    ];
+    if (request.systemPrompt) {
+      args.push("--append-system-prompt", request.systemPrompt);
+    }
+    if (request.outputSchema) {
+      args.push("--json-schema", JSON.stringify(request.outputSchema));
+    }
+    return args;
   }
 
   async run(request: WorkerRequest, hooks: WorkerRunHooks = {}): Promise<WorkerResult> {
-    const args = buildArgs(request);
-    const start = Date.now();
+    let finalResult: RawResultEvent | undefined;
 
-    return new Promise<WorkerResult>((resolve) => {
-      const child = spawn(request.command, args, {
-        cwd: request.cwd,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      let finalResult: RawResultEvent | undefined;
-      let timedOut = false;
-      let spawnError: Error | undefined;
-      const stdout = new LineSplitter();
-      const stderrChunks: string[] = [];
-
-      const killGroup = (signal: NodeJS.Signals) => {
-        if (child.pid === undefined) return;
-        try {
-          process.kill(-child.pid, signal);
-        } catch {
-          // process group may already be gone
-        }
-      };
-
-      const timeoutHandle = setTimeout(() => {
-        timedOut = true;
-        killGroup("SIGTERM");
-        setTimeout(() => killGroup("SIGKILL"), this.killGraceMs);
-      }, request.timeoutMs);
-
-      const handleLine = (line: string) => {
+    const result = await runProcessWithTimeout({
+      command: this.command,
+      args: this.buildArgs(request),
+      cwd: request.cwd,
+      timeoutMs: request.timeoutMs,
+      ...(this.killGraceMs !== undefined ? { killGraceMs: this.killGraceMs } : {}),
+      onLine: (line) => {
         hooks.onEvent?.(line);
         try {
           const parsed: unknown = JSON.parse(line);
@@ -114,68 +122,59 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
         } catch {
           this.logger?.warn({ layer: "worker", line }, "failed to parse stream-json line");
         }
-      };
-
-      child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk.toString("utf-8"), handleLine));
-      child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk.toString("utf-8")));
-
-      child.on("error", (err) => {
-        spawnError = err;
-      });
-
-      child.on("close", (code) => {
-        clearTimeout(timeoutHandle);
-        stdout.flush(handleLine);
-        const durationMs = Date.now() - start;
-
-        if (spawnError) {
-          resolve({
-            exitReason: "crashed",
-            isError: true,
-            summary: `Failed to spawn worker: ${spawnError.message}`,
-            durationMs,
-            exitCode: code,
-          });
-          return;
-        }
-
-        if (timedOut) {
-          resolve({
-            exitReason: "timeout",
-            isError: true,
-            summary: `Worker timed out after ${request.timeoutMs}ms`,
-            durationMs,
-            exitCode: code,
-          });
-          return;
-        }
-
-        if (code !== 0) {
-          const stderrTail = stderrChunks.join("").slice(-2000);
-          resolve({
-            exitReason: "nonzero",
-            isError: true,
-            summary: finalResult?.result ?? `Worker exited with code ${code}. ${stderrTail}`.trim(),
-            durationMs,
-            exitCode: code,
-            ...(finalResult?.session_id ? { sessionId: finalResult.session_id } : {}),
-          });
-          return;
-        }
-
-        resolve({
-          exitReason: "completed",
-          isError: finalResult?.is_error ?? false,
-          summary: finalResult?.result ?? "(worker produced no result message)",
-          durationMs,
-          exitCode: code,
-          ...(finalResult?.session_id ? { sessionId: finalResult.session_id } : {}),
-          ...(finalResult?.total_cost_usd !== undefined
-            ? { totalCostUsd: finalResult.total_cost_usd }
-            : {}),
-          ...(finalResult?.num_turns !== undefined ? { numTurns: finalResult.num_turns } : {}),
-        });
-      });
+      },
     });
+
+    if (result.spawnError) {
+      return {
+        exitReason: "crashed",
+        isError: true,
+        summary: `Failed to spawn worker: ${result.spawnError.message}`,
+        durationMs: result.durationMs,
+        exitCode: result.code,
+      };
+    }
+
+    if (result.timedOut) {
+      return {
+        exitReason: "timeout",
+        isError: true,
+        summary: `Worker timed out after ${request.timeoutMs}ms`,
+        durationMs: result.durationMs,
+        exitCode: result.code,
+      };
+    }
+
+    const structuredOutput =
+      request.outputSchema && finalResult?.result
+        ? extractJsonBlock(finalResult.result)
+        : undefined;
+
+    if (result.code !== 0) {
+      return {
+        exitReason: "nonzero",
+        isError: true,
+        summary:
+          finalResult?.result ??
+          `Worker exited with code ${result.code}. ${result.stderrTail}`.trim(),
+        durationMs: result.durationMs,
+        exitCode: result.code,
+        ...(finalResult?.session_id ? { sessionId: finalResult.session_id } : {}),
+      };
+    }
+
+    return {
+      exitReason: "completed",
+      isError: finalResult?.is_error ?? false,
+      summary: finalResult?.result ?? "(worker produced no result message)",
+      durationMs: result.durationMs,
+      exitCode: result.code,
+      ...(finalResult?.session_id ? { sessionId: finalResult.session_id } : {}),
+      ...(finalResult?.total_cost_usd !== undefined
+        ? { totalCostUsd: finalResult.total_cost_usd }
+        : {}),
+      ...(finalResult?.num_turns !== undefined ? { numTurns: finalResult.num_turns } : {}),
+      ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+    };
   }
 }

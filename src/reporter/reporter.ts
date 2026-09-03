@@ -1,72 +1,106 @@
+import type { ExecutionResult } from "../agent/result.js";
 import type { AppConfig } from "../config.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { Job } from "../job/job.js";
 
-export function buildStartComment(runId: string): string {
-  return ["GGJIRA가 이 작업을 시작합니다.", `runId: ${runId}`].join("\n");
+const PLANNED_LABEL = "ggjira-planned";
+
+function agentTag(config: AppConfig): string {
+  return `${config.agent.identity}@${config.agent.machine}`;
 }
 
-export function buildSuccessComment(
+export function buildStartComment(runId: string, config: AppConfig): string {
+  return ["GGJIRA agent claimed this issue.", `agent: ${agentTag(config)}`, `runId: ${runId}`].join(
+    "\n",
+  );
+}
+
+export function buildSuccessComment(job: Job, config: AppConfig, result: ExecutionResult): string {
+  const lines = ["Implementation completed.", "", "Summary:", result.summary || "(no summary)"];
+  if (result.changes?.length) {
+    lines.push("", "Changes:", ...result.changes.map((c) => `- ${c}`));
+  }
+  if (result.validation?.length) {
+    lines.push("", "Validation:", ...result.validation.map((v) => `- ${v}`));
+  }
+  if (result.artifacts?.length) {
+    lines.push("", "Artifacts:", ...result.artifacts.map((a) => `- ${a}`));
+  }
+  lines.push("", `agent: ${agentTag(config)}`, `runId: ${job.runId}`);
+  return lines.join("\n");
+}
+
+export function buildFailureComment(job: Job, config: AppConfig, result: ExecutionResult): string {
+  const lines = [
+    "Execution failed.",
+    "",
+    "Summary:",
+    result.summary || "Implementation could not be completed.",
+    "",
+    "Failure Reason:",
+    result.failureReason ?? job.error ?? "(unknown)",
+  ];
+  if (result.blockingIssue) {
+    lines.push("", "Blocking Issue:", result.blockingIssue);
+  }
+  lines.push("", `agent: ${agentTag(config)}`, `runId: ${job.runId}`);
+  return lines.join("\n");
+}
+
+function buildFallbackDecisionComment(
   job: Job,
-  changedFiles: string[],
-  workerLogPath: string,
+  config: AppConfig,
+  result: ExecutionResult,
 ): string {
-  const fileList =
-    changedFiles.length > 0
-      ? changedFiles.map((f) => `  - ${f}`).join("\n")
-      : "  (변경된 파일 없음)";
   return [
-    "GGJIRA 작업이 완료되었습니다.",
+    "GGJIRA needs a human decision before it can continue.",
     "",
-    `요약: ${job.summary ?? "(요약 없음)"}`,
-    `브랜치: ${job.branch ?? "(없음)"}`,
-    `변경 파일 (${changedFiles.length}개):`,
-    fileList,
+    result.summary || "(no details provided)",
     "",
-    `runId: ${job.runId}`,
-    `실행 로그: ${workerLogPath}`,
-  ].join("\n");
-}
-
-export function buildFailureComment(job: Job): string {
-  return [
-    `GGJIRA 작업이 실패했습니다 (${job.status}).`,
-    "",
-    `원인: ${job.error ?? "(알 수 없음)"}`,
-    `실패 단계: ${job.failureStage ?? "(알 수 없음)"}`,
+    `agent: ${agentTag(config)}`,
     `runId: ${job.runId}`,
   ].join("\n");
 }
 
-export async function claimIssueInJira(
-  jira: JiraGateway,
-  config: AppConfig,
-  issue: JiraIssue,
-  runId: string,
-): Promise<void> {
-  await jira.transitionIssue(issue.key, config.jira.inProgressTransitionName);
-  await jira.addComment(issue.key, buildStartComment(runId));
-}
-
-export async function reportSuccess(
+/**
+ * Renders one ExecutionResult into the standard Jira comment + follow-up
+ * transition/label (CLAUDE.md / phase 2 §4.4). This is the single point
+ * where any role's outcome reaches Jira, so a human reading an issue never
+ * needs to know which role or provider produced it.
+ */
+export async function reportForResult(
   jira: JiraGateway,
   config: AppConfig,
   issue: JiraIssue,
   job: Job,
-  changedFiles: string[],
-  workerLogPath: string,
+  result: ExecutionResult,
 ): Promise<void> {
-  await jira.addComment(issue.key, buildSuccessComment(job, changedFiles, workerLogPath));
-  await jira.transitionIssue(issue.key, config.jira.successTransitionName);
-}
+  if (result.status === "needs_decision") {
+    await jira.addComment(
+      issue.key,
+      result.decisionRequest ?? buildFallbackDecisionComment(job, config, result),
+    );
+    if (config.workflow.needsDecisionTransitionName) {
+      await jira.transitionIssue(issue.key, config.workflow.needsDecisionTransitionName);
+    }
+    return;
+  }
 
-export async function reportFailure(
-  jira: JiraGateway,
-  config: AppConfig,
-  issue: JiraIssue,
-  job: Job,
-): Promise<void> {
-  await jira.addComment(issue.key, buildFailureComment(job));
-  await jira.addLabel(issue.key, config.jira.failureLabel);
+  if (job.status === "succeeded") {
+    await jira.addComment(issue.key, buildSuccessComment(job, config, result));
+    if (result.status === "planned") {
+      if (config.workflow.plannedTransitionName) {
+        await jira.transitionIssue(issue.key, config.workflow.plannedTransitionName);
+      } else {
+        await jira.addLabel(issue.key, PLANNED_LABEL);
+      }
+    } else {
+      await jira.transitionIssue(issue.key, config.workflow.doneTransitionName);
+    }
+    return;
+  }
+
+  await jira.addComment(issue.key, buildFailureComment(job, config, result));
+  await jira.addLabel(issue.key, config.workflow.failureLabel);
 }

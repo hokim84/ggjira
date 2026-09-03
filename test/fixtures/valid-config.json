@@ -1,10 +1,13 @@
 {
   "jira": {
-    "jql": "project = GGJ AND labels = \"ggjira\" AND status = \"To Do\"",
-    "inProgressTransitionName": "In Progress",
-    "successTransitionName": "In Review"
+    "baseUrl": "https://example.atlassian.net"
   },
-  "targetRepo": {
+  "agent": {
+    "identity": "ggjira-implement",
+    "role": "implement",
+    "machine": "test-machine"
+  },
+  "workspace": {
     "path": "/tmp/target-repo"
   }
 }

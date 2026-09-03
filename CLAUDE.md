@@ -1,8 +1,11 @@
 # GGJIRA — Claude Code 작업 규칙
 
 GGJIRA는 Jira를 인간/AI Agent 공용 작업 인터페이스로 사용하는 경량 오케스트레이션 시스템이다.
-Jira 이슈 → Poller → Job → Worker(Claude Code CLI) → 결과를 Jira에 기록하는 vertical slice가 MVP다.
-전체 계획은 `PLAN.md`를 참고한다. 원문 요구사항은 `writing-block.md`에 있다.
+동일 Agent Runtime이 설정(`agent.role`)만으로 `pm` 또는 `implement` 역할로 동작하며, Jira의
+Assignee/Workflow State를 통해 작업을 발견·claim·실행·기록한다. PM은 Jira에 실행 가능한
+하위 티켓을 만들고 Assignee를 지정할 뿐, Implement 프로세스를 직접 실행하지 않는다.
+전체 계획은 `PLAN.md`(MVP)와 `GGJira_Phase2_Implementation_Plan.md`(2차: Plan Mode +
+Assignee Dispatch + Multi-Machine)를 참고한다. 원문 요구사항은 `writing-block.md`에 있다.
 
 ## 디렉터리 = 계층 규칙
 
@@ -10,12 +13,23 @@ Jira 이슈 → Poller → Job → Worker(Claude Code CLI) → 결과를 Jira에
 로그는 `layer` 필드로 그 디렉터리 이름을 사용한다.
 
 - `src/jira/` — Jira REST 호출, 인증, 에러 매핑
-- `src/poller/` — JQL 폴링, 후보 이슈 선정
-- `src/job/` — Job 상태 머신, 디스크 기록(`data/runs/`, `data/state.json`)
-- `src/worker/` — WorkerProvider 인터페이스, Claude Code CLI 실행, worktree, 프롬프트
-- `src/reporter/` — 실행 결과를 Jira 댓글/전이/라벨로 기록
+- `src/agent/` — 공통 Agent Runtime: 인증(`getMyself`), 역할별 핸들러 선택, `claimJob`,
+  표준 실행 결과 타입(`ExecutionResult`)
+- `src/implement/` — implement 역할의 JobHandler: worktree → worker 실행 → 커밋 → 검증
+- `src/pm/` — pm 역할의 JobHandler: Plan 생성, Human Decision 요청, Jira에 하위 티켓 적용
+- `src/poller/` — 이 Agent에게 할당된(assignee) 준비 상태 이슈 조회(JQL)
+- `src/job/` — Job 상태 머신, 디스크 기록(`data/runs/`, `data/state.json`), 역할-무관 실행 루프
+- `src/worker/` — WorkerProvider 인터페이스, Claude Code CLI / Codex CLI 실행, worktree
+- `src/reporter/` — `ExecutionResult` → Jira 댓글/전이/라벨(표준 포맷, CLAUDE.md §완료의 정의 아님,
+  §4.4 참고)로 기록
+- `src/setup/` — `ggjira setup` 대화형 위저드: Jira 연결/워크스페이스/Provider 검증, config 저장
 
-미래 확장(PM Agent, 다른 Provider, Web UI)을 위한 빈 디렉터리는 미리 만들지 않는다.
+**`src/pm/`은 `src/implement/`를 import하지 않는다.** PM은 Jira 쓰기(이슈 생성/할당/전이)만
+하고, 실행은 별도 프로세스(다른 머신의 Implement Agent)가 Jira를 통해 발견해 수행한다
+(`GGJira_Phase2_Implementation_Plan.md` §4.1). 두 모듈을 모두 아는 곳은 역할별 핸들러를
+선택하는 `src/agent/runtime.ts` 하나뿐이다.
+
+미래 확장(Web UI, Agent Registry, Scheduler)을 위한 빈 디렉터리는 미리 만들지 않는다.
 
 ## 명령
 

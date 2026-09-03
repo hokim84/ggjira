@@ -2,39 +2,37 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AppConfig } from "../src/config.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
-import type { JiraIssue } from "../src/jira/types.js";
 import { JobStore } from "../src/job/store.js";
-import { findCandidateIssues } from "../src/poller/poller.js";
+import { buildAssignedJql, findAssignedJobs } from "../src/poller/poller.js";
+import { buildTestConfig, buildTestIssue } from "./helpers/fixtures.js";
 
-const config: AppConfig = {
-  jira: {
-    jql: 'project = KAN AND labels = "ggjira"',
-    inProgressTransitionName: "In Progress",
-    successTransitionName: "In Review",
-    failureLabel: "ggjira-failed",
-  },
-  polling: { intervalMs: 60000 },
-  targetRepo: { path: "/tmp/repo", baseBranch: "main" },
-  worker: {
-    command: "claude",
-    model: "sonnet",
-    effort: "high",
-    timeoutMs: 60000,
-    permissionMode: "acceptEdits",
-    allowedTools: [],
-  },
-  concurrency: { maxConcurrentJobs: 1 },
+const SELF = {
+  accountId: "self-id",
+  displayName: "GGJIRA Implement",
+  emailAddress: "ggjira-implement@example.com",
 };
 
-function issue(key: string): JiraIssue {
-  return { key, id: key, summary: "s", description: null, statusName: "To Do", labels: ["ggjira"] };
-}
+describe("buildAssignedJql", () => {
+  it("builds assignee + readyStatus JQL by default", () => {
+    const config = buildTestConfig();
+    expect(buildAssignedJql(config)).toBe(
+      'assignee = currentUser() AND status = "To Do" ORDER BY created ASC',
+    );
+  });
 
-describe("findCandidateIssues", () => {
+  it("uses jira.jql verbatim when set", () => {
+    const config = buildTestConfig({
+      jira: { baseUrl: "https://example.atlassian.net", jql: "project = KAN" },
+    });
+    expect(buildAssignedJql(config)).toBe("project = KAN");
+  });
+});
+
+describe("findAssignedJobs", () => {
   let dataDir: string;
   let store: JobStore;
+  const config = buildTestConfig();
 
   beforeEach(() => {
     dataDir = mkdtempSync(path.join(tmpdir(), "ggjira-poller-test-"));
@@ -45,23 +43,43 @@ describe("findCandidateIssues", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it("returns issues matching the configured JQL", async () => {
+  it("returns issues assigned to this agent that are ready to claim", async () => {
     const jira = new FakeJiraGateway();
-    jira.seedIssue(issue("KAN-1"));
-    jira.seedIssue(issue("KAN-2"));
+    jira.setSelf(SELF);
+    jira.seedIssue(
+      buildTestIssue({ key: "KAN-1", assigneeAccountId: SELF.accountId, statusName: "To Do" }),
+    );
+    jira.seedIssue(
+      buildTestIssue({ key: "KAN-2", assigneeAccountId: SELF.accountId, statusName: "To Do" }),
+    );
+    jira.seedIssue(
+      buildTestIssue({ key: "KAN-3", assigneeAccountId: "someone-else", statusName: "To Do" }),
+    );
+    jira.seedIssue(
+      buildTestIssue({
+        key: "KAN-4",
+        assigneeAccountId: SELF.accountId,
+        statusName: "In Progress",
+      }),
+    );
 
-    const candidates = await findCandidateIssues(jira, config, store);
+    const candidates = await findAssignedJobs(jira, config, store);
 
     expect(candidates.map((i) => i.key).sort()).toEqual(["KAN-1", "KAN-2"]);
   });
 
   it("filters out issues already claimed locally", async () => {
     const jira = new FakeJiraGateway();
-    jira.seedIssue(issue("KAN-1"));
-    jira.seedIssue(issue("KAN-2"));
+    jira.setSelf(SELF);
+    jira.seedIssue(
+      buildTestIssue({ key: "KAN-1", assigneeAccountId: SELF.accountId, statusName: "To Do" }),
+    );
+    jira.seedIssue(
+      buildTestIssue({ key: "KAN-2", assigneeAccountId: SELF.accountId, statusName: "To Do" }),
+    );
     store.claimIssue("KAN-1", "run-1");
 
-    const candidates = await findCandidateIssues(jira, config, store);
+    const candidates = await findAssignedJobs(jira, config, store);
 
     expect(candidates.map((i) => i.key)).toEqual(["KAN-2"]);
   });

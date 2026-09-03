@@ -5,6 +5,10 @@ export interface JiraIssue {
   description: string | null;
   statusName: string;
   labels: string[];
+  assigneeAccountId: string | null;
+  issueTypeName: string | null;
+  parentKey: string | null;
+  projectKey: string | null;
 }
 
 export interface JiraTransition {
@@ -16,4 +20,27 @@ export interface JiraTransition {
 export interface SearchIssuesOptions {
   maxResults?: number;
   fields?: string[];
+}
+
+export interface JiraUser {
+  accountId: string;
+  displayName: string;
+  emailAddress: string | null;
+}
+
+export interface JiraComment {
+  id: string;
+  authorAccountId: string | null;
+  authorDisplayName: string | null;
+  body: string;
+  created: string;
+}
+
+export interface CreateIssueInput {
+  projectKey: string;
+  issueTypeName: string;
+  summary: string;
+  description?: string;
+  parentKey?: string;
+  assigneeAccountId?: string;
 }

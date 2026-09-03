@@ -1,26 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import type { JobHandler } from "../agent/handler.js";
+import { ClaimLostError, claimJob } from "../agent/claim.js";
+import type { ExecutionResult } from "../agent/result.js";
 import type { AppConfig } from "../config.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { Logger } from "../logger.js";
-import { claimIssueInJira, reportFailure, reportSuccess } from "../reporter/reporter.js";
-import { buildTaskSystemPrompt, buildWorkerPrompt } from "../worker/prompt.js";
-import type { WorkerProvider, WorkerRequest } from "../worker/provider.js";
-import {
-  changedFilesSince,
-  commitAll,
-  createWorktree,
-  hasUncommittedChanges,
-} from "../worker/worktree.js";
+import { reportForResult } from "../reporter/reporter.js";
 import { type Job, type JobStatus, createJob, markReportingFailed, transitionJob } from "./job.js";
 import type { JobStore } from "./store.js";
 
 export interface RunnerDeps {
   jira: JiraGateway;
   store: JobStore;
-  worker: WorkerProvider;
-  worktreesRoot: string;
+  handler: JobHandler;
   logger?: Logger;
 }
 
@@ -32,7 +25,7 @@ function generateRunId(now: Date = new Date()): string {
   return `run-${now.getTime()}-${randomUUID().slice(0, 8)}`;
 }
 
-function buildSummaryMarkdown(job: Job, changedFiles: string[], workerLogPath: string): string {
+function buildSummaryMarkdown(job: Job, result: ExecutionResult | undefined): string {
   const lines = [
     `# ${job.issueKey} — ${job.runId}`,
     "",
@@ -40,20 +33,30 @@ function buildSummaryMarkdown(job: Job, changedFiles: string[], workerLogPath: s
     `updatedAt: ${job.updatedAt}`,
   ];
   if (job.branch) lines.push(`branch: ${job.branch}`);
+  if (result?.changes?.length)
+    lines.push("", "## Changes", "", ...result.changes.map((c) => `- ${c}`));
+  if (result?.validation?.length) {
+    lines.push("", "## Validation", "", ...result.validation.map((v) => `- ${v}`));
+  }
+  if (result?.artifacts?.length)
+    lines.push("", "## Artifacts", "", ...result.artifacts.map((a) => `- ${a}`));
   if (job.summary) lines.push("", "## Summary", "", job.summary);
   if (job.error) lines.push("", "## Error", "", `(${job.failureStage ?? "unknown"}) ${job.error}`);
-  if (changedFiles.length > 0) {
-    lines.push("", "## Changed files", "", ...changedFiles.map((f) => `- ${f}`));
-  }
-  lines.push("", `worker log: ${workerLogPath}`);
   return lines.join("\n");
 }
 
+function resultToJobStatus(result: ExecutionResult): JobStatus {
+  if (result.status === "failed") return result.timedOut ? "timed_out" : "failed";
+  return "succeeded"; // succeeded | planned | needs_decision all reach a "reported" terminal state
+}
+
 /**
- * Runs one issue end to end: claim (Jira + local) -> worktree -> worker ->
- * commit -> report back to Jira. Returns undefined if the issue was already
- * claimed locally (e.g. a race within the same poll cycle) — nothing was
- * created, so there is no Job to return.
+ * Runs one claimed issue end to end: claim (`agent/claim.ts`) -> the role's
+ * JobHandler -> standardized report back to Jira (`reporter.ts`) -> release.
+ * This function is role-agnostic; `deps.handler` is what makes it implement
+ * or pm. Returns undefined if the issue was already claimed locally (e.g. a
+ * race within the same poll cycle) — nothing was created, so there is no Job
+ * to return.
  */
 export async function runJobForIssue(
   issue: JiraIssue,
@@ -72,99 +75,59 @@ export async function runJobForIssue(
   deps.store.saveJob(job);
 
   try {
-    await claimIssueInJira(deps.jira, config, issue, runId);
+    await claimJob(deps.jira, config, issue, runId, logger);
   } catch (error) {
-    logger?.warn({ err: error }, "claim rejected by Jira; releasing local claim");
+    if (error instanceof ClaimLostError) {
+      logger?.info(
+        { actualStatus: error.actualStatus },
+        "claim lost to another agent; releasing local claim",
+      );
+      job = transitionJob(job, "cancelled");
+      deps.store.saveJob(job);
+      deps.store.releaseClaim(issue.key);
+      return job;
+    }
+    logger?.warn({ err: error }, "claim failed unexpectedly; releasing local claim");
     deps.store.releaseClaim(issue.key);
-    job = transitionJob(job, "failed", {
-      failureStage: "jira",
-      error: errorMessage(error),
-    });
+    job = transitionJob(job, "failed", { failureStage: "jira", error: errorMessage(error) });
     deps.store.saveJob(job);
     return job;
   }
 
   job = transitionJob(job, "claimed");
   deps.store.saveJob(job);
+  job = transitionJob(job, "running");
+  deps.store.saveJob(job);
 
-  const branch = `ggjira/${issue.key}-${runId}`;
-  let worktreePath: string;
+  let result: ExecutionResult;
   try {
-    const worktree = await createWorktree(
-      config.targetRepo.path,
-      config.targetRepo.baseBranch,
-      branch,
-      deps.worktreesRoot,
-    );
-    worktreePath = worktree.path;
+    result = await deps.handler.run({ issue, job });
   } catch (error) {
-    logger?.error({ err: error }, "failed to create worktree");
-    job = transitionJob(job, "failed", { failureStage: "job", error: errorMessage(error) });
-    deps.store.saveJob(job);
-    job = await safeReport(
-      job,
-      deps.store,
-      () => reportFailure(deps.jira, config, issue, job),
-      logger,
-    );
-    deps.store.releaseClaim(issue.key);
-    return job;
+    logger?.error({ err: error }, "job handler threw unexpectedly");
+    result = {
+      status: "failed",
+      summary: "Execution failed unexpectedly.",
+      failureReason: errorMessage(error),
+    };
   }
 
-  job = transitionJob(job, "running", { branch });
+  const branchPatch = result.branch ? { branch: result.branch } : {};
+  const nextStatus = resultToJobStatus(result);
+  job =
+    nextStatus === "succeeded"
+      ? transitionJob(job, "succeeded", { ...branchPatch, summary: result.summary })
+      : transitionJob(job, nextStatus, {
+          ...branchPatch,
+          failureStage: "worker",
+          error: result.failureReason ?? result.summary,
+        });
   deps.store.saveJob(job);
-
-  const request: WorkerRequest = {
-    prompt: buildWorkerPrompt({ title: issue.summary, description: issue.description }),
-    cwd: worktreePath,
-    timeoutMs: config.worker.timeoutMs,
-    command: config.worker.command,
-    model: config.worker.model,
-    effort: config.worker.effort,
-    permissionMode: config.worker.permissionMode,
-    allowedTools: config.worker.allowedTools,
-    appendSystemPrompt: buildTaskSystemPrompt(),
-  };
-
-  const workerLogPath = deps.store.workerLogPath(issue.key, runId);
-  const result = await deps.worker.run(request, {
-    onEvent: (line) => appendFileSync(workerLogPath, `${line}\n`),
-  });
-
-  let changedFiles: string[] = [];
-  if (result.exitReason === "completed" && !result.isError) {
-    if (await hasUncommittedChanges(worktreePath)) {
-      await commitAll(worktreePath, `GGJIRA worker: ${issue.key} ${issue.summary}`.slice(0, 200));
-      changedFiles = await changedFilesSince(worktreePath, config.targetRepo.baseBranch);
-    }
-
-    job = transitionJob(job, "succeeded", { summary: result.summary });
-    deps.store.saveJob(job);
-    deps.store.writeSummary(
-      issue.key,
-      runId,
-      buildSummaryMarkdown(job, changedFiles, workerLogPath),
-    );
-
-    job = await safeReport(
-      job,
-      deps.store,
-      () => reportSuccess(deps.jira, config, issue, job, changedFiles, workerLogPath),
-      logger,
-    );
-    deps.store.releaseClaim(issue.key);
-    return job;
-  }
-
-  const nextStatus: JobStatus = result.exitReason === "timeout" ? "timed_out" : "failed";
-  job = transitionJob(job, nextStatus, { failureStage: "worker", error: result.summary });
-  deps.store.saveJob(job);
-  deps.store.writeSummary(issue.key, runId, buildSummaryMarkdown(job, changedFiles, workerLogPath));
+  deps.store.writeSummary(issue.key, runId, buildSummaryMarkdown(job, result));
 
   job = await safeReport(
     job,
     deps.store,
-    () => reportFailure(deps.jira, config, issue, job),
+    () => reportForResult(deps.jira, config, issue, job, result),
     logger,
   );
   deps.store.releaseClaim(issue.key);

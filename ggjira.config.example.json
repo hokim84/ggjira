@@ -1,26 +1,46 @@
 {
   "jira": {
-    "jql": "project = GGJ AND labels = \"ggjira\" AND status = \"To Do\" ORDER BY created ASC",
-    "inProgressTransitionName": "In Progress",
-    "successTransitionName": "In Review",
-    "failureLabel": "ggjira-failed"
+    "baseUrl": "https://your-domain.atlassian.net"
+  },
+  "agent": {
+    "identity": "ggjira-implement",
+    "role": "implement",
+    "machine": "HODORI-HOME"
+  },
+  "workflow": {
+    "readyStatus": "To Do",
+    "claimTransitionName": "In Progress",
+    "doneTransitionName": "In Review",
+    "failureLabel": "ggjira-failed",
+    "needsDecisionTransitionName": "Needs Decision",
+    "plannedTransitionName": null
+  },
+  "workspace": {
+    "path": "/absolute/path/to/target-repo",
+    "baseBranch": "main",
+    "validateCommand": null
+  },
+  "provider": {
+    "type": "claude-code",
+    "command": "claude",
+    "model": "sonnet",
+    "timeoutMs": 1800000,
+    "claudeCode": {
+      "effort": "high",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Edit", "Write", "Read", "Glob", "Grep", "Bash(git *)", "Bash(npm *)"]
+    },
+    "codex": {
+      "sandbox": "workspace-write"
+    }
+  },
+  "pm": {
+    "implementAssignee": "ggjira-implement@example.com",
+    "subtaskIssueType": "Subtask",
+    "taskReadyTransitionName": null,
+    "maxTasksPerPlan": 20
   },
   "polling": {
     "intervalMs": 60000
-  },
-  "targetRepo": {
-    "path": "/absolute/path/to/target-repo",
-    "baseBranch": "main"
-  },
-  "worker": {
-    "command": "claude",
-    "model": "sonnet",
-    "effort": "high",
-    "timeoutMs": 1800000,
-    "permissionMode": "acceptEdits",
-    "allowedTools": ["Edit", "Write", "Read", "Glob", "Grep", "Bash(git *)", "Bash(npm *)"]
-  },
-  "concurrency": {
-    "maxConcurrentJobs": 1
   }
 }
