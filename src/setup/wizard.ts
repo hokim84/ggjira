@@ -75,9 +75,16 @@ async function askSecretViaInterface(rl: Interface, questionText: string): Promi
     }
   };
   try {
-    process.stdout.write(`${questionText}: `);
+    // rl.question() writes the prompt synchronously (via _writeToOutput,
+    // still unmasked here) before this line returns; only characters typed
+    // after that -- necessarily later, on their own keypress events -- can
+    // land while masking is true. Writing the prompt ourselves beforehand
+    // and passing an empty query does NOT work: readline's own redraw on
+    // the first keystroke repositions the cursor and clears the line,
+    // erasing a prompt it doesn't know it's supposed to redraw.
+    const pending = question(rl, `${questionText}: `);
     masking = true;
-    return (await question(rl, "")).trim();
+    return (await pending).trim();
   } finally {
     masking = false;
     rlInternal._writeToOutput = original;
