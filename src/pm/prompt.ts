@@ -34,6 +34,19 @@ export function buildPlanningPrompt(ctx: PlanningContext): string {
     );
   }
 
+  if (ctx.agents && ctx.agents.length > 0) {
+    parts.push("", "Registered agents:");
+    for (const agent of ctx.agents) {
+      const registered = agent.registration ? "registered" : "unregistered";
+      const status = agent.enabled ? registered : "disabled";
+      const preset = agent.preset ? `, preset ${agent.preset}` : "";
+      const capabilities = agent.capabilities.length
+        ? `, capabilities: ${agent.capabilities.join(", ")}`
+        : "";
+      parts.push(`- ${agent.agentId} (${agent.role}${preset}${capabilities}, ${status})`);
+    }
+  }
+
   const otherComments = ctx.comments.filter((c) => !c.body.includes(DECISION_REQUEST_MARKER));
   if (otherComments.length > 0) {
     parts.push("", "Other comments on this issue:");
@@ -45,6 +58,8 @@ export function buildPlanningPrompt(ctx: PlanningContext): string {
   parts.push(
     "",
     "Produce a plan as JSON matching the given schema. If existing subtasks are still valid, list their keys in keepTaskKeys instead of recreating them; anything not listed there will be treated as superseded.",
+    "Set a task's assigneeAgentId only when a specific registered agent's capabilities clearly fit that task better than the default routing; otherwise omit it.",
+    "If the issue asks to add an agent, respond with agentProfiles (one entry per agent to create) and an empty tasks array; if it asks to remove one, use disableAgentIds the same way. Only do this when explicitly asked.",
   );
 
   return parts.join("\n");

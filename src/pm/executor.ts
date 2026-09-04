@@ -5,6 +5,7 @@ import type { AppConfig } from "../config.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JobStore } from "../job/store.js";
 import type { Logger } from "../logger.js";
+import type { AgentProfile, WorkspaceConfig } from "../profile/types.js";
 import type { WorkerProvider, WorkerRequest } from "../worker/provider.js";
 import { createWorktree } from "../worker/worktree.js";
 import { applyPlan } from "./apply.js";
@@ -21,6 +22,8 @@ export interface PmHandlerDeps {
   logger?: Logger;
   /** Composed system prompt (core policy + project policy + preset + profile); falls back to buildPmSystemPrompt(). */
   buildSystemPrompt?: () => Promise<string>;
+  /** The registered Agent Profile roster + Workspace Configuration (profile mode only). */
+  loadRoster?: () => Promise<{ agents: AgentProfile[]; workspace: WorkspaceConfig | null }>;
 }
 
 function errorMessage(error: unknown): string {
@@ -41,15 +44,17 @@ export function createPmHandler(deps: PmHandlerDeps): JobHandler {
       const logger = deps.logger?.child({ layer: "pm", issueKey: issue.key, runId: job.runId });
 
       const self = await jira.getMyself();
-      const [comments, existingSubtasks] = await Promise.all([
+      const [comments, existingSubtasks, roster] = await Promise.all([
         jira.getComments(issue.key),
         jira.searchIssues(`parent = "${issue.key}"`),
+        deps.loadRoster?.(),
       ]);
       const planningContext = buildPlanningContext(
         issue,
         comments,
         existingSubtasks,
         self.accountId,
+        roster?.agents,
       );
 
       const branch = `ggjira-pm/${issue.key}-${job.runId}`;
@@ -117,13 +122,23 @@ export function createPmHandler(deps: PmHandlerDeps): JobHandler {
       }
 
       try {
-        const applied = await applyPlan(jira, config, issue, plan, existingSubtasks);
+        const applied = await applyPlan(
+          jira,
+          config,
+          issue,
+          plan,
+          existingSubtasks,
+          roster?.agents,
+          roster?.workspace,
+        );
         return {
           status: "planned",
           summary: plan.summary,
           artifacts: [
             ...applied.createdKeys.map((key) => `created: ${key}`),
             ...applied.supersededKeys.map((key) => `superseded: ${key}`),
+            ...applied.createdProfileKeys.map((key) => `agent profile created: ${key}`),
+            ...applied.disabledAgentIds.map((id) => `agent profile disabled: ${id}`),
           ],
         };
       } catch (error) {

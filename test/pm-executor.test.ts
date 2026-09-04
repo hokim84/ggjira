@@ -31,11 +31,13 @@ function initTargetRepo(dir: string): void {
 }
 
 class StaticPlanProvider implements WorkerProvider {
+  readonly requests: WorkerRequest[] = [];
   constructor(
     private readonly structuredOutput: unknown,
     private readonly summary = "plan produced",
   ) {}
-  async run(_request: WorkerRequest, _hooks?: WorkerRunHooks): Promise<WorkerResult> {
+  async run(request: WorkerRequest, _hooks?: WorkerRunHooks): Promise<WorkerResult> {
+    this.requests.push(request);
     return {
       exitReason: "completed",
       isError: false,
@@ -166,5 +168,57 @@ describe("pm role E2E via runJobForIssue", () => {
 
     expect(job?.status).toBe("failed");
     expect(jira.labelChanges).toEqual([{ key: "KAN-3", label: "ggjira-failed", action: "add" }]);
+  });
+
+  it("includes the registered agent roster in the planning prompt when loadRoster is provided", async () => {
+    const issue = buildTestIssue({
+      key: "KAN-4",
+      projectKey: "KAN",
+      assigneeAccountId: PM.accountId,
+    });
+    jira.seedIssue(issue, [{ id: "21", name: "In Progress", toStatusName: "In Progress" }]);
+
+    const provider = new StaticPlanProvider({
+      needsDecision: false,
+      summary: "ok",
+      tasks: [{ title: "T", description: "D", acceptance: [] }],
+      keepTaskKeys: [],
+    });
+    const handler = createPmHandler({
+      config,
+      jira,
+      provider,
+      store,
+      worktreesRoot,
+      loadRoster: async () => ({
+        agents: [
+          {
+            issueKey: "KAN-11",
+            agentId: "unity-implement-01",
+            displayName: "Unity Implement 01",
+            role: "implement",
+            preset: "unity-programmer",
+            capabilities: ["Unity"],
+            workStyle: [],
+            humanInstructions: [],
+            enabled: true,
+            registration: {
+              machineId: "m1",
+              agentId: "unity-implement-01",
+              jiraAccountId: IMPLEMENT.accountId,
+              registeredAt: new Date().toISOString(),
+              claimToken: "t",
+              ggjiraVersion: "0.1.0",
+            },
+          },
+        ],
+        workspace: null,
+      }),
+    });
+
+    await runJobForIssue(issue, config, { jira, store, handler });
+
+    expect(provider.requests[0]?.prompt).toContain("unity-implement-01");
+    expect(provider.requests[0]?.prompt).toContain("Registered agents:");
   });
 });

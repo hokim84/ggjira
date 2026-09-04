@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { applyPlan, PlanApplyError } from "../src/pm/apply.js";
-import type { Plan } from "../src/pm/plan.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
+import { PlanApplyError, applyPlan } from "../src/pm/apply.js";
+import type { Plan } from "../src/pm/plan.js";
+import {
+  claimAgentProfile,
+  createAgentProfile,
+  findAgentProfiles,
+} from "../src/profile/profile.js";
+import type { AgentProfile } from "../src/profile/types.js";
 import { buildTestConfig, buildTestIssue } from "./helpers/fixtures.js";
 
 const IMPLEMENT_USER = {
@@ -16,6 +22,8 @@ function basePlan(overrides: Partial<Plan> = {}): Plan {
     summary: "plan summary",
     tasks: [{ title: "Task A", description: "Do A", acceptance: ["works"] }],
     keepTaskKeys: [],
+    agentProfiles: [],
+    disableAgentIds: [],
     ...overrides,
   };
 }
@@ -112,5 +120,136 @@ describe("applyPlan", () => {
     await expect(applyPlan(jira, config, parent, basePlan(), [])).rejects.toBeInstanceOf(
       PlanApplyError,
     );
+  });
+
+  describe("agent routing (profile mode)", () => {
+    async function makeRegisteredAgent(
+      jira: FakeJiraGateway,
+      agentId: string,
+      machineId: string,
+    ): Promise<AgentProfile> {
+      const profile = await createAgentProfile(jira, {
+        projectKey: "KAN",
+        issueTypeName: "Task",
+        agentId,
+        displayName: agentId,
+        role: "implement",
+        preset: null,
+        capabilities: [],
+        workStyle: [],
+        humanInstructions: [],
+      });
+      await claimAgentProfile(jira, profile, machineId, { settleMs: 0 });
+      const roster = await findAgentProfiles(jira, "KAN");
+      const registered = roster.find((a) => a.agentId === agentId);
+      if (!registered) throw new Error("test setup failed: agent not found after claim");
+      return registered;
+    }
+
+    it("routes a task to its requested assigneeAgentId when that agent is routable", async () => {
+      const jira = new FakeJiraGateway();
+      jira.setSelf({ accountId: "pm-account", displayName: "PM", emailAddress: null });
+      const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN" });
+      jira.seedIssue(parent);
+      const agentA = await makeRegisteredAgent(jira, "agent-a", "machine-a");
+      const agentB = await makeRegisteredAgent(jira, "agent-b", "machine-b");
+      const roster = [agentA, agentB];
+      const config = buildTestConfig();
+      const plan = basePlan({
+        tasks: [{ title: "T", description: "D", acceptance: [], assigneeAgentId: "agent-b" }],
+      });
+
+      await applyPlan(jira, config, parent, plan, [], roster);
+
+      expect(jira.createdIssues.at(-1)?.assigneeAccountId).toBe(agentB.registration?.jiraAccountId);
+    });
+
+    it("falls back to the first routable implement agent when no assigneeAgentId is given", async () => {
+      const jira = new FakeJiraGateway();
+      jira.setSelf({ accountId: "pm-account", displayName: "PM", emailAddress: null });
+      const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN" });
+      jira.seedIssue(parent);
+      const agentA = await makeRegisteredAgent(jira, "agent-a", "machine-a");
+      const roster = [agentA];
+      const config = buildTestConfig();
+
+      await applyPlan(jira, config, parent, basePlan(), [], roster);
+
+      expect(jira.createdIssues.at(-1)?.assigneeAccountId).toBe(agentA.registration?.jiraAccountId);
+    });
+
+    it("falls back to the roster default when the requested assigneeAgentId is unregistered or unknown", async () => {
+      const jira = new FakeJiraGateway();
+      jira.setSelf({ accountId: "pm-account", displayName: "PM", emailAddress: null });
+      const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN" });
+      jira.seedIssue(parent);
+      const agentA = await makeRegisteredAgent(jira, "agent-a", "machine-a");
+      const roster = [agentA];
+      const config = buildTestConfig();
+      const plan = basePlan({
+        tasks: [
+          { title: "T", description: "D", acceptance: [], assigneeAgentId: "nonexistent-agent" },
+        ],
+      });
+
+      await applyPlan(jira, config, parent, plan, [], roster);
+
+      expect(jira.createdIssues.at(-1)?.assigneeAccountId).toBe(agentA.registration?.jiraAccountId);
+    });
+
+    it("falls back to the legacy pm.implementAssignee when the roster has no routable implement agent", async () => {
+      const jira = new FakeJiraGateway();
+      jira.seedUser(IMPLEMENT_USER);
+      const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN" });
+      jira.seedIssue(parent);
+      const config = buildTestConfig();
+
+      const result = await applyPlan(jira, config, parent, basePlan(), [], []);
+
+      expect(jira.createdIssues[0]?.assigneeAccountId).toBe(IMPLEMENT_USER.accountId);
+      expect(result.createdKeys).toHaveLength(1);
+    });
+
+    it("creates a requested agent profile idempotently (skips if the agentId already exists)", async () => {
+      const jira = new FakeJiraGateway();
+      jira.setSelf({ accountId: "pm-account", displayName: "PM", emailAddress: null });
+      const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN" });
+      jira.seedIssue(parent);
+      const config = buildTestConfig();
+      const plan = basePlan({
+        tasks: [],
+        agentProfiles: [
+          { agentId: "unity-implement-01", role: "implement", capabilities: ["Unity"] },
+        ],
+      });
+
+      const result = await applyPlan(jira, config, parent, plan, []);
+      expect(result.createdProfileKeys).toHaveLength(1);
+      const createdCount = jira.createdIssues.length;
+
+      // Re-applying a plan requesting the same agentId must not create a duplicate.
+      const result2 = await applyPlan(jira, config, parent, plan, []);
+      expect(result2.createdProfileKeys).toHaveLength(0);
+      expect(jira.createdIssues).toHaveLength(createdCount);
+    });
+
+    it("disables a requested agent by agentId, adding the ggjira-disabled label", async () => {
+      const jira = new FakeJiraGateway();
+      jira.setSelf({ accountId: "pm-account", displayName: "PM", emailAddress: null });
+      const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN" });
+      jira.seedIssue(parent);
+      const agentA = await makeRegisteredAgent(jira, "agent-a", "machine-a");
+      const config = buildTestConfig();
+      const plan = basePlan({ tasks: [], disableAgentIds: ["agent-a"] });
+
+      const result = await applyPlan(jira, config, parent, plan, [], [agentA]);
+
+      expect(result.disabledAgentIds).toEqual(["agent-a"]);
+      expect(jira.labelChanges).toContainEqual({
+        key: agentA.issueKey,
+        label: "ggjira-disabled",
+        action: "add",
+      });
+    });
   });
 });

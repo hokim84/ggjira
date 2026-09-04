@@ -7,6 +7,9 @@ import type { JobStore } from "../job/store.js";
 import type { Logger } from "../logger.js";
 import { createPmHandler } from "../pm/executor.js";
 import { buildPmSystemPrompt } from "../pm/prompt.js";
+import { findAgentProfiles } from "../profile/profile.js";
+import type { AgentProfile, WorkspaceConfig } from "../profile/types.js";
+import { findWorkspaceConfig } from "../profile/workspace.js";
 import type { WorkerProvider } from "../worker/provider.js";
 import { buildImplementSystemPrompt } from "../worker/prompt.js";
 import { type AgentContext, loadAgentContext, verifyRegistration } from "./context.js";
@@ -72,6 +75,19 @@ function buildComposedSystemPrompt(
   };
 }
 
+function buildRosterLoader(
+  jira: JiraGateway,
+  projectKey: string,
+): () => Promise<{ agents: AgentProfile[]; workspace: WorkspaceConfig | null }> {
+  return async () => {
+    const [agents, workspace] = await Promise.all([
+      findAgentProfiles(jira, projectKey),
+      findWorkspaceConfig(jira, projectKey),
+    ]);
+    return { agents, workspace };
+  };
+}
+
 function createHandlerForRole(
   deps: AgentRuntimeDeps,
   loadContext?: () => Promise<AgentContext>,
@@ -87,6 +103,10 @@ function createHandlerForRole(
     : {};
 
   if (deps.config.agent.role === "pm") {
+    const loadRosterOpt =
+      loadContext && isProfileMode(deps.config)
+        ? { loadRoster: buildRosterLoader(deps.jira, deps.config.jira.projectKey) }
+        : {};
     return createPmHandler({
       config: deps.config,
       jira: deps.jira,
@@ -95,6 +115,7 @@ function createHandlerForRole(
       worktreesRoot: deps.worktreesRoot,
       ...loggerOpt,
       ...buildSystemPromptOpt,
+      ...loadRosterOpt,
     });
   }
   return createImplementHandler({

@@ -18,6 +18,16 @@ export const PlanTaskSchema = z.object({
   title: z.string().min(1),
   description: z.string().min(1),
   acceptance: z.array(z.string()).default([]),
+  /** agentId of a registered implement agent to route this task to; falls back to the roster default / legacy pm.implementAssignee. */
+  assigneeAgentId: z.string().min(1).optional(),
+});
+
+export const PlanAgentProfileRequestSchema = z.object({
+  agentId: z.string().min(1),
+  role: z.enum(["pm", "implement"]),
+  preset: z.string().min(1).optional(),
+  displayName: z.string().min(1).optional(),
+  capabilities: z.array(z.string()).default([]),
 });
 
 export const PlanSchema = z
@@ -28,6 +38,10 @@ export const PlanSchema = z
     /** Keys of existing subtasks a replan should keep as-is (not recreate or supersede). */
     keepTaskKeys: z.array(z.string()).default([]),
     decision: PlanDecisionSchema.optional(),
+    /** Agent Profiles to create (profile mode only; e.g. the requirement asked to add an agent). */
+    agentProfiles: z.array(PlanAgentProfileRequestSchema).default([]),
+    /** agentIds of existing Agent Profiles to disable (profile mode only). */
+    disableAgentIds: z.array(z.string()).default([]),
   })
   .superRefine((plan, ctx) => {
     if (plan.needsDecision && !plan.decision) {
@@ -37,11 +51,13 @@ export const PlanSchema = z
         message: "decision is required when needsDecision is true",
       });
     }
-    if (!plan.needsDecision && plan.tasks.length === 0) {
+    const managesAgentsOnly = plan.agentProfiles.length > 0 || plan.disableAgentIds.length > 0;
+    if (!plan.needsDecision && plan.tasks.length === 0 && !managesAgentsOnly) {
       ctx.addIssue({
         code: "custom",
         path: ["tasks"],
-        message: "tasks must be non-empty when needsDecision is false",
+        message:
+          "tasks must be non-empty when needsDecision is false, unless the plan only creates/disables agent profiles",
       });
     }
   });
@@ -52,7 +68,14 @@ export type Plan = z.infer<typeof PlanSchema>;
 export const PLAN_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["needsDecision", "summary", "tasks", "keepTaskKeys"],
+  required: [
+    "needsDecision",
+    "summary",
+    "tasks",
+    "keepTaskKeys",
+    "agentProfiles",
+    "disableAgentIds",
+  ],
   properties: {
     needsDecision: { type: "boolean" },
     summary: { type: "string" },
@@ -66,6 +89,7 @@ export const PLAN_JSON_SCHEMA = {
           title: { type: "string" },
           description: { type: "string" },
           acceptance: { type: "array", items: { type: "string" } },
+          assigneeAgentId: { type: "string" },
         },
       },
     },
@@ -94,6 +118,22 @@ export const PLAN_JSON_SCHEMA = {
         impact: { type: "string" },
       },
     },
+    agentProfiles: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["agentId", "role"],
+        properties: {
+          agentId: { type: "string" },
+          role: { type: "string", enum: ["pm", "implement"] },
+          preset: { type: "string" },
+          displayName: { type: "string" },
+          capabilities: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+    disableAgentIds: { type: "array", items: { type: "string" } },
   },
 } as const;
 
