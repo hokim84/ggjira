@@ -8,12 +8,20 @@ const JiraConfigSchema = z.object({
   baseUrl: z.string().url(),
   /** Overrides the JQL the runtime would otherwise derive from agent identity + workflow.readyStatus. */
   jql: z.string().min(1).optional(),
+  /** Scopes Agent Profile / Workspace Configuration issue lookups (profile mode only). */
+  projectKey: z.string().min(1).optional(),
+  /** Cached key of the `[GGJIRA] Workspace Configuration` issue found/created at setup. */
+  workspaceIssueKey: z.string().min(1).optional(),
 });
 
 const AgentConfigSchema = z.object({
   identity: z.string().min(1),
   role: AgentRoleSchema,
   machine: z.string().min(1),
+  /** Key of this agent's `[AGENT] <id>` profile issue; presence enables profile mode. */
+  profileKey: z.string().min(1).optional(),
+  /** UUID generated once at setup and kept across re-runs; identifies this installation for claiming a profile. */
+  machineId: z.string().uuid().optional(),
 });
 
 /**
@@ -108,6 +116,8 @@ const PollingConfigSchema = z.object({
 
 export const AppConfigSchema = z
   .object({
+    /** Absent or 2 = the pre-Agent-Profile config shape ("legacy mode"). 3 = profile-capable. */
+    configVersion: z.number().int().optional(),
     jira: JiraConfigSchema,
     agent: AgentConfigSchema,
     workflow: WorkflowConfigSchema.default({}),
@@ -118,11 +128,14 @@ export const AppConfigSchema = z
   })
   .superRefine((config, ctx) => {
     if (config.agent.role !== "pm") return;
-    if (!config.pm.implementAssignee) {
+    // In profile mode the implement assignee is resolved from the registered
+    // agent roster instead (pm/apply.ts), so implementAssignee becomes optional.
+    if (!config.agent.profileKey && !config.pm.implementAssignee) {
       ctx.addIssue({
         code: "custom",
         path: ["pm", "implementAssignee"],
-        message: 'pm.implementAssignee is required when agent.role is "pm"',
+        message:
+          'pm.implementAssignee is required when agent.role is "pm" (unless agent.profileKey is set)',
       });
     }
     if (!config.workflow.needsDecisionTransitionName) {
@@ -135,6 +148,19 @@ export const AppConfigSchema = z
   });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
+
+/**
+ * True when this config was set up through the Create/Join Agent Profile flow
+ * (`ggjira setup`'s "Create GGJira Workspace" / "Join as Agent" modes) rather
+ * than the legacy manual flow. Profile mode drives Jira-backed agent
+ * identity, prompt composition, and PM roster dispatch.
+ */
+export function isProfileMode(config: AppConfig): config is AppConfig & {
+  agent: { profileKey: string; machineId: string };
+  jira: { projectKey: string };
+} {
+  return Boolean(config.agent.profileKey && config.agent.machineId && config.jira.projectKey);
+}
 
 const JiraEnvSecretsSchema = z.object({
   email: z.string().email(),

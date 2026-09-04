@@ -22,6 +22,7 @@ import { JiraApiError, JiraClient } from "./jira/client.js";
 import { JobStore } from "./job/store.js";
 import type { Logger } from "./logger.js";
 import { rootLogger } from "./logger.js";
+import { hasLocalConfig } from "./setup/first-run.js";
 import { runSetupWizard } from "./setup/wizard.js";
 import { createProvider } from "./worker/factory.js";
 import type { WorkerRequest } from "./worker/provider.js";
@@ -44,6 +45,7 @@ const HELP = `ggjira — Jira-based orchestration for human + AI agent work
 
 Usage:
   ggjira <command> [options]
+  ggjira                 No ggjira.config.json yet: runs setup. Otherwise: starts the daemon (same as "run").
 
 Commands:
   setup              Interactive setup wizard (writes .env + ggjira.config.json)
@@ -539,9 +541,21 @@ async function runDaemon(): Promise<void> {
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
 
-  if (!command || command === "--help" || command === "-h") {
+  if (command === "--help" || command === "-h") {
     process.stdout.write(HELP);
     process.exitCode = 0;
+    return;
+  }
+
+  if (!command) {
+    // No local config yet: guide the user into setup instead of just
+    // printing HELP. Once ggjira.config.json exists, bare `ggjira` starts
+    // the daemon, matching the "ggjira" step in the target UX (advanced_plan.md §28).
+    if (hasLocalConfig(process.cwd())) {
+      await runDaemon();
+    } else {
+      await runSetup([]);
+    }
     return;
   }
 

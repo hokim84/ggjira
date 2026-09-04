@@ -1,11 +1,16 @@
 {
+  "configVersion": 3,
   "jira": {
-    "baseUrl": "https://your-domain.atlassian.net"
+    "baseUrl": "https://your-domain.atlassian.net",
+    "projectKey": "KAN",
+    "workspaceIssueKey": "KAN-10"
   },
   "agent": {
-    "identity": "ggjira-implement",
+    "identity": "unity-implement-01",
     "role": "implement",
-    "machine": "HODORI-HOME"
+    "machine": "1d88f0a2",
+    "profileKey": "KAN-11",
+    "machineId": "1d88f0a2-cafe-4b1a-8a4b-1234567890ab"
   },
   "workflow": {
     "readyStatus": "To Do",

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AppConfigSchema,
   ConfigError,
+  isProfileMode,
   loadAppConfig,
   loadJiraSecretsFromEnv,
   resolveJiraSecrets,
@@ -73,6 +74,46 @@ describe("loadAppConfig", () => {
 
     expect(result.success).toBe(true);
     expect(result.success && result.data.workflow.readyStatus).toBe(nfc);
+  });
+
+  it("loads a v2 config unchanged (legacy mode, no configVersion / profile fields)", () => {
+    const config = loadAppConfig("test/fixtures/valid-config.json");
+
+    expect(config.configVersion).toBeUndefined();
+    expect(config.agent.profileKey).toBeUndefined();
+    expect(config.agent.machineId).toBeUndefined();
+    expect(config.jira.projectKey).toBeUndefined();
+    expect(isProfileMode(config)).toBe(false);
+  });
+
+  it("loads a v3 profile-mode config with configVersion, projectKey, profileKey, machineId", () => {
+    const config = loadAppConfig("test/fixtures/valid-config-v3-profile.json");
+
+    expect(config.configVersion).toBe(3);
+    expect(config.jira.projectKey).toBe("KAN");
+    expect(config.jira.workspaceIssueKey).toBe("KAN-10");
+    expect(config.agent.profileKey).toBe("KAN-11");
+    expect(config.agent.machineId).toBe("1d88f0a2-1111-4111-8111-111111111111");
+    expect(isProfileMode(config)).toBe(true);
+  });
+
+  it("does not require pm.implementAssignee for a pm role in profile mode", () => {
+    const config = loadAppConfig("test/fixtures/valid-config-v3-profile-pm.json");
+
+    expect(config.agent.role).toBe("pm");
+    expect(config.pm.implementAssignee).toBeUndefined();
+    expect(isProfileMode(config)).toBe(true);
+  });
+
+  it("still requires pm.implementAssignee for a pm role outside profile mode", () => {
+    expect(() => loadAppConfig("test/fixtures/invalid-config-pm.json")).toThrow(ConfigError);
+  });
+
+  it("rejects a non-UUID agent.machineId", () => {
+    const raw = JSON.parse(readFileSync("test/fixtures/valid-config-v3-profile.json", "utf-8"));
+    raw.agent.machineId = "not-a-uuid";
+    const result = AppConfigSchema.safeParse(raw);
+    expect(result.success).toBe(false);
   });
 });
 
