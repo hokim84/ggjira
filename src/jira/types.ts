@@ -43,4 +43,21 @@ export interface CreateIssueInput {
   description?: string;
   parentKey?: string;
   assigneeAccountId?: string;
+  labels?: string[];
+}
+
+export interface JiraProjectSummary {
+  key: string;
+  name: string;
+}
+
+export interface JiraProjectIssueType {
+  name: string;
+  subtask: boolean;
+}
+
+export interface JiraProject {
+  key: string;
+  name: string;
+  issueTypes: JiraProjectIssueType[];
 }

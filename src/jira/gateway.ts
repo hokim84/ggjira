@@ -2,6 +2,8 @@ import type {
   CreateIssueInput,
   JiraComment,
   JiraIssue,
+  JiraProject,
+  JiraProjectSummary,
   JiraTransition,
   JiraUser,
   SearchIssuesOptions,
@@ -26,4 +28,9 @@ export interface JiraGateway {
   createIssue(input: CreateIssueInput): Promise<{ key: string }>;
   /** Pass `null` to unassign. */
   assignIssue(key: string, accountId: string | null): Promise<void>;
+  listProjects(): Promise<JiraProjectSummary[]>;
+  getProject(key: string): Promise<JiraProject>;
+  /** Reads a Jira entity property on an issue; `null` when the property is absent (404). */
+  getIssueProperty(key: string, propertyKey: string): Promise<unknown | null>;
+  setIssueProperty(key: string, propertyKey: string, value: unknown): Promise<void>;
 }

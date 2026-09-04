@@ -270,6 +270,22 @@ describe("JiraClient", () => {
     expect(result).toEqual({ key: "KAN-2" });
   });
 
+  it("createIssue includes labels in fields when provided", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { key: "KAN-3" }));
+    const client = new JiraClient(secrets);
+
+    await client.createIssue({
+      projectKey: "KAN",
+      issueTypeName: "Task",
+      summary: "Agent profile",
+      labels: ["ggjira-agent"],
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.fields.labels).toEqual(["ggjira-agent"]);
+  });
+
   it("assignIssue PUTs the accountId, including null to unassign", async () => {
     fetchMock.mockResolvedValueOnce(emptyResponse(204));
     const client = new JiraClient(secrets);
@@ -314,6 +330,109 @@ describe("JiraClient", () => {
     const client = new JiraClient(secrets);
 
     await expect(client.addComment("KAN-1", "x")).resolves.toBeUndefined();
+  });
+
+  it("returns undefined on a 200/201 response with an empty body (issue property writes)", async () => {
+    fetchMock.mockResolvedValueOnce(emptyResponse(200));
+    const client = new JiraClient(secrets);
+
+    await expect(
+      client.setIssueProperty("KAN-1", "ggjira.registration", { machineId: "m1" }),
+    ).resolves.toBeUndefined();
+
+    fetchMock.mockResolvedValueOnce(emptyResponse(201));
+    await expect(
+      client.setIssueProperty("KAN-1", "ggjira.registration", { machineId: "m1" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("listProjects GETs project/search and maps key/name", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        values: [
+          { key: "KAN", name: "Kanban" },
+          { key: "OPS", name: "Operations" },
+        ],
+        isLast: true,
+      }),
+    );
+    const client = new JiraClient(secrets);
+
+    const projects = await client.listProjects();
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://example.atlassian.net/rest/api/2/project/search?maxResults=100");
+    expect(init.method).toBe("GET");
+    expect(projects).toEqual([
+      { key: "KAN", name: "Kanban" },
+      { key: "OPS", name: "Operations" },
+    ]);
+  });
+
+  it("getProject GETs project/{key} and maps issueTypes with subtask flag", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        key: "KAN",
+        name: "Kanban",
+        issueTypes: [
+          { name: "Task", subtask: false },
+          { name: "Subtask", subtask: true },
+        ],
+      }),
+    );
+    const client = new JiraClient(secrets);
+
+    const project = await client.getProject("KAN");
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://example.atlassian.net/rest/api/2/project/KAN");
+    expect(project).toEqual({
+      key: "KAN",
+      name: "Kanban",
+      issueTypes: [
+        { name: "Task", subtask: false },
+        { name: "Subtask", subtask: true },
+      ],
+    });
+  });
+
+  it("getIssueProperty GETs the property and returns its value", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, { key: "ggjira.registration", value: { machineId: "m1" } }),
+    );
+    const client = new JiraClient(secrets);
+
+    const value = await client.getIssueProperty("KAN-1", "ggjira.registration");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "https://example.atlassian.net/rest/api/2/issue/KAN-1/properties/ggjira.registration",
+    );
+    expect(init.method).toBe("GET");
+    expect(value).toEqual({ machineId: "m1" });
+  });
+
+  it("getIssueProperty returns null when the property is absent (404)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(404, { errorMessages: ["Not found"] }));
+    const client = new JiraClient(secrets);
+
+    const value = await client.getIssueProperty("KAN-1", "ggjira.registration");
+
+    expect(value).toBeNull();
+  });
+
+  it("setIssueProperty PUTs the property value directly as the body", async () => {
+    fetchMock.mockResolvedValueOnce(emptyResponse(200));
+    const client = new JiraClient(secrets);
+
+    await client.setIssueProperty("KAN-1", "ggjira.registration", { machineId: "m1" });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "https://example.atlassian.net/rest/api/2/issue/KAN-1/properties/ggjira.registration",
+    );
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ machineId: "m1" });
   });
 
   it("retries a read call after a transient 503 and succeeds", async () => {

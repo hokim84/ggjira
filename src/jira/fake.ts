@@ -3,6 +3,8 @@ import type {
   CreateIssueInput,
   JiraComment,
   JiraIssue,
+  JiraProject,
+  JiraProjectSummary,
   JiraTransition,
   JiraUser,
   SearchIssuesOptions,
@@ -62,6 +64,8 @@ export class FakeJiraGateway implements JiraGateway {
   private readonly usersByAccountId = new Map<string, JiraUser>();
   private readonly failingTransitions = new Set<string>();
   private readonly commentFailurePredicates = new Map<string, (body: string) => boolean>();
+  private readonly projects = new Map<string, JiraProject>();
+  private readonly properties = new Map<string, Map<string, unknown>>();
   private self: JiraUser = {
     accountId: "self-account-id",
     displayName: "GGJIRA Test Agent",
@@ -91,6 +95,15 @@ export class FakeJiraGateway implements JiraGateway {
 
   seedUser(user: JiraUser): void {
     this.usersByAccountId.set(user.accountId, user);
+  }
+
+  seedProject(project: JiraProject): void {
+    this.projects.set(project.key, project);
+  }
+
+  /** Reads back what setIssueProperty stored, for assertions in tests. */
+  getStoredProperty(key: string, propertyKey: string): unknown | undefined {
+    return this.properties.get(key)?.get(propertyKey);
   }
 
   /** Sets the identity `getMyself()`/`currentUser()` resolve to for this gateway. */
@@ -241,6 +254,7 @@ export class FakeJiraGateway implements JiraGateway {
       summary: input.summary,
       description: input.description ?? null,
       statusName: "To Do",
+      labels: input.labels ?? [],
       issueTypeName: input.issueTypeName,
       parentKey: input.parentKey ?? null,
       projectKey: input.projectKey,
@@ -258,5 +272,25 @@ export class FakeJiraGateway implements JiraGateway {
     if (issue) {
       this.issues.set(key, { ...issue, assigneeAccountId: accountId });
     }
+  }
+
+  async listProjects(): Promise<JiraProjectSummary[]> {
+    return [...this.projects.values()].map((p) => ({ key: p.key, name: p.name }));
+  }
+
+  async getProject(key: string): Promise<JiraProject> {
+    const project = this.projects.get(key);
+    if (!project) throw new Error(`FakeJiraGateway: unknown project ${key}`);
+    return project;
+  }
+
+  async getIssueProperty(key: string, propertyKey: string): Promise<unknown | null> {
+    return this.properties.get(key)?.get(propertyKey) ?? null;
+  }
+
+  async setIssueProperty(key: string, propertyKey: string, value: unknown): Promise<void> {
+    const forIssue = this.properties.get(key) ?? new Map<string, unknown>();
+    forIssue.set(propertyKey, value);
+    this.properties.set(key, forIssue);
   }
 }

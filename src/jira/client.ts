@@ -6,6 +6,8 @@ import type {
   CreateIssueInput,
   JiraComment,
   JiraIssue,
+  JiraProject,
+  JiraProjectSummary,
   JiraTransition,
   JiraUser,
   SearchIssuesOptions,
@@ -99,6 +101,21 @@ interface RawCommentsResponse {
 
 interface RawCreateIssueResponse {
   key: string;
+}
+
+interface RawProjectSearchResponse {
+  values: Array<{ key: string; name: string }>;
+}
+
+interface RawProject {
+  key: string;
+  name: string;
+  issueTypes?: Array<{ name: string; subtask?: boolean }>;
+}
+
+interface RawIssuePropertyResponse {
+  key: string;
+  value: unknown;
 }
 
 function mapRawIssue(raw: RawJiraIssue): JiraIssue {
@@ -203,10 +220,11 @@ export class JiraClient implements JiraGateway {
       throw new JiraApiError(message, res.status, path, parsedBody, retryAfterMs);
     }
 
-    if (res.status === 204) {
-      return undefined as T;
-    }
-    return (await res.json()) as T;
+    // Several endpoints (issue properties PUT, among others) return 200/201
+    // with an empty body rather than 204, so empty-body detection is based on
+    // the actual response text instead of the status code.
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
   }
 
   async searchIssues(jql: string, opts: SearchIssuesOptions = {}): Promise<JiraIssue[]> {
@@ -326,6 +344,7 @@ export class JiraClient implements JiraGateway {
     if (input.description !== undefined) fields.description = input.description;
     if (input.parentKey) fields.parent = { key: input.parentKey };
     if (input.assigneeAccountId) fields.assignee = { accountId: input.assigneeAccountId };
+    if (input.labels?.length) fields.labels = input.labels;
 
     const raw = await this.request<RawCreateIssueResponse>("POST", "/rest/api/2/issue", { fields });
     return { key: raw.key };
@@ -335,5 +354,55 @@ export class JiraClient implements JiraGateway {
     await this.request<unknown>("PUT", `/rest/api/2/issue/${encodeURIComponent(key)}/assignee`, {
       accountId,
     });
+  }
+
+  async listProjects(): Promise<JiraProjectSummary[]> {
+    const response = await withRetry(
+      () =>
+        this.request<RawProjectSearchResponse>("GET", "/rest/api/2/project/search?maxResults=100"),
+      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+    );
+    return response.values.map((v) => ({ key: v.key, name: v.name }));
+  }
+
+  async getProject(key: string): Promise<JiraProject> {
+    const raw = await withRetry(
+      () => this.request<RawProject>("GET", `/rest/api/2/project/${encodeURIComponent(key)}`),
+      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+    );
+    return {
+      key: raw.key,
+      name: raw.name,
+      issueTypes: (raw.issueTypes ?? []).map((t) => ({
+        name: t.name,
+        subtask: t.subtask ?? false,
+      })),
+    };
+  }
+
+  async getIssueProperty(key: string, propertyKey: string): Promise<unknown | null> {
+    try {
+      const raw = await withRetry(
+        () =>
+          this.request<RawIssuePropertyResponse>(
+            "GET",
+            `/rest/api/2/issue/${encodeURIComponent(key)}/properties/${encodeURIComponent(propertyKey)}`,
+          ),
+        { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+      );
+      return raw.value;
+    } catch (error) {
+      if (error instanceof JiraApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /** Not retried: writes are never safe to retry blindly (ADR 0006). */
+  async setIssueProperty(key: string, propertyKey: string, value: unknown): Promise<void> {
+    await this.request<unknown>(
+      "PUT",
+      `/rest/api/2/issue/${encodeURIComponent(key)}/properties/${encodeURIComponent(propertyKey)}`,
+      value,
+    );
   }
 }
