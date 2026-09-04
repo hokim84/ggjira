@@ -113,6 +113,58 @@ describe("runPollCycle", () => {
     expect(worker.startedOrder).toHaveLength(3);
   });
 
+  it("skips the cycle entirely (no Jira search, no jobs) when shouldPoll resolves false", async () => {
+    class SpyingGateway extends FakeJiraGateway {
+      searchCalled = false;
+      override async searchIssues(...args: Parameters<FakeJiraGateway["searchIssues"]>) {
+        this.searchCalled = true;
+        return super.searchIssues(...args);
+      }
+    }
+    const jira = new SpyingGateway();
+    jira.setSelf(SELF);
+    const handler = createImplementHandler({
+      config,
+      provider: new NeverCalledWorkerProvider(),
+      store,
+      worktreesRoot,
+    });
+
+    const outcomes = await runPollCycle(config, {
+      jira,
+      store,
+      handler,
+      shouldPoll: async () => false,
+    });
+
+    expect(outcomes).toEqual([]);
+    expect(jira.searchCalled).toBe(false);
+  });
+
+  it("polls normally when shouldPoll resolves true", async () => {
+    const jira = new FakeJiraGateway();
+    jira.setSelf(SELF);
+    jira.seedIssue(
+      buildTestIssue({ key: "KAN-1", assigneeAccountId: SELF.accountId, statusName: "To Do" }),
+      [{ id: "21", name: "In Progress", toStatusName: "In Progress" }],
+    );
+    const handler = createImplementHandler({
+      config,
+      provider: new SequentialWorkerProvider(),
+      store,
+      worktreesRoot,
+    });
+
+    const outcomes = await runPollCycle(config, {
+      jira,
+      store,
+      handler,
+      shouldPoll: async () => true,
+    });
+
+    expect(outcomes).toHaveLength(1);
+  });
+
   it("returns an empty cycle and does not throw when the Jira search fails", async () => {
     const jira = new ThrowingSearchGateway();
     jira.setSelf(SELF);

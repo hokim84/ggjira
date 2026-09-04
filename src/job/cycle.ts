@@ -14,6 +14,8 @@ export interface CycleDeps {
   store: JobStore;
   handler: JobHandler;
   logger?: Logger;
+  /** When it resolves false, the cycle is skipped entirely (e.g. this agent's profile is disabled in Jira). */
+  shouldPoll?: () => Promise<boolean>;
 }
 
 export interface PollCycleOutcome {
@@ -32,6 +34,16 @@ export async function runPollCycle(
   config: AppConfig,
   deps: CycleDeps,
 ): Promise<PollCycleOutcome[]> {
+  if (deps.shouldPoll && !(await deps.shouldPoll())) {
+    deps.logger
+      ?.child({ layer: "poller" })
+      .info(
+        { event: "poll.skipped_disabled" },
+        "this agent's profile is disabled; skipping poll cycle",
+      );
+    return [];
+  }
+
   let candidates: JiraIssue[];
   try {
     candidates = await findAssignedJobs(deps.jira, config, deps.store);

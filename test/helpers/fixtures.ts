@@ -33,6 +33,22 @@ export function buildTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   };
 }
 
+/** A profile-mode AppConfig (advanced_plan.md's Agent Profile flow), for tests exercising that path. */
+export function buildProfileModeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+  return buildTestConfig({
+    configVersion: 3,
+    jira: { baseUrl: "https://example.atlassian.net", projectKey: "KAN" },
+    agent: {
+      identity: "unity-implement-01",
+      role: "implement",
+      machine: "1d88f0a2",
+      profileKey: "KAN-11",
+      machineId: "1d88f0a2-1111-4111-8111-111111111111",
+    },
+    ...overrides,
+  });
+}
+
 export function buildTestIssue(overrides: Partial<JiraIssue> & Pick<JiraIssue, "key">): JiraIssue {
   return {
     id: overrides.key,

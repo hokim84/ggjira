@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { JobStore } from "../src/job/store.js";
 import { buildAssignedJql, findAssignedJobs } from "../src/poller/poller.js";
+import { AGENT_LABEL, WORKSPACE_LABEL } from "../src/profile/types.js";
 import { buildTestConfig, buildTestIssue } from "./helpers/fixtures.js";
 
 const SELF = {
@@ -82,5 +83,35 @@ describe("findAssignedJobs", () => {
     const candidates = await findAssignedJobs(jira, config, store);
 
     expect(candidates.map((i) => i.key)).toEqual(["KAN-2"]);
+  });
+
+  it("excludes GGJIRA meta issues (Agent Profile / Workspace Configuration) even if assigned to this agent", async () => {
+    const jira = new FakeJiraGateway();
+    jira.setSelf(SELF);
+    jira.seedIssue(
+      buildTestIssue({ key: "KAN-1", assigneeAccountId: SELF.accountId, statusName: "To Do" }),
+    );
+    jira.seedIssue(
+      buildTestIssue({
+        key: "KAN-2",
+        assigneeAccountId: SELF.accountId,
+        statusName: "To Do",
+        labels: [AGENT_LABEL],
+        summary: "[AGENT] pm-01",
+      }),
+    );
+    jira.seedIssue(
+      buildTestIssue({
+        key: "KAN-3",
+        assigneeAccountId: SELF.accountId,
+        statusName: "To Do",
+        labels: [WORKSPACE_LABEL],
+        summary: "[GGJIRA] Workspace Configuration",
+      }),
+    );
+
+    const candidates = await findAssignedJobs(jira, config, store);
+
+    expect(candidates.map((i) => i.key)).toEqual(["KAN-1"]);
   });
 });

@@ -483,8 +483,11 @@ async function setUpPolling(): Promise<PollSetup | undefined> {
   mkdirSync(worktreesRoot, { recursive: true });
 
   const runtime = await bootstrapAgent({ config, jira, store, provider, worktreesRoot, logger });
+  const profileSuffix = runtime.context
+    ? `  profile: ${runtime.context.profile.issueKey}  machine: ${config.agent.machineId?.slice(0, 8)}`
+    : "";
   process.stdout.write(
-    `Agent: ${config.agent.identity}@${config.agent.machine}  role: ${config.agent.role}  jira identity: ${runtime.self.displayName}\n`,
+    `Agent: ${config.agent.identity}@${config.agent.machine}  role: ${config.agent.role}  jira identity: ${runtime.self.displayName}${profileSuffix}\n`,
   );
 
   const staleClaims = Object.keys(store.listClaims());

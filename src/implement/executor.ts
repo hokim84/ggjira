@@ -20,6 +20,8 @@ export interface ImplementHandlerDeps {
   store: JobStore;
   worktreesRoot: string;
   logger?: Logger;
+  /** Composed system prompt (core policy + project policy + preset + profile); falls back to buildImplementSystemPrompt(). */
+  buildSystemPrompt?: () => Promise<string>;
 }
 
 function errorMessage(error: unknown): string {
@@ -60,11 +62,15 @@ export function createImplementHandler(deps: ImplementHandlerDeps): JobHandler {
         };
       }
 
+      const systemPrompt = deps.buildSystemPrompt
+        ? await deps.buildSystemPrompt()
+        : buildImplementSystemPrompt();
+
       const request: WorkerRequest = {
         prompt: buildImplementPrompt({ title: issue.summary, description: issue.description }),
         cwd: worktreePath,
         timeoutMs: config.provider.timeoutMs,
-        systemPrompt: buildImplementSystemPrompt(),
+        systemPrompt,
       };
 
       const workerLogPath = store.workerLogPath(issue.key, job.runId);

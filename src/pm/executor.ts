@@ -19,6 +19,8 @@ export interface PmHandlerDeps {
   store: JobStore;
   worktreesRoot: string;
   logger?: Logger;
+  /** Composed system prompt (core policy + project policy + preset + profile); falls back to buildPmSystemPrompt(). */
+  buildSystemPrompt?: () => Promise<string>;
 }
 
 function errorMessage(error: unknown): string {
@@ -67,11 +69,15 @@ export function createPmHandler(deps: PmHandlerDeps): JobHandler {
         );
       }
 
+      const systemPrompt = deps.buildSystemPrompt
+        ? await deps.buildSystemPrompt()
+        : buildPmSystemPrompt();
+
       const request: WorkerRequest = {
         prompt: buildPlanningPrompt(planningContext),
         cwd: worktreePath,
         timeoutMs: config.provider.timeoutMs,
-        systemPrompt: buildPmSystemPrompt(),
+        systemPrompt,
         outputSchema: PLAN_JSON_SCHEMA,
         readOnly: true,
       };
