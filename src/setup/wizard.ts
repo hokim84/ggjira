@@ -1,27 +1,36 @@
 import { readFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { randomUUID } from "node:crypto";
 // The classic callback-based readline module, not `node:readline/promises`:
 // the promises Interface doesn't expose `_writeToOutput` (needed to mask
 // secret input, see askSecretViaInterface) on this Node version.
 import { type Interface, createInterface } from "node:readline";
-import { AGENT_ROLES, type AgentRole } from "../agent/role.js";
+import path from "node:path";
 import {
-  AppConfigSchema,
+  type AppConfig,
+  type JiraSecrets,
   ConfigError,
+  isProfileMode,
   loadAppConfig,
   loadJiraSecretsFromEnv,
   resolveJiraSecrets,
 } from "../config.js";
+import type { JiraGateway } from "../jira/gateway.js";
+import { getRegistration, parseAgentProfile } from "../profile/profile.js";
+import { SetupError, describeJiraError } from "./errors.js";
 import {
-  checkIsGitRepo,
-  checkJiraConnection,
-  checkProviderCommand,
-  checkWorkspacePath,
-} from "./validators.js";
-import { writeConfigFile, writeEnvFile } from "./writers.js";
+  type AskFn,
+  type FlowContext,
+  type SetupResult,
+  askChoice,
+  defaultCreateJira,
+  runCreateWorkspaceFlow,
+  runJoinAgentFlow,
+  runManualFlow,
+} from "./flows.js";
+import { checkJiraConnection, checkProviderCommand, checkWorkspacePath } from "./validators.js";
 
-export type AskFn = (question: string, defaultValue?: string) => Promise<string>;
+export type { AskFn, SetupResult } from "./flows.js";
+export { SetupError } from "./errors.js";
 
 export interface SetupOptions {
   check: boolean;
@@ -29,18 +38,31 @@ export interface SetupOptions {
   ask?: AskFn;
   askSecret?: AskFn;
   print?: (line: string) => void;
+  /** Skips the menu and runs one flow directly -- used by tests and non-interactive callers. */
+  mode?: "create" | "join" | "manual";
+  /** Defaults to a real JiraClient; tests inject a FakeJiraGateway here. */
+  createJira?: (secrets: JiraSecrets) => JiraGateway;
+  /** Delay claimAgentProfile waits before re-reading to detect a race; 0 in tests. Defaults to 1000ms. */
+  settleMs?: number;
+  machineIdFactory?: () => string;
 }
 
-export class SetupError extends Error {}
+const MODE_CHOICES = ["1", "2", "3"] as const;
 
-async function askChoice<T extends string>(
-  ask: AskFn,
-  label: string,
-  choices: readonly T[],
-  defaultValue: T,
-): Promise<T> {
-  const answer = (await ask(`${label} (${choices.join("/")})`, defaultValue)).trim();
-  return (choices as readonly string[]).includes(answer) ? (answer as T) : defaultValue;
+async function askMode(ask: AskFn, print: (line: string) => void, existingConfig?: AppConfig) {
+  print(
+    [
+      "GGJIRA Setup",
+      "  1) Create GGJira Workspace   -- first PM machine for this project",
+      "  2) Join as Agent             -- register this machine as an existing Agent Profile",
+      "  3) Manual setup (legacy)     -- enter every value by hand, no Agent Profile",
+    ].join("\n"),
+  );
+  const defaultChoice = existingConfig?.agent.profileKey ? "2" : "1";
+  const choice = await askChoice(ask, "Choice", MODE_CHOICES, defaultChoice);
+  if (choice === "2") return "join" as const;
+  if (choice === "3") return "manual" as const;
+  return "create" as const;
 }
 
 /**
@@ -129,8 +151,9 @@ async function runCheck(
   configPath: string,
   envPath: string,
   print: (line: string) => void,
+  createJira: (secrets: JiraSecrets) => JiraGateway,
 ): Promise<void> {
-  let config: ReturnType<typeof loadAppConfig>;
+  let config: AppConfig;
   try {
     config = loadAppConfig(configPath);
   } catch (error) {
@@ -151,7 +174,8 @@ async function runCheck(
   print(`env: OK (${envPath})`);
 
   const secrets = resolveJiraSecrets(config, envSecrets);
-  const connection = await checkJiraConnection(secrets.baseUrl, secrets.email, secrets.apiToken);
+  const jira = createJira(secrets);
+  const connection = await checkJiraConnection(jira);
   print(`jira connection: ${connection.ok ? "OK" : "FAILED"} (${connection.message})`);
   if (!connection.ok) process.exitCode = 1;
 
@@ -164,23 +188,49 @@ async function runCheck(
     `provider "${config.provider.command}": ${providerCheck.ok ? "OK" : "FAILED"} (${providerCheck.message})`,
   );
   if (!providerCheck.ok) process.exitCode = 1;
+
+  if (!isProfileMode(config)) return;
+  try {
+    const registration = await getRegistration(jira, config.agent.profileKey);
+    const issue = await jira.getIssue(config.agent.profileKey);
+    const profile = parseAgentProfile(issue, registration);
+    if (!profile.registration) {
+      print(`profile: FAILED (${config.agent.profileKey} "${profile.agentId}" is not registered)`);
+      process.exitCode = 1;
+    } else if (profile.registration.machineId !== config.agent.machineId) {
+      print(
+        `profile: FAILED (${config.agent.profileKey} "${profile.agentId}" is registered to a different machine)`,
+      );
+      process.exitCode = 1;
+    } else if (!profile.enabled) {
+      print(`profile: disabled (${config.agent.profileKey} "${profile.agentId}")`);
+    } else {
+      print(
+        `profile: OK (${config.agent.profileKey} "${profile.agentId}", registered to this machine)`,
+      );
+    }
+  } catch (error) {
+    print(`profile: FAILED (${describeJiraError(error)})`);
+    process.exitCode = 1;
+  }
 }
 
 /**
- * Interactive setup: Jira URL -> credentials -> connection check -> agent
- * identity/role/machine -> workspace -> provider -> workflow status/transition
- * names -> (pm only) decision transition + implement assignee -> write
- * .env + ggjira.config.json (phase 2 §5.1). `--check` validates an existing
- * setup instead of prompting.
+ * Interactive setup. With no config yet, shows a menu (Create GGJira
+ * Workspace / Join as Agent / Manual setup); an existing config re-selects
+ * its previous mode by default. `--check` validates an existing setup
+ * instead of prompting. See src/setup/flows.ts for what each mode actually
+ * does.
  */
-export async function runSetupWizard(opts: SetupOptions): Promise<void> {
+export async function runSetupWizard(opts: SetupOptions): Promise<SetupResult> {
   const print = opts.print ?? ((line: string) => process.stdout.write(`${line}\n`));
   const configPath = path.join(opts.cwd, "ggjira.config.json");
   const envPath = path.join(opts.cwd, ".env");
+  const createJira = opts.createJira ?? defaultCreateJira;
 
   if (opts.check) {
-    await runCheck(configPath, envPath, print);
-    return;
+    await runCheck(configPath, envPath, print, createJira);
+    return { startAgent: false };
   }
 
   // A single shared readline interface for the whole wizard: see
@@ -214,7 +264,7 @@ export async function runSetupWizard(opts: SetupOptions): Promise<void> {
   // config/env is not an error here -- runCheck / loadAppConfig's own
   // ConfigError is what surfaces migration problems; here we just have
   // nothing to prefill from.
-  let existingConfig: ReturnType<typeof loadAppConfig> | undefined;
+  let existingConfig: AppConfig | undefined;
   try {
     existingConfig = loadAppConfig(configPath);
   } catch {
@@ -227,118 +277,35 @@ export async function runSetupWizard(opts: SetupOptions): Promise<void> {
     existingSecrets = undefined;
   }
 
+  const flowCtx: FlowContext = {
+    ask,
+    askSecret,
+    print,
+    configPath,
+    envPath,
+    createJira,
+    settleMs: opts.settleMs ?? 1000,
+    machineIdFactory: opts.machineIdFactory ?? randomUUID,
+    ...(existingConfig ? { existingConfig } : {}),
+    ...(existingSecrets ? { existingSecrets } : {}),
+  };
+
   try {
     print("Welcome to GGJIRA setup.\n");
     if (existingConfig) {
       print(`Found an existing setup at ${configPath} -- reusing its values as defaults.\n`);
     }
 
-    const baseUrl = await ask(
-      "Jira URL",
-      existingConfig?.jira.baseUrl ?? "https://your-domain.atlassian.net",
-    );
-    const email = await ask("Jira account email", existingSecrets?.email);
-    const apiToken = await askSecret("Jira API token", existingSecrets?.apiToken);
+    const mode = opts.mode ?? (await askMode(ask, print, existingConfig));
 
-    print("Checking Jira connection...");
-    const connection = await checkJiraConnection(baseUrl, email, apiToken);
-    if (!connection.ok) {
-      throw new SetupError(`Could not connect to Jira: ${connection.message}`);
-    }
-    print(`  ${connection.message}`);
-
-    const identity = await ask(
-      "Agent identity",
-      existingConfig?.agent.identity ?? connection.self?.displayName ?? "ggjira-implement",
-    );
-    const role = await askChoice<AgentRole>(
-      ask,
-      "Role",
-      AGENT_ROLES,
-      existingConfig?.agent.role ?? "implement",
-    );
-    const machine = await ask("Machine name", existingConfig?.agent.machine ?? os.hostname());
-
-    const workspacePath = await ask("Workspace (target repo) path", existingConfig?.workspace.path);
-    const workspaceCheck = checkWorkspacePath(workspacePath);
-    if (!workspaceCheck.ok) print(`  warning: ${workspaceCheck.message}`);
-    else if (!(await checkIsGitRepo(workspacePath))) print("  warning: not a git repository");
-    const baseBranch = await ask("Base branch", existingConfig?.workspace.baseBranch ?? "main");
-
-    const providerType = await askChoice(
-      ask,
-      "Provider",
-      ["claude-code", "codex"] as const,
-      existingConfig?.provider.type ?? "claude-code",
-    );
-    const providerCommand = providerType === "codex" ? "codex" : "claude";
-    const providerCheck = await checkProviderCommand(providerCommand);
-    if (!providerCheck.ok) {
-      print(`  warning: could not run "${providerCommand} --version" (${providerCheck.message})`);
-    }
-    const model = await ask("Model", existingConfig?.provider.model ?? "sonnet");
-
-    // Defaults match GGJIRA's own suggested Jira workflow (README "Jira 준비"):
-    // create a board with these exact status/transition names, or override
-    // them here to match an existing board.
-    const readyStatus = await ask(
-      "Ready-to-claim Jira status",
-      existingConfig?.workflow.readyStatus ?? "To Do",
-    );
-    const claimTransitionName = await ask(
-      "Claim transition name",
-      existingConfig?.workflow.claimTransitionName ?? "In Progress",
-    );
-    const doneTransitionName = await ask(
-      "Done transition name",
-      existingConfig?.workflow.doneTransitionName ?? "In Review",
-    );
-
-    let needsDecisionTransitionName: string | undefined;
-    let implementAssignee: string | undefined;
-    if (role === "pm") {
-      needsDecisionTransitionName = await ask(
-        "Needs-decision transition name",
-        existingConfig?.workflow.needsDecisionTransitionName ?? "Needs Decision",
-      );
-      implementAssignee = await ask(
-        "Implement agent's Jira email (assignee for generated subtasks)",
-        existingConfig?.pm.implementAssignee,
-      );
-    }
-
-    const raw = {
-      jira: { baseUrl },
-      agent: { identity, role, machine },
-      workflow: {
-        readyStatus,
-        claimTransitionName,
-        doneTransitionName,
-        ...(needsDecisionTransitionName ? { needsDecisionTransitionName } : {}),
-      },
-      workspace: { path: workspacePath, baseBranch },
-      provider: { type: providerType, command: providerCommand, model },
-      pm: implementAssignee ? { implementAssignee } : {},
-      polling: { intervalMs: 60000 },
-    };
-
-    const result = AppConfigSchema.safeParse(raw);
-    if (!result.success) {
-      throw new SetupError(`Generated config failed validation: ${result.error.message}`);
-    }
-
-    writeEnvFile(envPath, { email, apiToken });
-    writeConfigFile(configPath, raw);
-
-    print(`\nWrote ${envPath} and ${configPath}.`);
-    print(
-      'Run "ggjira once" to try a single poll cycle, or "ggjira setup --check" to re-validate later.',
-    );
+    if (mode === "create") return await runCreateWorkspaceFlow(flowCtx);
+    if (mode === "join") return await runJoinAgentFlow(flowCtx);
+    return await runManualFlow(flowCtx);
   } catch (error) {
     if (error instanceof SetupError || error instanceof ConfigError) {
       print(`\nSetup failed: ${error.message}`);
       process.exitCode = 1;
-      return;
+      return { startAgent: false };
     }
     throw error;
   } finally {

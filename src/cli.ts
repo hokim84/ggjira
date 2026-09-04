@@ -114,7 +114,10 @@ function createJiraClientOrPrintError(config: AppConfig, logger: Logger): JiraCl
 
 async function runSetup(args: string[]): Promise<void> {
   const check = args.includes("--check");
-  await runSetupWizard({ check, cwd: process.cwd() });
+  const result = await runSetupWizard({ check, cwd: process.cwd() });
+  if (result.startAgent) {
+    await runDaemon();
+  }
 }
 
 async function runJiraSmoke(issueKey: string | undefined): Promise<void> {

@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { JiraClient } from "../jira/client.js";
+import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraUser } from "../jira/types.js";
+import { describeJiraError } from "./errors.js";
 
 export interface CheckResult {
   ok: boolean;
@@ -12,17 +13,24 @@ export interface JiraConnectionCheck extends CheckResult {
   self?: JiraUser;
 }
 
-export async function checkJiraConnection(
-  baseUrl: string,
-  email: string,
-  apiToken: string,
-): Promise<JiraConnectionCheck> {
+export async function checkJiraConnection(jira: JiraGateway): Promise<JiraConnectionCheck> {
   try {
-    const client = new JiraClient({ baseUrl, email, apiToken });
-    const self = await client.getMyself();
+    const self = await jira.getMyself();
     return { ok: true, message: `connected as ${self.displayName} (${self.accountId})`, self };
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    return { ok: false, message: describeJiraError(error) };
+  }
+}
+
+export async function checkProjectAccess(
+  jira: JiraGateway,
+  projectKey: string,
+): Promise<CheckResult> {
+  try {
+    const project = await jira.getProject(projectKey);
+    return { ok: true, message: `found project "${project.name}" (${project.key})` };
+  } catch (error) {
+    return { ok: false, message: describeJiraError(error) };
   }
 }
 

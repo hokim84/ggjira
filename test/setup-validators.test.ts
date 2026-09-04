@@ -3,9 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { JiraClient } from "../src/jira/client.js";
 import {
   checkIsGitRepo,
   checkJiraConnection,
+  checkProjectAccess,
   checkProviderCommand,
   checkWorkspacePath,
 } from "../src/setup/validators.js";
@@ -75,25 +77,74 @@ describe("checkJiraConnection", () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse(200, { accountId: "acc-1", displayName: "GGJIRA", emailAddress: "a@b.com" }),
     );
+    const jira = new JiraClient({
+      baseUrl: "https://example.atlassian.net",
+      email: "a@b.com",
+      apiToken: "token",
+    });
 
-    const result = await checkJiraConnection("https://example.atlassian.net", "a@b.com", "token");
+    const result = await checkJiraConnection(jira);
 
     expect(result.ok).toBe(true);
     expect(result.self?.accountId).toBe("acc-1");
   });
 
-  it("reports not ok with the error message on failure", async () => {
+  it("reports not ok with a human-readable message on a 401", async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse(401, { errorMessages: ["unauthorized"] }),
     );
+    const jira = new JiraClient({
+      baseUrl: "https://example.atlassian.net",
+      email: "a@b.com",
+      apiToken: "bad-token",
+    });
 
-    const result = await checkJiraConnection(
-      "https://example.atlassian.net",
-      "a@b.com",
-      "bad-token",
-    );
+    const result = await checkJiraConnection(jira);
 
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("unauthorized");
+    expect(result.message).toBe("Invalid email or API token.");
+  });
+});
+
+describe("checkProjectAccess", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock.mockReset();
+  });
+
+  it("reports ok when the project is found", async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse(200, { key: "KAN", name: "Kanban", issueTypes: [] }),
+    );
+    const jira = new JiraClient({
+      baseUrl: "https://example.atlassian.net",
+      email: "a@b.com",
+      apiToken: "token",
+    });
+
+    const result = await checkProjectAccess(jira, "KAN");
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("KAN");
+  });
+
+  it("reports a human-readable message on a 404", async () => {
+    fetchMock.mockImplementation(async () => jsonResponse(404, { errorMessages: ["Not found"] }));
+    const jira = new JiraClient({
+      baseUrl: "https://example.atlassian.net",
+      email: "a@b.com",
+      apiToken: "token",
+    });
+
+    const result = await checkProjectAccess(jira, "NOPE");
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("Not found -- check the Jira URL and project key.");
   });
 });

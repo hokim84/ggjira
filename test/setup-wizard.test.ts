@@ -64,7 +64,7 @@ describe("runSetupWizard", () => {
       "In Review", // done transition
     ]);
 
-    await runSetupWizard({ check: false, cwd, ask, print: (l) => lines.push(l) });
+    await runSetupWizard({ check: false, cwd, ask, mode: "manual", print: (l) => lines.push(l) });
 
     const configPath = path.join(cwd, "ggjira.config.json");
     const envPath = path.join(cwd, ".env");
@@ -109,7 +109,7 @@ describe("runSetupWizard", () => {
       "ggjira-implement@example.com",
     ]);
 
-    await runSetupWizard({ check: false, cwd, ask, print: (l) => lines.push(l) });
+    await runSetupWizard({ check: false, cwd, ask, mode: "manual", print: (l) => lines.push(l) });
 
     const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
     expect(config.agent.role).toBe("pm");
@@ -134,7 +134,7 @@ describe("runSetupWizard", () => {
       "In Review",
     ]);
 
-    await runSetupWizard({ check: false, cwd, ask, print: (l) => lines.push(l) });
+    await runSetupWizard({ check: false, cwd, ask, mode: "manual", print: (l) => lines.push(l) });
     // run again with different answers to trigger the backup path
     const ask2 = scriptedAsk([
       "https://example.atlassian.net",
@@ -151,7 +151,13 @@ describe("runSetupWizard", () => {
       "In Progress",
       "In Review",
     ]);
-    await runSetupWizard({ check: false, cwd, ask: ask2, print: (l) => lines.push(l) });
+    await runSetupWizard({
+      check: false,
+      cwd,
+      ask: ask2,
+      mode: "manual",
+      print: (l) => lines.push(l),
+    });
 
     expect(existsSync(path.join(cwd, "ggjira.config.json.bak"))).toBe(true);
     expect(existsSync(path.join(cwd, ".env.bak"))).toBe(true);
@@ -175,14 +181,26 @@ describe("runSetupWizard", () => {
       "Doing",
       "Done",
     ]);
-    await runSetupWizard({ check: false, cwd, ask: firstRun, print: (l) => lines.push(l) });
+    await runSetupWizard({
+      check: false,
+      cwd,
+      ask: firstRun,
+      mode: "manual",
+      print: (l) => lines.push(l),
+    });
 
     // Second run: accept every default (empty answers) except leave nothing to
     // actually change -- this simulates "just re-running setup", which should
     // NOT silently reset any of the first run's values back to GGJIRA's
     // hardcoded English defaults ("To Do" etc.).
     const secondRun = scriptedAsk(Array(13).fill(""));
-    await runSetupWizard({ check: false, cwd, ask: secondRun, print: (l) => lines.push(l) });
+    await runSetupWizard({
+      check: false,
+      cwd,
+      ask: secondRun,
+      mode: "manual",
+      print: (l) => lines.push(l),
+    });
 
     const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
     expect(config.workflow.readyStatus).toBe("Backlog");
@@ -203,7 +221,7 @@ describe("runSetupWizard", () => {
     );
     const ask = scriptedAsk(["https://example.atlassian.net", "a@b.com", "bad-token"]);
 
-    await runSetupWizard({ check: false, cwd, ask, print: (l) => lines.push(l) });
+    await runSetupWizard({ check: false, cwd, ask, mode: "manual", print: (l) => lines.push(l) });
 
     expect(existsSync(path.join(cwd, "ggjira.config.json"))).toBe(false);
     expect(existsSync(path.join(cwd, ".env"))).toBe(false);

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { type AgentRole, isAgentRole } from "../agent/role.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
+import { GGJIRA_VERSION } from "../version.js";
 import { getItems, getScalar, parseSections, renderSections } from "./description.js";
 import { AGENT_LABEL, DISABLED_LABEL, REGISTRATION_PROPERTY } from "./types.js";
 import type { AgentProfile, AgentProfileInput, AgentRegistration } from "./types.js";
@@ -226,7 +227,7 @@ export async function claimAgentProfile(
   const settleMs = opts.settleMs ?? 1000;
   const now = opts.now ?? (() => new Date());
   const claimTokenFactory = opts.claimTokenFactory ?? randomUUID;
-  const ggjiraVersion = opts.ggjiraVersion ?? "0.1.0";
+  const ggjiraVersion = opts.ggjiraVersion ?? GGJIRA_VERSION;
 
   const existing = await getRegistration(jira, profile.issueKey);
   if (existing && existing.machineId !== machineId && !opts.takeover) {
