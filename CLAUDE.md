@@ -22,7 +22,12 @@ Assignee Dispatch + Multi-Machine)를 참고한다. 원문 요구사항은 `writ
 - `src/worker/` — WorkerProvider 인터페이스, Claude Code CLI / Codex CLI 실행, worktree
 - `src/reporter/` — `ExecutionResult` → Jira 댓글/전이/라벨(표준 포맷, CLAUDE.md §완료의 정의 아님,
   §4.4 참고)로 기록
-- `src/setup/` — `ggjira setup` 대화형 위저드: Jira 연결/워크스페이스/Provider 검증, config 저장
+- `src/setup/` — `ggjira setup` 대화형 위저드(Create GGJira Workspace / Join as Agent / Manual):
+  Jira 연결/워크스페이스/Provider 검증, config 저장
+- `src/profile/` — Agent Profile(`[AGENT] <id>` 이슈)과 Workspace Configuration
+  (`[GGJIRA] Workspace Configuration` 이슈)을 Jira 이슈로 표현·검색·등록(claim)하는 계층.
+  Jira Workflow/Status는 건드리지 않는다(`advanced_plan.md` §2.1) — 식별은 라벨, 등록은
+  issue property(`ggjira.registration`), 사람이 보는 설정은 description 텍스트로 표현한다
 
 **`src/pm/`은 `src/implement/`를 import하지 않는다.** PM은 Jira 쓰기(이슈 생성/할당/전이)만
 하고, 실행은 별도 프로세스(다른 머신의 Implement Agent)가 Jira를 통해 발견해 수행한다

@@ -21,8 +21,9 @@ GGJIRA가 실패하거나 예상과 다르게 동작할 때, 어디를 보고 �
    있는지. 데몬이 정상이라면 여기 남은 이슈는 실제로 실행 중이거나(최근에 갱신됨), 곧
    재시작 복구 로직이 정리할 대상이다.
 6. **구조화 로그** — `layer` 필드로 계층을 구분한다: `jira`, `poller`, `agent`, `job`,
-   `implement`, `pm`, `reporter`, `setup`. `LOG_LEVEL=debug npm run dev -- once`로 더 자세히
-   볼 수 있다. `layer:"job"`에서 `"claim lost to another agent"`가 자주 반복되면 §8 참고.
+   `implement`, `pm`, `reporter`, `setup`, `profile`. `LOG_LEVEL=debug npm run dev -- once`로
+   더 자세히 볼 수 있다. `layer:"job"`에서 `"claim lost to another agent"`가 자주 반복되면
+   §8 참고.
 
 ## 2. 계층별 실패 신호 (architecture.md §"계층과 실패 추적" 대응)
 
@@ -36,6 +37,7 @@ GGJIRA가 실패하거나 예상과 다르게 동작할 때, 어디를 보고 �
 | pm | Plan provider 실행 실패, plan JSON 파싱 실패, Jira에 하위 티켓 적용 실패(`pm.implementAssignee` 미매칭 등) | `job.json`의 `error`(`"failed to parse plan output"` / `"Could not apply the plan to Jira"`) |
 | reporter | Job은 끝났지만 결과를 Jira에 쓰지 못함 | `job.json`의 `reportingFailed:true`, `reportingError` |
 | setup | Jira 연결/워크스페이스/Provider 검증 실패 | `ggjira setup` 또는 `ggjira setup --check` 출력 |
+| profile | Agent Profile / Workspace Configuration 이슈 문제 | `ggjira setup --check`의 `profile:` 줄, `ggjira agent:list`, §10 |
 
 ## 3. Jira 설정이 의심될 때
 
@@ -158,9 +160,50 @@ npm run dev -- worktrees:prune --olderThanDays 3   # 임계값 직접 지정
 - 옛 버전(v1, `agent` 섹션이 없는) config를 그대로 씀 → `ConfigError`에 "looks like a
   GGJIRA v1 config" 안내가 뜬다. `ggjira setup`으로 마이그레이션한다.
 - `role: pm`인데 `pm.implementAssignee` 또는 `workflow.needsDecisionTransitionName`을
-  안 채움 → 부팅 시 `ConfigError`로 즉시 실패한다(§3, §7).
+  안 채움(레거시 모드) → 부팅 시 `ConfigError`로 즉시 실패한다(§3, §7). Profile mode면
+  로스터가 대신하므로 이 값은 필요 없다(§10).
 - 실제 Jira 프로젝트에 연결하기 전에 `jira:smoke <KEY>`를 먼저 실행해 인증 계정, transition
   이름, JQL이 실제로 원하는 이슈를 잡는지 확인하지 않음 — README §"처음 실행할 때" 참고.
 - Codex Provider(`provider.type: "codex"`)를 실제 검증 없이 프로덕션에 씀 — Codex Provider는
   이 저장소에서 실제 `codex` CLI로 검증되지 않았다(architecture.md 참고). 먼저 `worker:run
   --prompt "..." --schema <file>`으로 단독 확인한다.
+
+## 10. Agent Profile / 등록 문제 (profile mode)
+
+`ggjira.config.json`에 `agent.profileKey`가 있으면 profile mode다. 문제는 대부분
+`ggjira agent:list`(Jira의 실제 상태)와 `ggjira setup --check`(이 머신이 아는 상태)를
+같이 보면 원인이 드러난다.
+
+- **Agent Profile이 `ggjira agent:list`나 Join 화면 목록에 안 보임**: 다음을 확인한다.
+  - 이슈에 라벨 `ggjira-agent`가 붙어 있는지, summary가 정확히 `[AGENT] <agentId>`
+    형식인지(`src/profile/profile.ts`의 `parseAgentProfile`이 이 형식이 아니면 그
+    이슈를 로스터에서 조용히 제외한다 — 깨진 이슈 하나 때문에 전체 목록 조회가 실패하지
+    않도록 하는 설계다).
+  - 같은 Jira **project**에 있는지 — 검색은 항상 `project = "<jira.projectKey>" AND
+    labels = "ggjira-agent"`다.
+  - description에 `h2. Agent Profile` 섹션과 유효한 `Role: pm` 또는 `Role: implement`
+    줄이 있는지. Role이 없거나 오타가 있으면 그 프로필도 로스터에서 제외된다.
+  - Join 화면에는 `ggjira-disabled` 라벨이 붙은 프로필이 표시되지 않는다(의도된 동작).
+- **등록이 거부됨 (`ProfileAlreadyRegisteredError` / "already registered to another
+  machine")**: 그 Agent Profile을 이미 다른 머신이 claim한 상태다. 정말 이 머신으로
+  옮기는 것이 맞다면 setup의 takeover 확인(`y`)에 동의한다 — 이전 머신은 다음 실행에서
+  `verifyRegistration`이 등록 불일치를 감지해 즉시 에러로 멈춘다. 옮긴 게 아니라면
+  실수로 같은 프로필을 두 머신에서 setup했을 가능성이 크다 — 의도한 머신 배정을
+  다시 확인한다.
+- **`ProfileClaimLostError`**: claim 쓰기 직후 재조회에서 다른 머신의 claimToken이
+  보였다는 뜻 — 두 머신이 정말로 동시에 같은 프로필을 claim한 경우다(ADR 0012의
+  MVP 수준 보호가 감지할 수 있는 유일한 케이스). `ggjira setup`을 다시 실행한다.
+- **disabled인데 왜 폴링을 안 하는지 궁금할 때**: Jira에서 그 Agent Profile 이슈에
+  `ggjira-disabled` 라벨이 붙어 있으면 정상이다. 부팅 로그에 "this agent's profile is
+  disabled" 경고가 남고, 매 사이클마다 `layer:"poller"`의 `poll.skipped_disabled`
+  로그만 남긴 채 아무 이슈도 조회하지 않는다. 라벨을 떼면 재시작 없이 다음 사이클부터
+  다시 폴링한다(`agent/context.ts`가 매 사이클 Jira에서 다시 읽으므로).
+- **Agent Profile의 description을 고쳤는데 반영이 안 되는 것 같을 때**: 프롬프트
+  합성은 매 실행마다 다시 조회하므로(§"Prompt Composition", architecture.md) 재시작이
+  필요 없다 — 대신 섹션 헤더나 항목 형식(`h2. Human Instructions`, `* 항목`)이
+  `src/profile/description.ts`가 인식하는 형식과 정확히 맞는지 확인한다. `ggjira
+  agent:list`는 파싱된 요약만 보여주므로, 원문 파싱 문제를 의심하면 Jira 이슈의
+  description을 직접 열어 형식을 확인하는 편이 빠르다.
+- **Workspace Configuration이 여러 개 생겼을 때**: `findWorkspaceConfig`는 가장 오래된
+  것을 쓰고 경고 로그를 남긴다 — 정상적으로는 발생하지 않아야 하며(생성 전에 항상
+  먼저 검색한다), 발생했다면 나머지는 사람이 직접 정리(예: 라벨 제거 또는 삭제)한다.

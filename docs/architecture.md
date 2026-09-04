@@ -124,6 +124,7 @@ runId: run-...
 | pm | Plan 생성/파싱, Jira에 하위 티켓 적용 | `ExecutionResult.failureReason` (plan 파싱 실패 / apply 실패) |
 | reporter | 결과 → Jira 댓글/전이/라벨 | `job.json.reportingFailed` (실행 자체는 성공해도 Jira 기록만 실패할 수 있음) |
 | setup | Jira 연결/워크스페이스/Provider 검증 | `ggjira setup` 또는 `ggjira setup --check` 출력 |
+| profile | Agent Profile / Workspace Configuration 이슈 파싱·검색·등록 | `InvalidProfileError`, `ProfileAlreadyRegisteredError`, `ProfileClaimLostError` |
 
 각 계층은 `src/<layer>/` 디렉터리와 로그의 `layer` 필드로 1:1 대응한다 (`CLAUDE.md` 참고).
 
@@ -173,21 +174,115 @@ kill, stdout 라인 버퍼링)는 `worker/spawn.ts`의 `runProcessWithTimeout`�
 공개 문서 기준으로 작성했으며, 실제 CLI로 확인 후 필요하면 `worker/codex-cli.ts`와
 `docs/decisions/0010-provider-request-generalization-and-codex.md`를 갱신해야 한다.
 
+## Agent Profile & Workspace Configuration
+
+3차 구현(`advanced_plan.md`)은 Agent의 정체성·설정을 Jira Issue로 옮긴다. 핵심 원칙은
+"기존 Jira Workflow를 바꾸지 않는다" — 새 Status/Transition을 추가하지 않고, 라벨 /
+issue property / description만으로 표현한다(`src/profile/`).
+
+```
+[GGJIRA] Workspace Configuration   라벨 ggjira-workspace   프로젝트당 1개
+  description: Workflow 상태/전이 이름, Project Policy, Config Version
+  → src/profile/workspace.ts (parseWorkspaceConfig / createWorkspaceConfig / findWorkspaceConfig)
+
+[AGENT] <agentId>                  라벨 ggjira-agent        Agent당 1개
+  description: Role, Preset, Display Name, Capabilities, Work Style, Human Instructions
+  issue property "ggjira.registration": { machineId, jiraAccountId, registeredAt, claimToken, ggjiraVersion }
+  → src/profile/profile.ts (parseAgentProfile / createAgentProfile / claimAgentProfile)
+```
+
+- **식별**: 라벨(`ggjira-agent`, `ggjira-workspace`) + summary 형식(`[AGENT] <id>`)으로
+  검색한다. Status는 관여하지 않는다.
+- **Enabled/Disabled**: 라벨 `ggjira-disabled` 유무. 사람이 Jira UI에서 라벨 하나로
+  켜고 끌 수 있다.
+- **등록(claim)**: `ggjira.registration` issue property에 이 머신의 `machineId`를 쓰고,
+  짧은 지연 후 재조회해 다른 머신의 동시 claim을 감지한다(`claimAgentProfile`,
+  `docs/decisions/0012-agent-profile-in-jira.md`). 사람이 읽는 description에는 절대
+  쓰지 않는다 — description은 사람이 소유하고, GGJIRA는 생성 이후 다시 덮어쓰지 않는다.
+- **메타 이슈 오폴링 방지**: `[AGENT]`/`[GGJIRA]` 이슈는 생성 직후 담당자를 해제하고,
+  `poller.ts`가 이 두 라벨이 붙은 이슈를 폴링 후보에서 제외한다(`advanced_plan.md` §2.11).
+
+## Prompt Composition
+
+`src/agent/prompt.ts`의 `composeSystemPrompt()`가 역할 고유 System Prompt 위에 다음
+레이어를 순서대로 쌓는다(레이어가 비어 있으면 그 섹션 자체를 생략한다).
+
+```
+corePolicy            buildPmSystemPrompt() / buildImplementSystemPrompt() (기존 그대로)
+  ↓
+Project Policy        Workspace Configuration의 Project Policy
+  ↓
+Role Preset            src/profile/presets.ts 정적 테이블(pm, general/unity/backend-programmer)
+  ↓
+Agent Profile          Capabilities, Work Style
+  ↓
+Human Instructions     Agent Profile의 Human Instructions
+```
+
+`agent/runtime.ts`의 `bootstrapAgent()`가 profile mode(`isProfileMode(config)`)일 때만
+이 합성된 프롬프트를 `PmHandlerDeps.buildSystemPrompt`/`ImplementHandlerDeps.buildSystemPrompt`로
+주입한다. 레거시 config는 이 필드가 없으므로 두 핸들러 모두 기존 `build*SystemPrompt()`
+결과를 그대로 쓴다 — 프롬프트가 byte 단위로 이전과 동일함을 테스트로 보장한다
+(`test/agent-runtime.test.ts`). `src/implement/`는 `src/profile/`을 import하지 않는다 —
+합성은 `agent/runtime.ts`가 대신하고 결과 문자열만 넘긴다.
+
+Jira 접근이 실패하면 `bootstrapAgent`가 로드해 둔 마지막 성공값을 그대로 쓰고 경고
+로그만 남긴다(`createContextLoader`) — 일시적 네트워크 장애로 폴링이 멈추지 않는다.
+
+## PM의 Agent 라우팅 (Plan Mode 확장)
+
+Profile mode에서는 PM이 등록된 Agent 로스터(`findAgentProfiles`)를 planning 프롬프트에
+포함하고, `Plan.agentProfiles`/`Plan.disableAgentIds`로 Agent 생성·비활성을 요청할 수
+있다(`pm/apply.ts`). 하위 티켓의 담당자는 다음 순서로 정해진다.
+
+```
+1. task.assigneeAgentId가 지정되고, 그 Agent가 enabled+registered+role=implement면 그 계정
+2. 로스터에서 조건을 만족하는 첫 Agent
+3. (로스터가 비어있거나 대상이 없으면) 레거시 pm.implementAssignee 조회
+```
+
+레거시 조회는 실제로 필요할 때만, 그리고 plan당 최대 한 번만 호출한다(`resolveTaskAssigneeAccountId`).
+
 ## Setup
 
-`ggjira setup`(`src/setup/wizard.ts`)이 Jira URL/이메일/토큰 → 연결 확인(`getMyself`) →
-Agent Identity/Role/Machine → Workspace(존재 + git repo 확인) → Provider(`--version` 확인)
-→ Workflow 상태/전이 이름 → (`role: pm`이면) Needs Decision 전이명 + Implement Assignee
-순서로 질문해 `.env`(0600, `JIRA_EMAIL`/`JIRA_API_TOKEN`)와 `ggjira.config.json`을 만든다.
-기존 파일은 `.bak`으로 보존한다. `ggjira setup --check`는 같은 검증들을 프롬프트 없이
-현재 설정에 대해 실행한다.
+`ggjira setup`(`src/setup/wizard.ts`)이 메뉴를 보여준다.
+
+```
+1) Create GGJira Workspace   -- 이 프로젝트의 첫 PM 머신
+2) Join as Agent             -- 이미 있는 Agent Profile에 이 머신을 등록
+3) Manual setup (legacy)     -- Agent Profile 없이 모든 값을 직접 입력(2차까지의 기존 흐름)
+```
+
+Create/Join 흐름의 세부 단계는 `src/setup/flows.ts`에 있다. 공통적으로 Jira URL/이메일/
+토큰 → 연결 확인(`getMyself`) → Project 선택(`listProjects`/`getProject`) 순으로 진행하고,
+Workflow 상태/전이 이름은 Workspace Configuration 이슈에서 읽어오므로(Join의 경우) 다시
+묻지 않는다. Machine ID는 `crypto.randomUUID()`로 최초 1회 생성해 로컬 config에 저장하고
+재실행 시 그대로 재사용한다(`agent.machineId`) — hostname은 더 이상 식별자로 쓰지 않는다.
+Manual 모드는 기존 2차 구현의 선형 흐름(Agent Identity/Role/Machine → Workspace → Provider
+→ Workflow 5문항)을 그대로 유지한다. 세 모드 모두 `.env`(0600, `JIRA_EMAIL`/`JIRA_API_TOKEN`)와
+`ggjira.config.json`을 만들고 기존 파일은 `.bak`으로 보존한다. `ggjira setup --check`는
+같은 검증들과, profile mode면 이 머신의 등록 상태를 프롬프트 없이 확인한다.
+
+## First Run
+
+config 없이 인자 없이 실행한 `ggjira`는 Setup 메뉴로 들어간다(`src/setup/first-run.ts`의
+`hasLocalConfig`). config가 있으면 곧바로 데몬을 시작한다(`ggjira run`과 동일). Create/Join
+직후에는 "Start the agent now?"에 Y로 답하면 별도 명령 없이 바로 데몬이 이어서 시작된다.
+
+## Agent 관리 CLI
+
+`ggjira agent:list` / `agent:create <id> --role <pm|implement> [--preset <id>]` /
+`agent:disable <id>`가 `src/profile/commands.ts`의 순수 함수(`listAgentsCommand` 등)를
+감싼다 — profile mode(`jira.projectKey` 설정)가 아니면 명확한 에러로 안내한다.
 
 ## Multi-Machine
 
 머신 간 직접 통신은 없다. 각 머신은 독립적으로 `ggjira setup` → `ggjira run`을 실행하며,
-Jira의 Assignee + Workflow State만으로 작업을 발견한다. 동일 Agent Identity(Jira 계정)를
-여러 머신에서 실행할 수 있으며, 중복 실행 방지는 claim(Jira transition)만으로 처리한다 —
-완전한 분산 락은 2차 범위 밖이다(`GGJira_Phase2_Implementation_Plan.md` §5.4, §7).
+Jira의 Assignee + Workflow State만으로 작업을 발견한다. Profile mode에서는 Agent Profile당
+등록 가능한 머신이 하나뿐이다(`claimAgentProfile`) — 같은 Agent를 여러 머신에서 동시에
+실행하려면 명시적으로 takeover해야 한다. 레거시 모드는 기존처럼 동일 Jira 계정을 여러
+머신에서 실행할 수 있으며, 중복 실행 방지는 claim(Jira transition)만으로 처리한다 —
+완전한 분산 락은 범위 밖이다(`GGJira_Phase2_Implementation_Plan.md` §5.4, §7).
 
 ## Persistence
 

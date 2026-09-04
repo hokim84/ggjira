@@ -22,6 +22,8 @@ import { JiraApiError, JiraClient } from "./jira/client.js";
 import { JobStore } from "./job/store.js";
 import type { Logger } from "./logger.js";
 import { rootLogger } from "./logger.js";
+import { type AgentRole, isAgentRole } from "./agent/role.js";
+import { createAgentCommand, disableAgentCommand, listAgentsCommand } from "./profile/commands.js";
 import { hasLocalConfig } from "./setup/first-run.js";
 import { runSetupWizard } from "./setup/wizard.js";
 import { createProvider } from "./worker/factory.js";
@@ -63,6 +65,12 @@ Commands:
   status             Show current job claims and recorded runs
   worktrees:prune    Remove old worktrees under data/worktrees/
                        --olderThanDays <n>  default 7
+  agent:list         List Agent Profiles in this project (profile mode only)
+  agent:create <id>  Create an Agent Profile (profile mode only)
+                       --role <pm|implement>  (required)
+                       --preset <id>          optional (see docs/architecture.md)
+                       --display <name>       optional display name
+  agent:disable <id> Disable an Agent Profile (adds the ggjira-disabled label)
 
 Options:
   -h, --help         Show this help message
@@ -82,6 +90,9 @@ const KNOWN_COMMANDS = new Set([
   "pm:plan",
   "status",
   "worktrees:prune",
+  "agent:list",
+  "agent:create",
+  "agent:disable",
 ]);
 
 function loadConfigOrPrintError(): AppConfig | undefined {
@@ -436,6 +447,102 @@ async function runWorktreesPrune(args: string[]): Promise<void> {
   }
 }
 
+/** Agent commands need jira.projectKey (profile mode); prints a clear error and returns undefined otherwise. */
+function requireProjectKey(config: AppConfig): string | undefined {
+  if (!config.jira.projectKey) {
+    process.stderr.write(
+      'This command requires an Agent Profile setup (jira.projectKey). Run "ggjira setup" ' +
+        "and choose Create GGJira Workspace or Join as Agent first.\n",
+    );
+    process.exitCode = 1;
+    return undefined;
+  }
+  return config.jira.projectKey;
+}
+
+/** Falls back to "Task" when there's no cached workspace issue to read the profile issue type from. */
+async function resolveProfileIssueType(config: AppConfig, jira: JiraClient): Promise<string> {
+  if (!config.jira.workspaceIssueKey) return "Task";
+  try {
+    const workspaceIssue = await jira.getIssue(config.jira.workspaceIssueKey);
+    return workspaceIssue.issueTypeName ?? "Task";
+  } catch {
+    return "Task";
+  }
+}
+
+async function runAgentList(): Promise<void> {
+  const config = loadConfigOrPrintError();
+  if (!config) return;
+  const projectKey = requireProjectKey(config);
+  if (!projectKey) return;
+  const jira = createJiraClientOrPrintError(config, rootLogger.child({ layer: "cli" }));
+  if (!jira) return;
+
+  await listAgentsCommand(jira, projectKey, (line) => process.stdout.write(`${line}\n`));
+}
+
+async function runAgentCreate(args: string[]): Promise<void> {
+  const [agentId, ...rest] = args;
+  const usage =
+    "Usage: ggjira agent:create <id> --role <pm|implement> [--preset <id>] [--display <name>]\n";
+  if (!agentId) {
+    process.stderr.write(usage);
+    process.exitCode = 1;
+    return;
+  }
+
+  let role: string | undefined;
+  let preset: string | undefined;
+  let display: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "--role") role = rest[++i];
+    else if (rest[i] === "--preset") preset = rest[++i];
+    else if (rest[i] === "--display") display = rest[++i];
+  }
+  if (!role || !isAgentRole(role)) {
+    process.stderr.write(usage);
+    process.exitCode = 1;
+    return;
+  }
+
+  const config = loadConfigOrPrintError();
+  if (!config) return;
+  const projectKey = requireProjectKey(config);
+  if (!projectKey) return;
+  const jira = createJiraClientOrPrintError(config, rootLogger.child({ layer: "cli" }));
+  if (!jira) return;
+
+  const issueTypeName = await resolveProfileIssueType(config, jira);
+  const roleValue: AgentRole = role;
+  await createAgentCommand(
+    jira,
+    projectKey,
+    issueTypeName,
+    agentId,
+    { role: roleValue, ...(preset ? { preset } : {}), ...(display ? { display } : {}) },
+    (line) => process.stdout.write(`${line}\n`),
+  );
+}
+
+async function runAgentDisable(args: string[]): Promise<void> {
+  const [agentId] = args;
+  if (!agentId) {
+    process.stderr.write("Usage: ggjira agent:disable <id>\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  const config = loadConfigOrPrintError();
+  if (!config) return;
+  const projectKey = requireProjectKey(config);
+  if (!projectKey) return;
+  const jira = createJiraClientOrPrintError(config, rootLogger.child({ layer: "cli" }));
+  if (!jira) return;
+
+  await disableAgentCommand(jira, projectKey, agentId, (line) => process.stdout.write(`${line}\n`));
+}
+
 function cancellableSleep(ms: number): { promise: Promise<void>; cancel: () => void } {
   let timer: NodeJS.Timeout;
   const promise = new Promise<void>((resolve) => {
@@ -608,6 +715,21 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "worktrees:prune") {
     await runWorktreesPrune(rest);
+    return;
+  }
+
+  if (command === "agent:list") {
+    await runAgentList();
+    return;
+  }
+
+  if (command === "agent:create") {
+    await runAgentCreate(rest);
+    return;
+  }
+
+  if (command === "agent:disable") {
+    await runAgentDisable(rest);
     return;
   }
 
