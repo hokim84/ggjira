@@ -48,6 +48,7 @@ export interface AgentProfileInput {
 
 export interface WorkspaceWorkflow {
   readyStatus: string;
+  implementationStatus?: string | null;
   claimTransitionName: string;
   doneTransitionName: string;
   needsDecisionTransitionName: string | null;

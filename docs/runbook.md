@@ -4,7 +4,14 @@
 
 - 새 설정은 `configVersion: 4`이며 `workflow.planningStatus`와
   `workflow.implementationStatus`를 사용한다. 기본 구현 승인 상태는 `AI Implementation`이다.
-- 구현 이슈에는 인간 Assignee와 `h2. Required Capabilities` 항목이 모두 있어야 한다.
+- setup은 Jira 프로젝트의 상태 목록을 조회해 구현 트리거 상태를 선택하게 한다. Jira 관리자와
+  합의한 실제 상태 이름(예: `AI에 작업 위임`)을 입력하며, 목록 조회가 제한되면 수동 입력한다.
+  새 Workspace Configuration에는 선택한 이름이 기록되어 다른 에이전트 setup의 기본값이 된다.
+- 구현 이슈에는 Assignee가 있어야 한다. Assignee가 등록된 에이전트 계정과 같아도
+  위임 상태에서 실행할 수 있다. `h2. Required Capabilities`는 선택 사항이며,
+  기재했다면 해당 capability와 backend를 실행 전에 검사한다.
+- `workspace.path`가 Git 저장소가 아니면 구현 Agent는 그 폴더에서 직접 작업한다.
+  Git worktree, 브랜치, 커밋은 만들지 않으며 결과 댓글에 직접 작업한 경로를 남긴다.
   누락되거나 현재 Agent Profile/Backend가 충족하지 못하면 실패 사유를 한 번 기록하고,
   description 또는 Assignee가 바뀔 때 다시 평가한다.
 - 진행 중 claim은 `data/leases/`, 이미 평가한 이슈 입력은 `data/handled/`에서 확인한다.

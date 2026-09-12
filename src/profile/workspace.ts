@@ -26,6 +26,7 @@ export function parseWorkspaceConfig(issue: JiraIssue): WorkspaceConfig {
     configVersion: configVersionRaw ? Number(configVersionRaw) : 3,
     workflow: {
       readyStatus: getScalar(sections, "Workflow", "Ready Status") ?? "To Do",
+      implementationStatus: getScalar(sections, "Workflow", "Implementation Status"),
       claimTransitionName: getScalar(sections, "Workflow", "Claim Transition") ?? "In Progress",
       doneTransitionName: getScalar(sections, "Workflow", "Done Transition") ?? "In Review",
       needsDecisionTransitionName: getScalar(sections, "Workflow", "Needs Decision Transition"),
@@ -52,6 +53,7 @@ export function renderWorkspaceDescription(input: WorkspaceConfigInput): string 
       heading: "Workflow",
       scalars: [
         ["Ready Status", input.workflow.readyStatus],
+        ["Implementation Status", input.workflow.implementationStatus ?? null],
         ["Claim Transition", input.workflow.claimTransitionName],
         ["Done Transition", input.workflow.doneTransitionName],
         ["Needs Decision Transition", input.workflow.needsDecisionTransitionName],

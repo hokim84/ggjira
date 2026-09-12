@@ -296,6 +296,23 @@ export class JiraClient implements JiraGateway {
     }));
   }
 
+  async listProjectStatuses(projectKey: string): Promise<string[]> {
+    const issueTypes = await this.request<Array<{ statuses?: Array<{ name?: string }> }>>(
+      "GET",
+      `/rest/api/2/project/${encodeURIComponent(projectKey)}/statuses`,
+    );
+    return [
+      ...new Set(
+        issueTypes.flatMap(
+          (type) =>
+            type.statuses
+              ?.map((status) => status.name)
+              .filter((name): name is string => Boolean(name)) ?? [],
+        ),
+      ),
+    ].sort();
+  }
+
   async transitionIssue(key: string, transitionName: string): Promise<void> {
     const transitions = await this.getTransitions(key);
     const match = transitions.find((t) => t.name === transitionName);

@@ -145,6 +145,31 @@ async function askIssueType(ctx: FlowContext, issueTypes: JiraProjectIssueType[]
   );
 }
 
+async function askImplementationStatus(
+  ctx: FlowContext,
+  jira: JiraGateway,
+  projectKey: string,
+  defaultStatus: string,
+): Promise<string> {
+  let statuses: string[] = [];
+  try {
+    statuses = await jira.listProjectStatuses(projectKey);
+  } catch (error) {
+    ctx.print(
+      `Could not list Jira statuses (${describeJiraError(error)}). Enter the agreed status name manually.`,
+    );
+  }
+  if (statuses.length > 0) ctx.print(`Jira statuses in ${projectKey}: ${statuses.join(", ")}`);
+  const status = (await ctx.ask("AI implementation trigger status", defaultStatus)).trim();
+  if (!status) throw new SetupError("AI implementation trigger status is required.");
+  if (statuses.length > 0 && !statuses.includes(status)) {
+    throw new SetupError(
+      `Status "${status}" does not exist in project ${projectKey}. Agree on a Jira status with the project administrator, then rerun setup.`,
+    );
+  }
+  return status;
+}
+
 async function askPreset(ctx: FlowContext, role: AgentRole): Promise<Preset | undefined> {
   const candidates = PRESETS.filter((p) => p.role === role);
   ctx.print(`Presets: ${candidates.map((p) => p.id).join(", ")}`);
@@ -187,6 +212,7 @@ interface BuildProfileConfigInput {
   role: AgentRole;
   machineId: string;
   workflow: WorkspaceWorkflow;
+  implementationStatus: string;
   local: LocalSettings;
 }
 
@@ -212,7 +238,7 @@ function buildProfileConfig(input: BuildProfileConfigInput): Record<string, unkn
       claimTransitionName: input.workflow.claimTransitionName,
       doneTransitionName: input.workflow.doneTransitionName,
       planningStatus: input.workflow.readyStatus,
-      implementationStatus: "AI Implementation",
+      implementationStatus: input.implementationStatus,
       ...(input.workflow.needsDecisionTransitionName
         ? { needsDecisionTransitionName: input.workflow.needsDecisionTransitionName }
         : {}),
@@ -276,6 +302,17 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
   const { key: projectKey, issueTypes } = await askProject(ctx, jira);
 
   let workspace = await findWorkspaceConfig(jira, projectKey);
+  const implementationStatus = await askImplementationStatus(
+    ctx,
+    jira,
+    projectKey,
+    ctx.existingConfig?.workflow.implementationStatus ??
+      workspace?.workflow.implementationStatus ??
+      "AI Implementation",
+  );
+  if (workspace && implementationStatus === workspace.workflow.readyStatus) {
+    throw new SetupError("Planning and AI implementation trigger statuses must be different.");
+  }
   if (workspace) {
     print(`Found an existing GGJira workspace: ${workspace.issueKey} -- reusing it.`);
   } else {
@@ -284,6 +321,9 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
       "Ready-to-claim Jira status",
       ctx.existingConfig?.workflow.readyStatus ?? "To Do",
     );
+    if (implementationStatus === readyStatus) {
+      throw new SetupError("Planning and AI implementation trigger statuses must be different.");
+    }
     const claimTransitionName = await ask(
       "Claim transition name",
       ctx.existingConfig?.workflow.claimTransitionName ?? "In Progress",
@@ -305,6 +345,7 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
       issueTypeName,
       workflow: {
         readyStatus,
+        implementationStatus,
         claimTransitionName,
         doneTransitionName,
         needsDecisionTransitionName,
@@ -380,6 +421,7 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
     role: "pm",
     machineId,
     workflow: workspace.workflow,
+    implementationStatus,
     local,
   });
   validateAndWrite(ctx, raw, { email, apiToken });
@@ -430,6 +472,18 @@ export async function runJoinAgentFlow(ctx: FlowContext): Promise<SetupResult> {
     );
   }
 
+  const implementationStatus = await askImplementationStatus(
+    ctx,
+    jira,
+    projectKey,
+    ctx.existingConfig?.workflow.implementationStatus ??
+      workspace.workflow.implementationStatus ??
+      "AI Implementation",
+  );
+
+  if (implementationStatus === workspace.workflow.readyStatus) {
+    throw new SetupError("Planning and AI implementation trigger statuses must be different.");
+  }
   const agents = await findAgentProfiles(jira, projectKey, { includeDisabled: false });
   if (agents.length === 0) {
     throw new SetupError(
@@ -470,6 +524,7 @@ export async function runJoinAgentFlow(ctx: FlowContext): Promise<SetupResult> {
     role: profile.role,
     machineId,
     workflow: workspace.workflow,
+    implementationStatus,
     local,
   });
   validateAndWrite(ctx, raw, { email, apiToken });

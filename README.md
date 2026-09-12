@@ -7,7 +7,7 @@ capability를 기준으로 planning과 implementation을 모두 수행한다.
 ```
 Ready for Planning — 계획을 만들고 Jira에 사람이 검토할 Objective, Acceptance Criteria,
                      Dependencies, Constraints, Required Capabilities를 기록한다.
-AI Implementation  — 인간 Assignee와 필요한 capability/backend를 확인한 뒤 Claude Code
+AI Implementation  — Assignee와 필요한 capability/backend를 확인한 뒤 Claude Code
                      CLI 또는 Codex CLI로 구현하고 Review로 넘긴다.
 ```
 

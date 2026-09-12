@@ -25,7 +25,7 @@ import { rootLogger } from "./logger.js";
 import { type AgentRole, isAgentRole } from "./agent/role.js";
 import { createAgentCommand, disableAgentCommand, listAgentsCommand } from "./profile/commands.js";
 import { hasLocalConfig } from "./setup/first-run.js";
-import { runSetupWizard } from "./setup/wizard.js";
+import { loadEnvFileVars, runSetupWizard } from "./setup/wizard.js";
 import { createProvider } from "./worker/factory.js";
 import type { WorkerRequest } from "./worker/provider.js";
 import {
@@ -127,6 +127,11 @@ async function runSetup(args: string[]): Promise<void> {
   const check = args.includes("--check");
   const result = await runSetupWizard({ check, cwd: process.cwd() });
   if (result.startAgent) {
+    // Setup validates and writes new credentials, but loadEnvFile ran before
+    // the wizard. Refresh them before starting the agent in this process.
+    const saved = loadEnvFileVars(path.resolve(".env"));
+    if (saved.JIRA_EMAIL) process.env.JIRA_EMAIL = saved.JIRA_EMAIL;
+    if (saved.JIRA_API_TOKEN) process.env.JIRA_API_TOKEN = saved.JIRA_API_TOKEN;
     await runDaemon();
   }
 }

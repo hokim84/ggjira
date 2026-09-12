@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -87,7 +87,7 @@ describe("bootstrapAgent", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("v4 dispatches planning and implementation through the same runtime while preserving the human assignee", async () => {
+  it("v4 implements an issue assigned to the same account as the agent", async () => {
     jira.setSelf({ accountId: "agent-account", displayName: "GGJIRA", emailAddress: null });
     const config = buildTestConfig({
       configVersion: 4,
@@ -146,8 +146,8 @@ describe("bootstrapAgent", () => {
     const implementationIssue = buildTestIssue({
       key: "KAN-21",
       statusName: "AI Implementation",
-      assigneeAccountId: "human-account",
-      description: "h2. Required Capabilities\n* programming",
+      assigneeAccountId: "agent-account",
+      description: "Implement the requested change.",
     });
     jira.seedIssue(implementationIssue, [{ id: "2", name: "In Review", toStatusName: "Review" }]);
     const implementationJob = await runJobForIssue(implementationIssue, config, runtime.cycleDeps);
@@ -157,6 +157,37 @@ describe("bootstrapAgent", () => {
       key: "KAN-21",
       transitionName: config.workflow.claimTransitionName,
     });
+  });
+
+  it("implements directly in a workspace without Git", async () => {
+    const workspacePath = path.join(tempDir, "plain-workspace");
+    mkdirSync(workspacePath);
+    const issue = buildTestIssue({
+      key: "KAN-plain",
+      statusName: "AI Implementation",
+      assigneeAccountId: "agent-account",
+    });
+    jira.seedIssue(issue, [{ id: "2", name: "In Review", toStatusName: "Review" }]);
+    const config = buildTestConfig({
+      configVersion: 4,
+      jira: { baseUrl: "https://example.atlassian.net", projectKey: "KAN" },
+      workflow: { ...baseConfig.workflow, implementationStatus: "AI Implementation" },
+      workspace: { path: workspacePath, baseBranch: "main", validateCommand: null },
+    });
+    const outputPath = path.join(workspacePath, "result.txt");
+    const runtime = await bootstrapAgent({
+      config,
+      jira,
+      store,
+      worktreesRoot,
+      provider: new CallbackProvider(() => writeFileSync(outputPath, "implemented")),
+    });
+
+    const job = await runJobForIssue(issue, config, runtime.cycleDeps);
+    expect(job?.status).toBe("succeeded");
+    expect(job?.branch).toBeUndefined();
+    expect(existsSync(outputPath)).toBe(true);
+    expect(jira.comments.at(-1)?.body).toContain("direct edits; no Git branch or commit");
   });
 
   it("v4 discards a successful provider result when a human withdraws approval", async () => {

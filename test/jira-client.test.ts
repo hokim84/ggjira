@@ -60,6 +60,20 @@ describe("JiraClient", () => {
     );
   });
 
+  it("lists distinct statuses available to a Jira project", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, [
+        { statuses: [{ name: "To Do" }, { name: "AI에 작업 위임" }] },
+        { statuses: [{ name: "AI에 작업 위임" }, { name: "Done" }] },
+      ]),
+    );
+    const statuses = await new JiraClient(secrets).listProjectStatuses("KAN");
+    expect(statuses).toEqual(["AI에 작업 위임", "Done", "To Do"].sort());
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://example.atlassian.net/rest/api/2/project/KAN/statuses",
+    );
+  });
+
   it("searchIssues posts to /rest/api/2/search/jql and maps issues", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(200, {

@@ -71,7 +71,7 @@ async function askMode(ask: AskFn, print: (line: string) => void, existingConfig
  * that). Missing file -> empty object, so callers can treat "no existing
  * .env" the same as "no existing values to prefill from".
  */
-function loadEnvFileVars(envPath: string): NodeJS.ProcessEnv {
+export function loadEnvFileVars(envPath: string): NodeJS.ProcessEnv {
   let content: string;
   try {
     content = readFileSync(envPath, "utf-8");
@@ -165,7 +165,7 @@ async function runCheck(
 
   let envSecrets: ReturnType<typeof loadJiraSecretsFromEnv>;
   try {
-    envSecrets = loadJiraSecretsFromEnv();
+    envSecrets = loadJiraSecretsFromEnv({ ...process.env, ...loadEnvFileVars(envPath) });
   } catch (error) {
     print(`env: FAILED (${error instanceof Error ? error.message : String(error)})`);
     process.exitCode = 1;
@@ -178,6 +178,18 @@ async function runCheck(
   const connection = await checkJiraConnection(jira);
   print(`jira connection: ${connection.ok ? "OK" : "FAILED"} (${connection.message})`);
   if (!connection.ok) process.exitCode = 1;
+
+  if (connection.ok && config.configVersion === 4 && config.jira.projectKey) {
+    try {
+      const statuses = await jira.listProjectStatuses(config.jira.projectKey);
+      const trigger = config.workflow.implementationStatus ?? "AI Implementation";
+      const found = statuses.includes(trigger);
+      print(`implementation trigger status: ${found ? "OK" : "FAILED"} (${trigger})`);
+      if (!found) process.exitCode = 1;
+    } catch (error) {
+      print(`implementation trigger status: could not verify (${describeJiraError(error)})`);
+    }
+  }
 
   const workspaceCheck = checkWorkspacePath(config.workspace.path);
   print(`workspace path: ${workspaceCheck.ok ? "OK" : "FAILED"} (${workspaceCheck.message})`);

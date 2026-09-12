@@ -42,6 +42,22 @@ function runGit(args: string[], cwd: string): Promise<void> {
   });
 }
 
+/** Checks the configured workspace itself, so worktree failures in real repos stay visible. */
+export function isGitRepository(workspacePath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn("git", ["rev-parse", "--is-inside-work-tree"], {
+      cwd: workspacePath,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf-8");
+    });
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0 && output.trim() === "true"));
+  });
+}
+
 /** Creates a new git worktree at `<worktreesRoot>/<branch-with-slashes-flattened>` on a new branch. */
 export async function createWorktree(
   repoPath: string,

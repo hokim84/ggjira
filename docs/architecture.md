@@ -9,12 +9,12 @@ Agent 간 차이는 Jira Agent Profile의 `Capabilities`와 로컬 설정의 `ag
 ```
 Jira polling
   → Ready for Planning → planning capability → Plan Review
-  → AI Implementation  → human assignee 확인 → required capabilities/backend 확인
+  → AI Implementation  → assignee 확인 → required capabilities/backend 확인
                        → implementation → Review
 ```
 
 `AI Implementation` 상태는 인간의 실행 승인이다. 구현을 claim하기 위해 다른 상태로 전환하지
-않으며 Assignee도 변경하지 않는다. 새 Sub-task는 상위 이슈의 인간 Assignee를 상속한다.
+않으며 Assignee도 변경하지 않는다. 새 Sub-task는 상위 이슈의 Assignee를 상속한다.
 Planning 결과는 상위 및 하위 이슈 description의 `GGJIRA Plan`, `Acceptance Criteria`,
 `Dependencies`, `Constraints`, `Required Capabilities` 섹션에 기록되어 사람이 수정할 수 있다.
 구현 직전에는 이 섹션을 다시 읽어 최신 Required Capabilities를 사용한다.

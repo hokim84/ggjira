@@ -44,6 +44,7 @@ describe("runSetupWizard", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     rmSync(cwd, { recursive: true, force: true });
   });
 
@@ -88,6 +89,15 @@ describe("runSetupWizard", () => {
     if (process.platform !== "win32") expect(mode).toBe(0o600);
 
     expect(lines.some((l) => l.includes("Wrote"))).toBe(true);
+
+    // A previous process environment must not shadow the credentials just saved.
+    vi.stubEnv("JIRA_EMAIL", "stale@example.com");
+    vi.stubEnv("JIRA_API_TOKEN", "stale-token");
+    await runSetupWizard({ check: true, cwd, print: (line) => lines.push(line) });
+    const checkRequest = fetchMock.mock.calls.at(-1)?.[1] as RequestInit;
+    expect(checkRequest.headers).toMatchObject({
+      Authorization: `Basic ${Buffer.from("a@b.com:secret-token").toString("base64")}`,
+    });
   });
 
   it("asks for the needs-decision transition and implement assignee when role is pm", async () => {

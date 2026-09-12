@@ -13,7 +13,8 @@ function scriptedAsk(
   answers: string[],
 ): (question: string, defaultValue?: string) => Promise<string> {
   let i = 0;
-  return async (_question, defaultValue) => {
+  return async (question, defaultValue) => {
+    if (question === "AI implementation trigger status") return defaultValue ?? "AI Implementation";
     const answer = answers[i++];
     if (answer === undefined) throw new Error("scriptedAsk ran out of answers");
     return answer === "" ? (defaultValue ?? "") : answer;
@@ -46,6 +47,7 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
   });
 
   it("creates a Workspace Configuration issue, a PM Agent Profile, and a v3 config, and registers this machine", async () => {
+    jira.seedProjectStatuses("KAN", ["To Do", "AI에 작업 위임", "In Review"]);
     const ask = scriptedAsk([
       "https://example.atlassian.net", // Jira URL
       "a@b.com", // email
@@ -68,7 +70,10 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
     const result = await runSetupWizard({
       check: false,
       cwd,
-      ask,
+      ask: (question, defaultValue) =>
+        question === "AI implementation trigger status"
+          ? Promise.resolve("AI에 작업 위임")
+          : ask(question, defaultValue),
       mode: "create",
       createJira: () => jira,
       settleMs: 0,
@@ -95,6 +100,8 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
     expect(config.agent.role).toBe("pm");
     expect(config.agent.machineId).toBe(FIXED_MACHINE_ID);
     expect(config.agent.profileKey).toBeDefined();
+    expect(config.workflow.implementationStatus).toBe("AI에 작업 위임");
+    expect(workspaceIssue?.description).toContain("AI에 작업 위임");
 
     const registration = jira.getStoredProperty(config.agent.profileKey, REGISTRATION_PROPERTY) as
       | { machineId: string }

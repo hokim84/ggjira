@@ -12,6 +12,7 @@ import {
   commitAll,
   createWorktree,
   hasUncommittedChanges,
+  isGitRepository,
 } from "../worker/worktree.js";
 import { runValidateCommand } from "./validate.js";
 
@@ -45,23 +46,28 @@ export function createImplementHandler(deps: ImplementHandlerDeps): JobHandler {
         runId: job.runId,
       });
 
-      const branch = `ggjira/${issue.key}-${job.runId}`;
-      let worktreePath: string;
-      try {
-        const worktree = await createWorktree(
-          config.workspace.path,
-          config.workspace.baseBranch,
-          branch,
-          worktreesRoot,
-        );
-        worktreePath = worktree.path;
-      } catch (error) {
-        logger?.error({ err: error }, "failed to create worktree");
-        return {
-          status: "failed",
-          summary: "Could not create a git worktree for this issue.",
-          failureReason: errorMessage(error),
-        };
+      const gitMode = await isGitRepository(config.workspace.path);
+      const branch = gitMode ? `ggjira/${issue.key}-${job.runId}` : undefined;
+      let worktreePath = config.workspace.path;
+      if (branch) {
+        try {
+          const worktree = await createWorktree(
+            config.workspace.path,
+            config.workspace.baseBranch,
+            branch,
+            worktreesRoot,
+          );
+          worktreePath = worktree.path;
+        } catch (error) {
+          logger?.error({ err: error }, "failed to create worktree");
+          return {
+            status: "failed",
+            summary: "Could not create a git worktree for this issue.",
+            failureReason: errorMessage(error),
+          };
+        }
+      } else {
+        logger?.info({ workspacePath: worktreePath }, "working directly in a non-Git workspace");
       }
 
       const systemPrompt = deps.buildSystemPrompt
@@ -111,7 +117,7 @@ export function createImplementHandler(deps: ImplementHandlerDeps): JobHandler {
         return {
           status: "cancelled",
           summary: "AI implementation stopped because the Jira approval state changed.",
-          branch,
+          ...(branch ? { branch } : {}),
         };
       }
 
@@ -120,13 +126,13 @@ export function createImplementHandler(deps: ImplementHandlerDeps): JobHandler {
           status: "failed",
           summary: workerResult.summary,
           failureReason: workerResult.summary,
-          branch,
+          ...(branch ? { branch } : {}),
           timedOut: workerResult.exitReason === "timeout",
         };
       }
 
       let changedFiles: string[] = [];
-      if (await hasUncommittedChanges(worktreePath)) {
+      if (branch && (await hasUncommittedChanges(worktreePath))) {
         await checkApproval();
         if (approvalLost) {
           return {
@@ -146,7 +152,7 @@ export function createImplementHandler(deps: ImplementHandlerDeps): JobHandler {
           return {
             status: "cancelled",
             summary: "AI implementation stopped before validation because approval was withdrawn.",
-            branch,
+            ...(branch ? { branch } : {}),
             changes: changedFiles,
           };
         }
@@ -160,19 +166,23 @@ export function createImplementHandler(deps: ImplementHandlerDeps): JobHandler {
             status: "failed",
             summary: workerResult.summary,
             failureReason: `Validation command failed: ${validationResult.summary}`,
-            branch,
+            ...(branch ? { branch } : {}),
             changes: changedFiles,
             validation,
           };
         }
       }
 
-      const artifacts = changedFiles.length > 0 ? [`branch: ${branch}`] : [];
+      const artifacts = branch
+        ? changedFiles.length > 0
+          ? [`branch: ${branch}`]
+          : []
+        : [`workspace: ${worktreePath} (direct edits; no Git branch or commit)`];
 
       return {
         status: "succeeded",
         summary: workerResult.summary,
-        branch,
+        ...(branch ? { branch } : {}),
         changes: changedFiles,
         validation,
         artifacts,

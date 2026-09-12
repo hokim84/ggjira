@@ -198,37 +198,11 @@ function createDispatchHandler(
         if (!params.issue.assigneeAccountId) {
           return {
             status: "failed",
-            summary: "AI implementation is waiting for a human owner.",
+            summary: "AI implementation is waiting for an assignee.",
             failureReason: "The Jira issue has no assignee.",
           };
         }
-        const self = await deps.jira.getMyself();
-        const roster =
-          loadContext && deps.config.jira.projectKey
-            ? await buildRosterLoader(deps.jira, deps.config.jira.projectKey)()
-            : undefined;
-        const agentAccounts = new Set(
-          roster?.agents.flatMap((agent) =>
-            agent.registration ? [agent.registration.jiraAccountId] : [],
-          ) ?? [],
-        );
-        agentAccounts.add(self.accountId);
-        if (agentAccounts.has(params.issue.assigneeAccountId)) {
-          return {
-            status: "failed",
-            summary: "AI implementation is waiting for a human owner.",
-            failureReason: "The Jira assignee belongs to a registered GGJIRA agent.",
-          };
-        }
         const requirements = readIssueRequirements(params.issue);
-        if (requirements.requiredCapabilities.length === 0) {
-          return {
-            status: "failed",
-            summary: "AI implementation is waiting for Required Capabilities.",
-            failureReason:
-              'Add at least one item under the Jira description section "Required Capabilities".',
-          };
-        }
         const unknown = unknownCapabilities(requirements.requiredCapabilities);
         if (unknown.length > 0) {
           return {

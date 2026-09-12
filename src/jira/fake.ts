@@ -65,6 +65,7 @@ export class FakeJiraGateway implements JiraGateway {
   private readonly failingTransitions = new Set<string>();
   private readonly commentFailurePredicates = new Map<string, (body: string) => boolean>();
   private readonly projects = new Map<string, JiraProject>();
+  private readonly projectStatuses = new Map<string, string[]>();
   private readonly properties = new Map<string, Map<string, unknown>>();
   private self: JiraUser = {
     accountId: "self-account-id",
@@ -100,6 +101,14 @@ export class FakeJiraGateway implements JiraGateway {
 
   seedProject(project: JiraProject): void {
     this.projects.set(project.key, project);
+  }
+
+  seedProjectStatuses(projectKey: string, statuses: string[]): void {
+    this.projectStatuses.set(projectKey, statuses);
+  }
+
+  async listProjectStatuses(projectKey: string): Promise<string[]> {
+    return this.projectStatuses.get(projectKey) ?? [];
   }
 
   /** Reads back what setIssueProperty stored, for assertions in tests. */

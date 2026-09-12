@@ -59,7 +59,7 @@ export function buildPlanningPrompt(ctx: PlanningContext): string {
   parts.push(
     "",
     "Produce a plan as JSON matching the given schema. If existing subtasks are still valid, list their keys in keepTaskKeys instead of recreating them; anything not listed there will be treated as superseded.",
-    "Each executable task must list canonical requiredCapabilities. Do not select or assign an agent; Jira assignees are human owners.",
+    "Each executable task must list canonical requiredCapabilities. Do not select or assign an agent; Jira assignees remain unchanged during AI delegation.",
     "Agent Profiles are human-managed configuration. Never create, disable, or assign an Agent Profile from a plan.",
   );
 
