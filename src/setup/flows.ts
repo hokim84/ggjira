@@ -193,7 +193,7 @@ interface BuildProfileConfigInput {
 /** Assembles the raw (unresolved) config object written to ggjira.config.json for profile mode. */
 function buildProfileConfig(input: BuildProfileConfigInput): Record<string, unknown> {
   return {
-    configVersion: 3,
+    configVersion: 4,
     jira: {
       baseUrl: input.jiraBaseUrl,
       projectKey: input.projectKey,
@@ -205,11 +205,14 @@ function buildProfileConfig(input: BuildProfileConfigInput): Record<string, unkn
       machine: input.machineId.slice(0, 8),
       profileKey: input.profileKey,
       machineId: input.machineId,
+      backends: ["filesystem", "git", "coding-runtime"],
     },
     workflow: {
       readyStatus: input.workflow.readyStatus,
       claimTransitionName: input.workflow.claimTransitionName,
       doneTransitionName: input.workflow.doneTransitionName,
+      planningStatus: input.workflow.readyStatus,
+      implementationStatus: "AI Implementation",
       ...(input.workflow.needsDecisionTransitionName
         ? { needsDecisionTransitionName: input.workflow.needsDecisionTransitionName }
         : {}),
@@ -297,7 +300,7 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
 
     workspace = await createWorkspaceConfig(jira, {
       projectKey,
-      configVersion: 3,
+      configVersion: 4,
       ggjiraVersion: GGJIRA_VERSION,
       issueTypeName,
       workflow: {
@@ -305,7 +308,7 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
         claimTransitionName,
         doneTransitionName,
         needsDecisionTransitionName,
-        plannedTransitionName: null,
+        plannedTransitionName: "Plan Review",
         taskReadyTransitionName: null,
         subtaskIssueType: "Subtask",
       },
@@ -331,7 +334,12 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
       displayName: agentId,
       role: "pm",
       preset: "pm",
-      capabilities: [],
+      capabilities: [
+        "planning",
+        "task-decomposition",
+        "dependency-analysis",
+        "capability-analysis",
+      ],
       workStyle: [],
       humanInstructions: [],
     });
@@ -352,7 +360,7 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
       displayName: implementId,
       role: "implement",
       preset: preset?.id ?? null,
-      capabilities: [],
+      capabilities: ["programming", "testing", "review"],
       workStyle: [],
       humanInstructions: [],
     });

@@ -1,5 +1,36 @@
 # 아키텍처
 
+## Capability 기반 Runtime (configVersion 4)
+
+v4에서는 한 Runtime이 planning과 implementation 핸들러를 모두 보유하고 Jira 상태에 따라
+작업을 dispatch한다. `agent.role`은 v2/v3 설정 호환용이며 v4 실행 선택에는 사용하지 않는다.
+Agent 간 차이는 Jira Agent Profile의 `Capabilities`와 로컬 설정의 `agent.backends`로 표현한다.
+
+```
+Jira polling
+  → Ready for Planning → planning capability → Plan Review
+  → AI Implementation  → human assignee 확인 → required capabilities/backend 확인
+                       → implementation → Review
+```
+
+`AI Implementation` 상태는 인간의 실행 승인이다. 구현을 claim하기 위해 다른 상태로 전환하지
+않으며 Assignee도 변경하지 않는다. 새 Sub-task는 상위 이슈의 인간 Assignee를 상속한다.
+Planning 결과는 상위 및 하위 이슈 description의 `GGJIRA Plan`, `Acceptance Criteria`,
+`Dependencies`, `Constraints`, `Required Capabilities` 섹션에 기록되어 사람이 수정할 수 있다.
+구현 직전에는 이 섹션을 다시 읽어 최신 Required Capabilities를 사용한다.
+
+동일 호스트의 여러 Runtime은 `data/leases/<issue>/owner.json` 디렉터리를 원자적으로 생성해
+중복 실행을 막는다. 처리한 상태·담당자·description 조합은 `data/handled/`에 기록하므로 동일한
+실패를 매 polling마다 반복하지 않으며, 사람이 계획이나 책임자를 수정하면 다시 평가한다.
+실행 중에는 Jira 승인 상태를 확인하고 상태가 바뀌거나 담당자가 제거되면 provider에 취소
+신호를 보내고 후속 커밋·검증·Review 전환을 막는다.
+
+`BackendRegistry`는 현재 filesystem, git, coding-runtime 가용성을 검사한다. unity와 comfyui는
+capability-to-backend 경계만 정의되어 있으며 adapter가 등록되지 않으면 해당 작업을 거부한다.
+실제 Webhook 수신과 분산 scheduler는 이번 버전에 포함하지 않는다.
+
+아래 내용은 v2/v3 호환 실행 흐름을 설명한다.
+
 ## 개요
 
 GGJIRA는 하나의 Agent Runtime을 여러 머신에 설치해 서로 다른 역할(`pm`, `implement`)로

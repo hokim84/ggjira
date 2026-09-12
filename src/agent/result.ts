@@ -4,7 +4,7 @@
  * by the reporter. Every role reports through this one shape so a human or
  * PM Agent reading Jira never needs to know which role or provider ran.
  */
-export type ExecutionStatus = "succeeded" | "failed" | "needs_decision" | "planned";
+export type ExecutionStatus = "succeeded" | "failed" | "cancelled" | "needs_decision" | "planned";
 
 export interface ExecutionResult {
   status: ExecutionStatus;

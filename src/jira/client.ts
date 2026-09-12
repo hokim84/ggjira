@@ -64,6 +64,7 @@ interface RawJiraFields {
   issuetype?: { name?: string };
   parent?: { key?: string };
   project?: { key?: string };
+  updated?: string;
 }
 
 interface RawJiraIssue {
@@ -130,6 +131,7 @@ function mapRawIssue(raw: RawJiraIssue): JiraIssue {
     issueTypeName: raw.fields.issuetype?.name ?? null,
     parentKey: raw.fields.parent?.key ?? null,
     projectKey: raw.fields.project?.key ?? null,
+    ...(raw.fields.updated ? { updatedAt: raw.fields.updated } : {}),
   };
 }
 
@@ -160,6 +162,7 @@ const DEFAULT_FIELDS = [
   "issuetype",
   "parent",
   "project",
+  "updated",
 ];
 
 /** Transient failures worth retrying: 429 (rate limited), 5xx, and network-level errors. */
@@ -228,16 +231,23 @@ export class JiraClient implements JiraGateway {
   }
 
   async searchIssues(jql: string, opts: SearchIssuesOptions = {}): Promise<JiraIssue[]> {
-    const response = await withRetry(
-      () =>
-        this.request<RawSearchResponse>("POST", "/rest/api/2/search/jql", {
-          jql,
-          maxResults: opts.maxResults ?? 50,
-          fields: opts.fields ?? DEFAULT_FIELDS,
-        }),
-      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
-    );
-    return response.issues.map(mapRawIssue);
+    const issues: JiraIssue[] = [];
+    let nextPageToken: string | undefined;
+    do {
+      const response = await withRetry(
+        () =>
+          this.request<RawSearchResponse>("POST", "/rest/api/2/search/jql", {
+            jql,
+            maxResults: opts.maxResults ?? 50,
+            fields: opts.fields ?? DEFAULT_FIELDS,
+            ...(nextPageToken ? { nextPageToken } : {}),
+          }),
+        { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+      );
+      issues.push(...response.issues.map(mapRawIssue));
+      nextPageToken = opts.all && !response.isLast ? response.nextPageToken : undefined;
+    } while (nextPageToken);
+    return issues;
   }
 
   async getIssue(key: string, fields: string[] = DEFAULT_FIELDS): Promise<JiraIssue> {
@@ -306,6 +316,12 @@ export class JiraClient implements JiraGateway {
   async addLabel(key: string, label: string): Promise<void> {
     await this.request<unknown>("PUT", `/rest/api/2/issue/${encodeURIComponent(key)}`, {
       update: { labels: [{ add: label }] },
+    });
+  }
+
+  async updateIssueDescription(key: string, description: string): Promise<void> {
+    await this.request<unknown>("PUT", `/rest/api/2/issue/${encodeURIComponent(key)}`, {
+      fields: { description },
     });
   }
 

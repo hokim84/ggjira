@@ -4,7 +4,8 @@ import type { ExecutionResult } from "../agent/result.js";
 import type { AppConfig } from "../config.js";
 import type { JobStore } from "../job/store.js";
 import type { Logger } from "../logger.js";
-import type { WorkerProvider, WorkerRequest } from "../worker/provider.js";
+import type { JiraGateway } from "../jira/gateway.js";
+import type { WorkerProvider, WorkerRequest, WorkerResult } from "../worker/provider.js";
 import { buildImplementPrompt, buildImplementSystemPrompt } from "../worker/prompt.js";
 import {
   changedFilesSince,
@@ -20,6 +21,7 @@ export interface ImplementHandlerDeps {
   store: JobStore;
   worktreesRoot: string;
   logger?: Logger;
+  jira?: JiraGateway;
   /** Composed system prompt (core policy + project policy + preset + profile); falls back to buildImplementSystemPrompt(). */
   buildSystemPrompt?: () => Promise<string>;
 }
@@ -74,9 +76,44 @@ export function createImplementHandler(deps: ImplementHandlerDeps): JobHandler {
       };
 
       const workerLogPath = store.workerLogPath(issue.key, job.runId);
-      const workerResult = await provider.run(request, {
-        onEvent: (line) => appendFileSync(workerLogPath, `${line}\n`),
-      });
+      const abort = new AbortController();
+      let approvalLost = false;
+      const checkApproval = async (): Promise<void> => {
+        if (!deps.jira || config.configVersion !== 4) return;
+        try {
+          const latest = await deps.jira.getIssue(issue.key);
+          approvalLost =
+            latest.statusName !== (config.workflow.implementationStatus ?? "AI Implementation") ||
+            latest.assigneeAccountId === null;
+        } catch {
+          // Fail closed: Jira is the source of truth, so do not continue side effects
+          // while the approval state cannot be verified.
+          approvalLost = true;
+        }
+        if (approvalLost) abort.abort();
+      };
+      await checkApproval();
+      if (approvalLost) {
+        return { status: "cancelled", summary: "AI implementation approval was withdrawn." };
+      }
+      const approvalTimer = deps.jira ? setInterval(() => void checkApproval(), 5000) : undefined;
+      let workerResult: WorkerResult;
+      try {
+        workerResult = await provider.run(request, {
+          signal: abort.signal,
+          onEvent: (line) => appendFileSync(workerLogPath, `${line}\n`),
+        });
+      } finally {
+        if (approvalTimer) clearInterval(approvalTimer);
+      }
+      await checkApproval();
+      if (approvalLost) {
+        return {
+          status: "cancelled",
+          summary: "AI implementation stopped because the Jira approval state changed.",
+          branch,
+        };
+      }
 
       if (workerResult.exitReason !== "completed" || workerResult.isError) {
         return {
@@ -90,12 +127,29 @@ export function createImplementHandler(deps: ImplementHandlerDeps): JobHandler {
 
       let changedFiles: string[] = [];
       if (await hasUncommittedChanges(worktreePath)) {
+        await checkApproval();
+        if (approvalLost) {
+          return {
+            status: "cancelled",
+            summary: "AI implementation stopped before commit because approval was withdrawn.",
+            branch,
+          };
+        }
         await commitAll(worktreePath, `GGJIRA worker: ${issue.key} ${issue.summary}`.slice(0, 200));
         changedFiles = await changedFilesSince(worktreePath, config.workspace.baseBranch);
       }
 
       const validation: string[] = [];
       if (config.workspace.validateCommand) {
+        await checkApproval();
+        if (approvalLost) {
+          return {
+            status: "cancelled",
+            summary: "AI implementation stopped before validation because approval was withdrawn.",
+            branch,
+            changes: changedFiles,
+          };
+        }
         const validationResult = await runValidateCommand(
           config.workspace.validateCommand,
           worktreePath,

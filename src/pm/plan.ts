@@ -18,6 +18,10 @@ export const PlanTaskSchema = z.object({
   title: z.string().min(1),
   description: z.string().min(1),
   acceptance: z.array(z.string()).default([]),
+  dependencies: z.array(z.string()).optional(),
+  constraints: z.array(z.string()).optional(),
+  requiredCapabilities: z.array(z.string().min(1)).min(1).optional(),
+  suggestedExecutionStrategy: z.string().min(1).optional(),
   /** agentId of a registered implement agent to route this task to; falls back to the roster default / legacy pm.implementAssignee. */
   assigneeAgentId: z.string().min(1).optional(),
 });
@@ -34,6 +38,12 @@ export const PlanSchema = z
   .object({
     needsDecision: z.boolean(),
     summary: z.string().min(1),
+    objective: z.string().min(1).optional(),
+    acceptanceCriteria: z.array(z.string()).optional(),
+    dependencies: z.array(z.string()).optional(),
+    constraints: z.array(z.string()).optional(),
+    requiredCapabilities: z.array(z.string().min(1)).optional(),
+    suggestedExecutionStrategy: z.string().min(1).optional(),
     tasks: z.array(PlanTaskSchema).default([]),
     /** Keys of existing subtasks a replan should keep as-is (not recreate or supersede). */
     keepTaskKeys: z.array(z.string()).default([]),
@@ -52,7 +62,13 @@ export const PlanSchema = z
       });
     }
     const managesAgentsOnly = plan.agentProfiles.length > 0 || plan.disableAgentIds.length > 0;
-    if (!plan.needsDecision && plan.tasks.length === 0 && !managesAgentsOnly) {
+    const recordsParentPlan = (plan.requiredCapabilities?.length ?? 0) > 0;
+    if (
+      !plan.needsDecision &&
+      plan.tasks.length === 0 &&
+      !managesAgentsOnly &&
+      !recordsParentPlan
+    ) {
       ctx.addIssue({
         code: "custom",
         path: ["tasks"],
@@ -71,6 +87,12 @@ export const PLAN_JSON_SCHEMA = {
   required: [
     "needsDecision",
     "summary",
+    "objective",
+    "acceptanceCriteria",
+    "dependencies",
+    "constraints",
+    "requiredCapabilities",
+    "suggestedExecutionStrategy",
     "tasks",
     "keepTaskKeys",
     "agentProfiles",
@@ -79,16 +101,33 @@ export const PLAN_JSON_SCHEMA = {
   properties: {
     needsDecision: { type: "boolean" },
     summary: { type: "string" },
+    objective: { type: "string" },
+    acceptanceCriteria: { type: "array", items: { type: "string" } },
+    dependencies: { type: "array", items: { type: "string" } },
+    constraints: { type: "array", items: { type: "string" } },
+    requiredCapabilities: { type: "array", items: { type: "string" } },
+    suggestedExecutionStrategy: { type: "string" },
     tasks: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["title", "description"],
+        required: [
+          "title",
+          "description",
+          "acceptance",
+          "dependencies",
+          "constraints",
+          "requiredCapabilities",
+        ],
         properties: {
           title: { type: "string" },
           description: { type: "string" },
           acceptance: { type: "array", items: { type: "string" } },
+          dependencies: { type: "array", items: { type: "string" } },
+          constraints: { type: "array", items: { type: "string" } },
+          requiredCapabilities: { type: "array", minItems: 1, items: { type: "string" } },
+          suggestedExecutionStrategy: { type: "string" },
           assigneeAgentId: { type: "string" },
         },
       },

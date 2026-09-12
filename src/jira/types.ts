@@ -9,6 +9,7 @@ export interface JiraIssue {
   issueTypeName: string | null;
   parentKey: string | null;
   projectKey: string | null;
+  updatedAt?: string;
 }
 
 export interface JiraTransition {
@@ -20,6 +21,8 @@ export interface JiraTransition {
 export interface SearchIssuesOptions {
   maxResults?: number;
   fields?: string[];
+  /** Follow Jira's nextPageToken until all result pages have been collected. */
+  all?: boolean;
 }
 
 export interface JiraUser {

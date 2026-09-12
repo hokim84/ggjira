@@ -76,6 +76,11 @@ export async function recoverStaleClaims(config: AppConfig, deps: CycleDeps): Pr
     const logger = deps.logger?.child({ layer: "job", issueKey, runId, stage: "recovery" });
     const existing = deps.store.loadJob(issueKey, runId) ?? createJob(issueKey, runId);
 
+    if (config.configVersion === 4 && deps.store.isClaimOwnedByLiveProcess(issueKey)) {
+      logger?.info("claim belongs to a live process; leaving it untouched");
+      continue;
+    }
+
     if (isTerminalStatus(existing.status)) {
       logger?.info("releasing stale claim for an already-terminal job");
       deps.store.releaseClaim(issueKey);

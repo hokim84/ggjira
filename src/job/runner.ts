@@ -47,6 +47,7 @@ function buildSummaryMarkdown(job: Job, result: ExecutionResult | undefined): st
 }
 
 function resultToJobStatus(result: ExecutionResult): JobStatus {
+  if (result.status === "cancelled") return "cancelled";
   if (result.status === "failed") return result.timedOut ? "timed_out" : "failed";
   return "succeeded"; // succeeded | planned | needs_decision all reach a "reported" terminal state
 }
@@ -125,16 +126,49 @@ export async function runJobForIssue(
     };
   }
 
+  if (
+    config.configVersion === 4 &&
+    issue.statusName === (config.workflow.implementationStatus ?? "AI Implementation") &&
+    result.status === "succeeded"
+  ) {
+    try {
+      const latest = await deps.jira.getIssue(issue.key);
+      if (
+        latest.statusName !== (config.workflow.implementationStatus ?? "AI Implementation") ||
+        latest.assigneeAccountId === null
+      ) {
+        result = {
+          status: "cancelled",
+          summary:
+            "AI implementation finished locally, but its approval was withdrawn before reporting.",
+          ...(result.branch ? { branch: result.branch } : {}),
+          ...(result.changes ? { changes: result.changes } : {}),
+          ...(result.validation ? { validation: result.validation } : {}),
+        };
+      }
+    } catch {
+      result = {
+        status: "cancelled",
+        summary: "AI implementation finished locally, but Jira approval could not be verified.",
+        ...(result.branch ? { branch: result.branch } : {}),
+        ...(result.changes ? { changes: result.changes } : {}),
+        ...(result.validation ? { validation: result.validation } : {}),
+      };
+    }
+  }
+
   const branchPatch = result.branch ? { branch: result.branch } : {};
   const nextStatus = resultToJobStatus(result);
   job =
     nextStatus === "succeeded"
       ? transitionJob(job, "succeeded", { ...branchPatch, summary: result.summary })
-      : transitionJob(job, nextStatus, {
-          ...branchPatch,
-          failureStage: "worker",
-          error: result.failureReason ?? result.summary,
-        });
+      : nextStatus === "cancelled"
+        ? transitionJob(job, "cancelled", { ...branchPatch, summary: result.summary })
+        : transitionJob(job, nextStatus, {
+            ...branchPatch,
+            failureStage: "worker",
+            error: result.failureReason ?? result.summary,
+          });
   deps.store.saveJob(job);
   deps.store.writeSummary(issue.key, runId, buildSummaryMarkdown(job, result));
 
@@ -144,6 +178,13 @@ export async function runJobForIssue(
     () => reportForResult(deps.jira, config, issue, job, result),
     logger,
   );
+  if (config.configVersion === 4) {
+    try {
+      deps.store.markHandled(await deps.jira.getIssue(issue.key));
+    } catch {
+      deps.store.markHandled(issue);
+    }
+  }
   deps.store.releaseClaim(issue.key);
   return job;
 }

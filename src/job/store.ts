@@ -1,16 +1,26 @@
 import {
   existsSync,
   mkdirSync,
+  rmSync,
   readdirSync,
   readFileSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import type { JiraIssue } from "../jira/types.js";
 import type { Job } from "./job.js";
 
 interface StateFile {
   claims: Record<string, string>;
+  handled?: Record<string, string>;
+}
+
+interface LeaseFile {
+  runId: string;
+  pid: number;
+  startedAt: string;
 }
 
 function readJsonFile<T>(filePath: string, makeFallback: () => T): T {
@@ -33,10 +43,14 @@ function writeJsonFileAtomic(filePath: string, data: unknown): void {
 export class JobStore {
   private readonly dataDir: string;
   private readonly statePath: string;
+  private readonly leasesDir: string;
+  private readonly handledDir: string;
 
   constructor(dataDir = "data") {
     this.dataDir = dataDir;
     this.statePath = path.join(dataDir, "state.json");
+    this.leasesDir = path.join(dataDir, "leases");
+    this.handledDir = path.join(dataDir, "handled");
   }
 
   private runDir(issueKey: string, runId: string): string {
@@ -89,7 +103,7 @@ export class JobStore {
   }
 
   private readState(): StateFile {
-    return readJsonFile(this.statePath, () => ({ claims: {} }));
+    return readJsonFile(this.statePath, () => ({ claims: {}, handled: {} }));
   }
 
   private writeState(state: StateFile): void {
@@ -97,11 +111,71 @@ export class JobStore {
   }
 
   listClaims(): Record<string, string> {
-    return { ...this.readState().claims };
+    if (!existsSync(this.leasesDir)) return { ...this.readState().claims };
+    const claims: Record<string, string> = {};
+    for (const entry of readdirSync(this.leasesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const issueKey = decodeURIComponent(entry.name);
+      const lease = this.readLease(issueKey);
+      if (lease) claims[issueKey] = lease.runId;
+    }
+    return claims;
   }
 
   getClaim(issueKey: string): string | undefined {
     return this.readState().claims[issueKey];
+  }
+
+  private issueFingerprint(issue: JiraIssue): string {
+    return createHash("sha256")
+      .update(
+        JSON.stringify({
+          statusName: issue.statusName,
+          assigneeAccountId: issue.assigneeAccountId,
+          description: issue.description,
+          updatedAt: issue.updatedAt,
+        }),
+      )
+      .digest("hex");
+  }
+
+  wasHandled(issue: JiraIssue): boolean {
+    const marker = path.join(this.handledDir, `${encodeURIComponent(issue.key)}.txt`);
+    if (existsSync(marker)) return readFileSync(marker, "utf-8") === this.issueFingerprint(issue);
+    return this.readState().handled?.[issue.key] === this.issueFingerprint(issue);
+  }
+
+  markHandled(issue: JiraIssue): void {
+    mkdirSync(this.handledDir, { recursive: true });
+    writeFileSync(
+      path.join(this.handledDir, `${encodeURIComponent(issue.key)}.txt`),
+      this.issueFingerprint(issue),
+    );
+  }
+
+  private leaseDir(issueKey: string): string {
+    return path.join(this.leasesDir, encodeURIComponent(issueKey));
+  }
+
+  private readLease(issueKey: string): LeaseFile | undefined {
+    const leasePath = path.join(this.leaseDir(issueKey), "owner.json");
+    if (!existsSync(leasePath)) return undefined;
+    try {
+      return JSON.parse(readFileSync(leasePath, "utf-8")) as LeaseFile;
+    } catch {
+      return undefined;
+    }
+  }
+
+  isClaimOwnedByLiveProcess(issueKey: string): boolean {
+    const lease = this.readLease(issueKey);
+    if (!lease) return false;
+    try {
+      process.kill(lease.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -110,11 +184,21 @@ export class JobStore {
    * the issue is already claimed by a different run.
    */
   claimIssue(issueKey: string, runId: string): boolean {
-    const state = this.readState();
-    const existing = state.claims[issueKey];
-    if (existing !== undefined && existing !== runId) {
+    mkdirSync(this.leasesDir, { recursive: true });
+    const leaseDir = this.leaseDir(issueKey);
+    try {
+      mkdirSync(leaseDir);
+      writeFileSync(
+        path.join(leaseDir, "owner.json"),
+        JSON.stringify({ runId, pid: process.pid, startedAt: new Date().toISOString() }),
+      );
+    } catch (error) {
+      const existing = this.readLease(issueKey);
+      if (existing?.runId === runId) return true;
       return false;
     }
+
+    const state = this.readState();
     state.claims[issueKey] = runId;
     this.writeState(state);
     return true;
@@ -126,5 +210,6 @@ export class JobStore {
       delete state.claims[issueKey];
       this.writeState(state);
     }
+    rmSync(this.leaseDir(issueKey), { recursive: true, force: true });
   }
 }

@@ -76,6 +76,20 @@ export async function reportForResult(
   job: Job,
   result: ExecutionResult,
 ): Promise<void> {
+  if (result.status === "cancelled") {
+    await jira.addComment(
+      issue.key,
+      [
+        "AI execution stopped.",
+        "",
+        result.summary,
+        "",
+        `agent: ${agentTag(config)}`,
+        `runId: ${job.runId}`,
+      ].join("\n"),
+    );
+    return;
+  }
   if (result.status === "needs_decision") {
     await jira.addComment(
       issue.key,

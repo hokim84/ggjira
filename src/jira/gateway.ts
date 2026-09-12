@@ -17,6 +17,7 @@ export interface JiraGateway {
   searchIssues(jql: string, opts?: SearchIssuesOptions): Promise<JiraIssue[]>;
   getIssue(key: string, fields?: string[]): Promise<JiraIssue>;
   addComment(key: string, body: string): Promise<void>;
+  updateIssueDescription(key: string, description: string): Promise<void>;
   getComments(key: string): Promise<JiraComment[]>;
   getTransitions(key: string): Promise<JiraTransition[]>;
   transitionIssue(key: string, transitionName: string): Promise<void>;

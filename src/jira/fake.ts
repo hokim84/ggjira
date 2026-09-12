@@ -88,6 +88,7 @@ export class FakeJiraGateway implements JiraGateway {
       issueTypeName: issue.issueTypeName ?? null,
       parentKey: issue.parentKey ?? null,
       projectKey: issue.projectKey ?? issue.key.split("-")[0] ?? null,
+      updatedAt: issue.updatedAt ?? new Date().toISOString(),
     };
     this.issues.set(full.key, full);
     this.transitionsByKey.set(full.key, availableTransitions);
@@ -140,6 +141,11 @@ export class FakeJiraGateway implements JiraGateway {
   private matchesClause(issue: JiraIssue, clause: string): boolean {
     if (/^assignee\s*=\s*currentUser\(\)$/i.test(clause)) {
       return issue.assigneeAccountId === this.self.accountId;
+    }
+
+    const statusInMatch = clause.match(/^status\s+in\s*\((.+)\)$/i);
+    if (statusInMatch?.[1]) {
+      return statusInMatch[1].split(",").map(unquote).includes(issue.statusName);
     }
 
     const statusMatch = clause.match(/^status\s*=\s*(.+)$/i);
@@ -230,6 +236,12 @@ export class FakeJiraGateway implements JiraGateway {
     if (issue) {
       this.issues.set(key, { ...issue, labels: issue.labels.filter((l) => l !== label) });
     }
+  }
+
+  async updateIssueDescription(key: string, description: string): Promise<void> {
+    const issue = this.issues.get(key);
+    if (!issue) throw new Error(`FakeJiraGateway: unknown issue ${key}`);
+    this.issues.set(key, { ...issue, description, updatedAt: new Date().toISOString() });
   }
 
   async getMyself(): Promise<JiraUser> {

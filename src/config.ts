@@ -22,6 +22,8 @@ const AgentConfigSchema = z.object({
   profileKey: z.string().min(1).optional(),
   /** UUID generated once at setup and kept across re-runs; identifies this installation for claiming a profile. */
   machineId: z.string().uuid().optional(),
+  /** Local execution environments. Human-facing capabilities remain in the Jira profile. */
+  backends: z.array(z.string().min(1)).optional(),
 });
 
 /**
@@ -43,6 +45,21 @@ const WorkflowConfigSchema = z.object({
   claimTransitionName: z.string().min(1).default("In Progress").transform(nfc),
   doneTransitionName: z.string().min(1).default("In Review").transform(nfc),
   failureLabel: z.string().min(1).default("ggjira-failed"),
+  planningStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
+  implementationStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
+  completionStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
   /** Required when agent.role is "pm". */
   needsDecisionTransitionName: z
     .string()

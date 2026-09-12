@@ -1,6 +1,8 @@
 # GGJIRA — Claude Code 작업 규칙
 
 GGJIRA는 Jira를 인간/AI Agent 공용 작업 인터페이스로 사용하는 경량 오케스트레이션 시스템이다.
+configVersion 4에서는 Jira Assignee를 인간 책임자로 유지하고, Jira Agent Profile의 capability와
+로컬 backend 설정으로 planning/implementation을 하나의 Runtime에서 dispatch한다.
 동일 Agent Runtime이 설정(`agent.role`)만으로 `pm` 또는 `implement` 역할로 동작하며, Jira의
 Assignee/Workflow State를 통해 작업을 발견·claim·실행·기록한다. PM은 Jira에 실행 가능한
 하위 티켓을 만들고 Assignee를 지정할 뿐, Implement 프로세스를 직접 실행하지 않는다.

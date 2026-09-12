@@ -50,14 +50,24 @@ export async function claimJob(
   logger?: Logger,
 ): Promise<void> {
   const fresh = await jira.getIssue(issue.key);
-  if (fresh.statusName !== config.workflow.readyStatus) {
+  const expectedStatus =
+    config.configVersion === 4 ? issue.statusName : config.workflow.readyStatus;
+  if (fresh.statusName !== expectedStatus) {
     throw new ClaimLostError(issue.key, fresh.statusName);
   }
 
-  try {
-    await jira.transitionIssue(issue.key, config.workflow.claimTransitionName);
-  } catch (error) {
-    throw new ClaimLostError(issue.key, fresh.statusName, error);
+  // AI Implementation is itself the human approval state. Moving it merely to
+  // claim work would erase that source-of-truth signal, so the local execution
+  // lease is the claim for implementation jobs.
+  if (
+    config.configVersion !== 4 ||
+    expectedStatus !== (config.workflow.implementationStatus ?? "AI Implementation")
+  ) {
+    try {
+      await jira.transitionIssue(issue.key, config.workflow.claimTransitionName);
+    } catch (error) {
+      throw new ClaimLostError(issue.key, fresh.statusName, error);
+    }
   }
 
   try {

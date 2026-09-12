@@ -137,8 +137,6 @@ export function createPmHandler(deps: PmHandlerDeps): JobHandler {
           artifacts: [
             ...applied.createdKeys.map((key) => `created: ${key}`),
             ...applied.supersededKeys.map((key) => `superseded: ${key}`),
-            ...applied.createdProfileKeys.map((key) => `agent profile created: ${key}`),
-            ...applied.disabledAgentIds.map((id) => `agent profile disabled: ${id}`),
           ],
         };
       } catch (error) {

@@ -7,6 +7,7 @@ import {
   findAgentProfileById,
 } from "../profile/profile.js";
 import type { AgentProfile, WorkspaceConfig } from "../profile/types.js";
+import { renderSections } from "../profile/description.js";
 import type { Plan, PlanTaskSchema } from "./plan.js";
 import type { z } from "zod";
 
@@ -21,53 +22,82 @@ export interface ApplyPlanResult {
 
 export class PlanApplyError extends Error {}
 
-async function resolveAssigneeAccountId(jira: JiraGateway, config: AppConfig): Promise<string> {
-  const assignee = config.pm.implementAssignee;
-  if (!assignee) throw new PlanApplyError("pm.implementAssignee is not configured");
-  const matches = await jira.searchUsers(assignee);
-  const exact =
-    matches.find((u) => u.emailAddress === assignee) ??
-    matches.find((u) => u.accountId === assignee) ??
-    matches[0];
-  if (!exact) {
-    throw new PlanApplyError(`No Jira user found matching pm.implementAssignee "${assignee}"`);
-  }
-  return exact.accountId;
-}
-
 function isRoutableImplementAgent(agent: AgentProfile): boolean {
   return agent.role === "implement" && agent.enabled && agent.registration !== null;
 }
 
-/**
- * Resolves the Jira account a task's subtask should be assigned to, in
- * order (advanced_plan.md §2.10): the task's own requested agent (if it's a
- * routable implement agent) -> the roster's first routable implement agent
- * -> the legacy pm.implementAssignee lookup. The legacy lookup is only ever
- * made when actually needed (a profile-only plan with a full roster never
- * touches it), and at most once per applyPlan call.
- */
-async function resolveTaskAssigneeAccountId(
+async function resolveLegacyAssignee(
   jira: JiraGateway,
   config: AppConfig,
   roster: AgentProfile[] | undefined,
   task: z.infer<typeof PlanTaskSchema>,
-  legacyCache: { accountId?: string },
 ): Promise<string> {
-  if (task.assigneeAgentId) {
-    const requested = roster?.find(
-      (a) => a.agentId === task.assigneeAgentId && isRoutableImplementAgent(a),
-    );
-    if (requested?.registration) return requested.registration.jiraAccountId;
+  const requested = task.assigneeAgentId
+    ? roster?.find(
+        (agent) => agent.agentId === task.assigneeAgentId && isRoutableImplementAgent(agent),
+      )
+    : undefined;
+  const registered = requested ?? roster?.find(isRoutableImplementAgent);
+  if (registered?.registration) return registered.registration.jiraAccountId;
+  const configured = config.pm.implementAssignee;
+  if (!configured) throw new PlanApplyError("pm.implementAssignee is not configured");
+  const matches = await jira.searchUsers(configured);
+  const exact =
+    matches.find((user) => user.emailAddress === configured || user.accountId === configured) ??
+    matches[0];
+  if (!exact)
+    throw new PlanApplyError(`No Jira user found matching pm.implementAssignee "${configured}"`);
+  return exact.accountId;
+}
+
+function renderTaskDescription(task: z.infer<typeof PlanTaskSchema>): string {
+  return [
+    task.description,
+    "",
+    renderSections([
+      {
+        heading: "GGJIRA Plan",
+        scalars: [
+          ["Objective", task.title],
+          ["Suggested Execution Strategy", task.suggestedExecutionStrategy ?? null],
+        ],
+      },
+      { heading: "Acceptance Criteria", items: task.acceptance },
+      { heading: "Dependencies", items: task.dependencies ?? [] },
+      { heading: "Constraints", items: task.constraints ?? [] },
+      { heading: "Required Capabilities", items: task.requiredCapabilities ?? ["programming"] },
+    ]),
+  ].join("\n");
+}
+
+const PLAN_START = "{noformat}[GGJIRA:PLAN:START]{noformat}";
+const PLAN_END = "{noformat}[GGJIRA:PLAN:END]{noformat}";
+
+function renderParentPlan(parent: JiraIssue, plan: Plan): string {
+  const managed = [
+    PLAN_START,
+    renderSections([
+      {
+        heading: "GGJIRA Plan",
+        scalars: [
+          ["Objective", plan.objective ?? parent.summary],
+          ["Suggested Execution Strategy", plan.suggestedExecutionStrategy ?? null],
+        ],
+      },
+      { heading: "Acceptance Criteria", items: plan.acceptanceCriteria ?? [] },
+      { heading: "Dependencies", items: plan.dependencies ?? [] },
+      { heading: "Constraints", items: plan.constraints ?? [] },
+      { heading: "Required Capabilities", items: plan.requiredCapabilities ?? [] },
+    ]),
+    PLAN_END,
+  ].join("\n");
+  const original = parent.description ?? "";
+  const start = original.indexOf(PLAN_START);
+  const end = original.indexOf(PLAN_END);
+  if (start >= 0 && end >= start) {
+    return `${original.slice(0, start)}${managed}${original.slice(end + PLAN_END.length)}`.trim();
   }
-
-  const fallback = roster?.find(isRoutableImplementAgent);
-  if (fallback?.registration) return fallback.registration.jiraAccountId;
-
-  if (legacyCache.accountId) return legacyCache.accountId;
-  const resolved = await resolveAssigneeAccountId(jira, config);
-  legacyCache.accountId = resolved;
-  return resolved;
+  return [original.trim(), managed].filter(Boolean).join("\n\n");
 }
 
 /**
@@ -97,26 +127,29 @@ export async function applyPlan(
   const projectKey = parent.projectKey;
   if (!projectKey) throw new PlanApplyError(`Issue ${parent.key} has no projectKey`);
 
-  const legacyCache: { accountId?: string } = {};
+  if (config.configVersion === 4) {
+    await jira.updateIssueDescription(parent.key, renderParentPlan(parent, plan));
+  }
+
   const createdKeys: string[] = [];
   for (const task of plan.tasks) {
-    const assigneeAccountId = await resolveTaskAssigneeAccountId(
-      jira,
-      config,
-      roster,
-      task,
-      legacyCache,
-    );
-    const description = task.acceptance.length
-      ? `${task.description}\n\nAcceptance criteria:\n${task.acceptance.map((a) => `- ${a}`).join("\n")}`
-      : task.description;
+    const description =
+      config.configVersion === 4
+        ? renderTaskDescription(task)
+        : task.acceptance.length
+          ? `${task.description}\n\nAcceptance criteria:\n${task.acceptance.map((item) => `- ${item}`).join("\n")}`
+          : task.description;
     const { key } = await jira.createIssue({
       projectKey,
       issueTypeName: config.pm.subtaskIssueType,
       summary: task.title,
       description,
       parentKey: parent.key,
-      assigneeAccountId,
+      ...(config.configVersion === 4
+        ? parent.assigneeAccountId
+          ? { assigneeAccountId: parent.assigneeAccountId }
+          : {}
+        : { assigneeAccountId: await resolveLegacyAssignee(jira, config, roster, task) }),
     });
     if (config.pm.taskReadyTransitionName) {
       await jira.transitionIssue(key, config.pm.taskReadyTransitionName);
@@ -129,38 +162,39 @@ export async function applyPlan(
   for (const task of existingSubtasks) {
     if (keep.has(task.key)) continue;
     if (task.statusName !== config.workflow.readyStatus) continue;
-    await jira.assignIssue(task.key, null);
+    if (config.configVersion !== 4) await jira.assignIssue(task.key, null);
     await jira.addLabel(task.key, SUPERSEDED_LABEL);
     await jira.addComment(task.key, "Superseded by a replan of the parent issue.");
     supersededKeys.push(task.key);
   }
 
   const createdProfileKeys: string[] = [];
-  for (const request of plan.agentProfiles) {
-    const existing = await findAgentProfileById(jira, projectKey, request.agentId);
-    if (existing) continue; // idempotent: never recreate an agentId that already exists
-    const created = await createAgentProfile(jira, {
-      projectKey,
-      issueTypeName: workspace?.issueTypeName ?? "Task",
-      agentId: request.agentId,
-      displayName: request.displayName ?? request.agentId,
-      role: request.role,
-      preset: request.preset ?? null,
-      capabilities: request.capabilities,
-      workStyle: [],
-      humanInstructions: [],
-    });
-    createdProfileKeys.push(created.issueKey);
-  }
-
   const disabledAgentIds: string[] = [];
-  for (const agentId of plan.disableAgentIds) {
-    const existing =
-      roster?.find((a) => a.agentId === agentId) ??
-      (await findAgentProfileById(jira, projectKey, agentId));
-    if (!existing) continue;
-    await disableAgentProfile(jira, existing);
-    disabledAgentIds.push(agentId);
+  if (config.configVersion !== 4) {
+    for (const request of plan.agentProfiles) {
+      const existing = await findAgentProfileById(jira, projectKey, request.agentId);
+      if (existing) continue;
+      const created = await createAgentProfile(jira, {
+        projectKey,
+        issueTypeName: workspace?.issueTypeName ?? "Task",
+        agentId: request.agentId,
+        displayName: request.displayName ?? request.agentId,
+        role: request.role,
+        preset: request.preset ?? null,
+        capabilities: request.capabilities,
+        workStyle: [],
+        humanInstructions: [],
+      });
+      createdProfileKeys.push(created.issueKey);
+    }
+    for (const agentId of plan.disableAgentIds) {
+      const existing =
+        roster?.find((agent) => agent.agentId === agentId) ??
+        (await findAgentProfileById(jira, projectKey, agentId));
+      if (!existing) continue;
+      await disableAgentProfile(jira, existing);
+      disabledAgentIds.push(agentId);
+    }
   }
 
   return { createdKeys, supersededKeys, createdProfileKeys, disabledAgentIds };

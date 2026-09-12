@@ -10,7 +10,13 @@ const META_LABELS = new Set([AGENT_LABEL, WORKSPACE_LABEL]);
 /** Builds the JQL for "issues assigned to me that are ready to claim", unless config overrides it. */
 export function buildAssignedJql(config: AppConfig): string {
   if (config.jira.jql) return config.jira.jql;
-  return `assignee = currentUser() AND status = "${config.workflow.readyStatus}" ORDER BY created ASC`;
+  if (config.configVersion !== 4) {
+    return `assignee = currentUser() AND status = "${config.workflow.readyStatus}" ORDER BY created ASC`;
+  }
+  const planningStatus = config.workflow.planningStatus ?? config.workflow.readyStatus;
+  const project = config.jira.projectKey ? `project = "${config.jira.projectKey}" AND ` : "";
+  const implementationStatus = config.workflow.implementationStatus ?? "AI Implementation";
+  return `${project}status in ("${planningStatus}", "${implementationStatus}") ORDER BY created ASC`;
 }
 
 /**
@@ -30,9 +36,20 @@ export async function findAssignedJobs(
   config: AppConfig,
   store: JobStore,
 ): Promise<JiraIssue[]> {
-  const issues = await jira.searchIssues(buildAssignedJql(config), { maxResults: 50 });
+  const issues = await jira.searchIssues(buildAssignedJql(config), { maxResults: 50, all: true });
   const claims = store.listClaims();
-  return issues.filter(
-    (issue) => !(issue.key in claims) && !issue.labels.some((label) => META_LABELS.has(label)),
-  );
+  const planningStatus = config.workflow.planningStatus ?? config.workflow.readyStatus;
+  return issues.filter((issue) => {
+    const executableStatus =
+      config.configVersion === 4
+        ? issue.statusName === planningStatus ||
+          issue.statusName === (config.workflow.implementationStatus ?? "AI Implementation")
+        : issue.statusName === config.workflow.readyStatus && issue.assigneeAccountId !== null;
+    return (
+      executableStatus &&
+      !(issue.key in claims) &&
+      (config.configVersion !== 4 || !store.wasHandled(issue)) &&
+      !issue.labels.some((label) => META_LABELS.has(label))
+    );
+  });
 }

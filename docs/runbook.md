@@ -1,5 +1,19 @@
 # Runbook
 
+## v4 capability 실행 점검
+
+- 새 설정은 `configVersion: 4`이며 `workflow.planningStatus`와
+  `workflow.implementationStatus`를 사용한다. 기본 구현 승인 상태는 `AI Implementation`이다.
+- 구현 이슈에는 인간 Assignee와 `h2. Required Capabilities` 항목이 모두 있어야 한다.
+  누락되거나 현재 Agent Profile/Backend가 충족하지 못하면 실패 사유를 한 번 기록하고,
+  description 또는 Assignee가 바뀔 때 다시 평가한다.
+- 진행 중 claim은 `data/leases/`, 이미 평가한 이슈 입력은 `data/handled/`에서 확인한다.
+  살아 있는 PID의 lease는 다른 v4 프로세스가 복구하거나 제거하지 않는다.
+- 실행 중 `AI Implementation`에서 `In Progress` 등으로 바꾸면 현재 provider에 취소 신호를
+  보내며, 격리 worktree와 로그는 조사를 위해 남긴다.
+
+아래 절의 assignee 기반 JQL과 Jira claim transition 설명은 v2/v3 호환 모드에 해당한다.
+
 GGJIRA가 실패하거나 예상과 다르게 동작할 때, 어디를 보고 무엇을 하면 되는지 정리한다.
 아키텍처와 계층 구분은 [`architecture.md`](./architecture.md), 설계 결정 배경은
 [`decisions/`](./decisions/)를 참고한다.

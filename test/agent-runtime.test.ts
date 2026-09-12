@@ -49,6 +49,20 @@ class RecordingProvider implements WorkerProvider {
   }
 }
 
+class CallbackProvider implements WorkerProvider {
+  constructor(private readonly callback: () => void) {}
+  async run(_request: WorkerRequest, _hooks?: WorkerRunHooks): Promise<WorkerResult> {
+    this.callback();
+    return {
+      exitReason: "completed",
+      isError: false,
+      summary: "local work completed",
+      durationMs: 1,
+      exitCode: 0,
+    };
+  }
+}
+
 describe("bootstrapAgent", () => {
   let tempDir: string;
   let targetRepoPath: string;
@@ -71,6 +85,116 @@ describe("bootstrapAgent", () => {
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("v4 dispatches planning and implementation through the same runtime while preserving the human assignee", async () => {
+    jira.setSelf({ accountId: "agent-account", displayName: "GGJIRA", emailAddress: null });
+    const config = buildTestConfig({
+      configVersion: 4,
+      jira: { baseUrl: "https://example.atlassian.net", projectKey: "KAN" },
+      agent: {
+        identity: "dev-machine",
+        role: "implement",
+        machine: "test-machine",
+        backends: ["filesystem", "git", "coding-runtime"],
+      },
+      workflow: {
+        ...baseConfig.workflow,
+        planningStatus: "Ready for Planning",
+        implementationStatus: "AI Implementation",
+      },
+      workspace: { path: targetRepoPath, baseBranch: "main", validateCommand: null },
+    });
+    const provider = new StaticProvider({
+      exitReason: "completed",
+      isError: false,
+      summary: "ok",
+      durationMs: 1,
+      exitCode: 0,
+      structuredOutput: {
+        needsDecision: false,
+        summary: "planned",
+        objective: "Implement the feature",
+        acceptanceCriteria: ["works"],
+        dependencies: [],
+        constraints: [],
+        requiredCapabilities: ["programming"],
+        suggestedExecutionStrategy: "Use the existing architecture",
+        tasks: [],
+        keepTaskKeys: [],
+        agentProfiles: [],
+        disableAgentIds: [],
+      },
+    });
+    const runtime = await bootstrapAgent({
+      config,
+      jira,
+      store,
+      provider,
+      worktreesRoot,
+    });
+
+    const planningIssue = buildTestIssue({
+      key: "KAN-20",
+      statusName: "Ready for Planning",
+      assigneeAccountId: "human-account",
+    });
+    jira.seedIssue(planningIssue, [{ id: "1", name: "In Progress", toStatusName: "AI Planning" }]);
+    const planningJob = await runJobForIssue(planningIssue, config, runtime.cycleDeps);
+    expect(planningJob?.status).toBe("succeeded");
+
+    const implementationIssue = buildTestIssue({
+      key: "KAN-21",
+      statusName: "AI Implementation",
+      assigneeAccountId: "human-account",
+      description: "h2. Required Capabilities\n* programming",
+    });
+    jira.seedIssue(implementationIssue, [{ id: "2", name: "In Review", toStatusName: "Review" }]);
+    const implementationJob = await runJobForIssue(implementationIssue, config, runtime.cycleDeps);
+    expect(implementationJob?.status).toBe("succeeded");
+    expect(jira.assignments).toHaveLength(0);
+    expect(jira.transitions).not.toContainEqual({
+      key: "KAN-21",
+      transitionName: config.workflow.claimTransitionName,
+    });
+  });
+
+  it("v4 discards a successful provider result when a human withdraws approval", async () => {
+    jira.setSelf({ accountId: "agent-account", displayName: "GGJIRA", emailAddress: null });
+    const issue = buildTestIssue({
+      key: "KAN-30",
+      statusName: "AI Implementation",
+      assigneeAccountId: "human-account",
+      description: "h2. Required Capabilities\n* programming",
+    });
+    jira.seedIssue(issue, [{ id: "2", name: "In Review", toStatusName: "Review" }]);
+    const config = buildTestConfig({
+      configVersion: 4,
+      jira: { baseUrl: "https://example.atlassian.net", projectKey: "KAN" },
+      agent: {
+        identity: "dev-machine",
+        role: "implement",
+        machine: "test-machine",
+        backends: ["filesystem", "git", "coding-runtime"],
+      },
+      workflow: { ...baseConfig.workflow, implementationStatus: "AI Implementation" },
+      workspace: { path: targetRepoPath, baseBranch: "main", validateCommand: null },
+    });
+    const runtime = await bootstrapAgent({
+      config,
+      jira,
+      store,
+      worktreesRoot,
+      provider: new CallbackProvider(() => {
+        jira.seedIssue({ ...issue, statusName: "In Progress" });
+      }),
+    });
+
+    const job = await runJobForIssue(issue, config, runtime.cycleDeps);
+
+    expect(job?.status).toBe("cancelled");
+    expect(jira.transitions).not.toContainEqual({ key: issue.key, transitionName: "In Review" });
+    expect(jira.comments.at(-1)?.body).toContain("AI execution stopped");
   });
 
   it("authenticates against Jira and exposes self on the runtime", async () => {

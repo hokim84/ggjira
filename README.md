@@ -1,18 +1,18 @@
 # GGJIRA
 
 Jira를 인간과 AI Agent가 공유하는 작업 인터페이스로 사용하는 경량 프로젝트 오케스트레이션
-시스템이다. 동일한 Agent Runtime이 설정만으로 두 역할 중 하나로 동작한다.
+시스템이다. configVersion 4에서는 동일한 Agent Runtime이 Jira 상태와 Agent Profile의
+capability를 기준으로 planning과 implementation을 모두 수행한다.
 
 ```
-pm          — 요구사항 이슈를 분석해 Plan을 만들고, 실행 가능한 하위 티켓을 만들어
-              implement 역할의 Jira 계정에 할당한다. 중요한 선택이 필요하면 이슈를
-              "Needs Decision"으로 넘기고 인간의 결정을 기다린다.
-implement   — 자신에게 할당된(assignee) 준비 상태 이슈를 발견해 claim하고, Claude Code
-              CLI 또는 Codex CLI로 구현한 뒤 결과를 Jira에 기록한다.
+Ready for Planning — 계획을 만들고 Jira에 사람이 검토할 Objective, Acceptance Criteria,
+                     Dependencies, Constraints, Required Capabilities를 기록한다.
+AI Implementation  — 인간 Assignee와 필요한 capability/backend를 확인한 뒤 Claude Code
+                     CLI 또는 Codex CLI로 구현하고 Review로 넘긴다.
 ```
 
-PM은 Implement 프로세스를 직접 실행하지 않는다 — Jira의 Assignee/Workflow State를 통해
-작업이 전달되며, 여러 머신의 Implement Agent가 각자 독립적으로 작업을 가져간다. Agent의
+Jira Assignee는 결과에 책임지는 인간이며 AI 실행 중에도 변경하지 않는다. 인간이 이슈를
+`AI Implementation`으로 전환하는 것이 실행 승인이다. Agent의
 정체성·역할·성향은 Jira의 **Agent Profile Issue**로 관리한다 — Human이 Jira에서 직접
 정의하고 수정할 수 있고, 새 머신은 프로필을 선택해 join하기만 하면 된다(기존 Jira
 Workflow는 건드리지 않는다). 설계 배경은
@@ -71,9 +71,9 @@ Workspace Configuration 이슈(`[GGJIRA] Workspace Configuration`)와 PM Agent P
 
 | 질문 | 기본값 | 의미 |
 |---|---|---|
-| Ready-to-claim Jira status | `To Do` | 이 상태에 있고 이 Agent에 assign된 이슈만 폴링 대상 |
-| Claim transition name | `In Progress` | claim 시 이 전이로 이동 |
-| Done transition name | `In Review` | 성공 시 이 전이로 이동 |
+| Ready-to-plan Jira status | `To Do` | 이 상태의 이슈에 planning 수행 |
+| Planning transition name | `In Progress` | planning 시작 시 이 전이로 이동 |
+| Review transition name | `In Review` | 구현 성공 시 Review로 이동 |
 | Needs-decision transition name | `Needs Decision` | 결정이 필요할 때 이 전이로 이동 |
 
 보드의 실제 상태/전이 이름이 다르면(한글 컬럼명 등) 실제 이름을 그대로 입력한다.
@@ -104,8 +104,8 @@ Available agents:
 
 ### Agent 추가하기
 
-새 Agent가 필요하면 PM에게 요청하거나(예: 요구사항 이슈에 "Unity 구현 에이전트 하나
-추가해줘"라고 남기고 PM에 assign) 직접 CLI로 만든다.
+새 Agent Profile은 인간이 직접 CLI로 만든다. Planning 작업은 Profile을 자동 생성하거나
+비활성화하지 않는다.
 
 ```bash
 npm run dev -- agent:list                                          # 프로젝트의 Agent Profile 목록

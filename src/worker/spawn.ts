@@ -8,6 +8,7 @@ export interface SpawnRunOptions {
   cwd: string;
   timeoutMs: number;
   killGraceMs?: number;
+  signal?: AbortSignal;
   /** Called with each complete stdout line as it arrives. */
   onLine?: (line: string) => void;
 }
@@ -78,6 +79,13 @@ export function runProcessWithTimeout(opts: SpawnRunOptions): Promise<SpawnRunRe
       setTimeout(() => killGroup("SIGKILL"), killGraceMs);
     }, opts.timeoutMs);
 
+    const handleAbort = () => {
+      killGroup("SIGTERM");
+      setTimeout(() => killGroup("SIGKILL"), killGraceMs);
+    };
+    opts.signal?.addEventListener("abort", handleAbort, { once: true });
+    if (opts.signal?.aborted) handleAbort();
+
     const handleLine = (line: string) => opts.onLine?.(line);
 
     child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk.toString("utf-8"), handleLine));
@@ -89,6 +97,7 @@ export function runProcessWithTimeout(opts: SpawnRunOptions): Promise<SpawnRunRe
 
     child.on("close", (code) => {
       clearTimeout(timeoutHandle);
+      opts.signal?.removeEventListener("abort", handleAbort);
       stdout.flush(handleLine);
       resolve({
         code,

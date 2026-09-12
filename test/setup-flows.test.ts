@@ -87,10 +87,10 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
     const envPath = path.join(cwd, ".env");
     expect(existsSync(configPath)).toBe(true);
     expect(existsSync(envPath)).toBe(true);
-    expect(statSync(envPath).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(envPath).mode & 0o777).toBe(0o600);
 
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    expect(config.configVersion).toBe(3);
+    expect(config.configVersion).toBe(4);
     expect(config.jira.projectKey).toBe("KAN");
     expect(config.agent.role).toBe("pm");
     expect(config.agent.machineId).toBe(FIXED_MACHINE_ID);

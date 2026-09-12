@@ -95,6 +95,7 @@ export class CodexCliProvider implements WorkerProvider {
         cwd: request.cwd,
         timeoutMs: request.timeoutMs,
         ...(this.killGraceMs !== undefined ? { killGraceMs: this.killGraceMs } : {}),
+        ...(hooks.signal ? { signal: hooks.signal } : {}),
         onLine: (line) => {
           hooks.onEvent?.(line);
           try {

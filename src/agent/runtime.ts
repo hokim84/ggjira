@@ -14,6 +14,9 @@ import type { WorkerProvider } from "../worker/provider.js";
 import { buildImplementSystemPrompt } from "../worker/prompt.js";
 import { type AgentContext, loadAgentContext, verifyRegistration } from "./context.js";
 import type { JobHandler } from "./handler.js";
+import { canHandle, requiredBackends, unknownCapabilities } from "./capability.js";
+import { BackendRegistry } from "./backend.js";
+import { readIssueRequirements } from "./requirements.js";
 import { composeSystemPrompt } from "./prompt.js";
 
 export interface AgentRuntimeDeps {
@@ -128,6 +131,163 @@ function createHandlerForRole(
   });
 }
 
+function defaultCapabilities(role: "pm" | "implement"): string[] {
+  return role === "pm"
+    ? ["planning", "task-decomposition", "dependency-analysis", "capability-analysis"]
+    : ["programming", "testing", "review"];
+}
+
+function createDispatchHandler(
+  deps: AgentRuntimeDeps,
+  loadContext?: () => Promise<AgentContext>,
+): JobHandler {
+  const backends = new BackendRegistry();
+  for (const id of deps.config.agent.backends ?? ["filesystem", "git", "coding-runtime"]) {
+    backends.register({ id, isAvailable: () => true });
+  }
+  const planning = createPmHandler({
+    config: deps.config,
+    jira: deps.jira,
+    provider: deps.provider,
+    store: deps.store,
+    worktreesRoot: deps.worktreesRoot,
+    ...(deps.logger ? { logger: deps.logger } : {}),
+    ...(loadContext
+      ? {
+          buildSystemPrompt: buildComposedSystemPrompt(loadContext, buildPmSystemPrompt),
+          loadRoster: buildRosterLoader(deps.jira, deps.config.jira.projectKey ?? ""),
+        }
+      : {}),
+  });
+  const implementation = createImplementHandler({
+    config: deps.config,
+    provider: deps.provider,
+    store: deps.store,
+    worktreesRoot: deps.worktreesRoot,
+    jira: deps.jira,
+    ...(deps.logger ? { logger: deps.logger } : {}),
+    ...(loadContext
+      ? { buildSystemPrompt: buildComposedSystemPrompt(loadContext, buildImplementSystemPrompt) }
+      : {}),
+  });
+
+  return {
+    async run(params) {
+      const planningStatus =
+        deps.config.workflow.planningStatus ?? deps.config.workflow.readyStatus;
+      if (params.issue.statusName === planningStatus) {
+        const planningProfile = loadContext ? (await loadContext()).profile : undefined;
+        const available = planningProfile?.capabilities.length
+          ? planningProfile.capabilities
+          : defaultCapabilities(planningProfile?.role ?? "pm");
+        const match = canHandle(available, ["planning"]);
+        if (!match.ok) {
+          return {
+            status: "failed",
+            summary: "This agent cannot plan the issue.",
+            failureReason: `Missing capabilities: ${match.missing.join(", ")}`,
+          };
+        }
+        return planning.run(params);
+      }
+
+      if (
+        params.issue.statusName ===
+        (deps.config.workflow.implementationStatus ?? "AI Implementation")
+      ) {
+        if (!params.issue.assigneeAccountId) {
+          return {
+            status: "failed",
+            summary: "AI implementation is waiting for a human owner.",
+            failureReason: "The Jira issue has no assignee.",
+          };
+        }
+        const self = await deps.jira.getMyself();
+        const roster =
+          loadContext && deps.config.jira.projectKey
+            ? await buildRosterLoader(deps.jira, deps.config.jira.projectKey)()
+            : undefined;
+        const agentAccounts = new Set(
+          roster?.agents.flatMap((agent) =>
+            agent.registration ? [agent.registration.jiraAccountId] : [],
+          ) ?? [],
+        );
+        agentAccounts.add(self.accountId);
+        if (agentAccounts.has(params.issue.assigneeAccountId)) {
+          return {
+            status: "failed",
+            summary: "AI implementation is waiting for a human owner.",
+            failureReason: "The Jira assignee belongs to a registered GGJIRA agent.",
+          };
+        }
+        const requirements = readIssueRequirements(params.issue);
+        if (requirements.requiredCapabilities.length === 0) {
+          return {
+            status: "failed",
+            summary: "AI implementation is waiting for Required Capabilities.",
+            failureReason:
+              'Add at least one item under the Jira description section "Required Capabilities".',
+          };
+        }
+        const unknown = unknownCapabilities(requirements.requiredCapabilities);
+        if (unknown.length > 0) {
+          return {
+            status: "failed",
+            summary: "AI implementation has unknown Required Capabilities.",
+            failureReason: `Unknown capabilities: ${unknown.join(", ")}`,
+          };
+        }
+        const dependencyKeys = requirements.dependencies
+          .map((dependency) => dependency.match(/[A-Z][A-Z0-9_]+-\d+/)?.[0])
+          .filter((key): key is string => Boolean(key));
+        const incompleteDependencies: string[] = [];
+        for (const key of dependencyKeys) {
+          const dependency = await deps.jira.getIssue(key);
+          if (dependency.statusName !== (deps.config.workflow.completionStatus ?? "Done")) {
+            incompleteDependencies.push(`${key} (${dependency.statusName})`);
+          }
+        }
+        if (incompleteDependencies.length > 0) {
+          return {
+            status: "failed",
+            summary: "AI implementation is waiting for dependencies.",
+            failureReason: `Incomplete dependencies: ${incompleteDependencies.join(", ")}`,
+          };
+        }
+        const implementationProfile = loadContext ? (await loadContext()).profile : undefined;
+        const available = implementationProfile?.capabilities.length
+          ? implementationProfile.capabilities
+          : defaultCapabilities(implementationProfile?.role ?? "implement");
+        const match = canHandle(available, requirements.requiredCapabilities);
+        if (!match.ok) {
+          return {
+            status: "failed",
+            summary: "This agent cannot implement the issue.",
+            failureReason: `Missing capabilities: ${match.missing.join(", ")}`,
+          };
+        }
+        const missingBackends = await backends.missing(
+          requiredBackends(requirements.requiredCapabilities),
+        );
+        if (missingBackends.length > 0) {
+          return {
+            status: "failed",
+            summary: "This agent does not have the required execution backend.",
+            failureReason: `Unavailable backends: ${missingBackends.join(", ")}`,
+          };
+        }
+        return implementation.run(params);
+      }
+
+      return {
+        status: "failed",
+        summary: "The issue is not in an executable workflow state.",
+        failureReason: `Unexpected status: ${params.issue.statusName}`,
+      };
+    },
+  };
+}
+
 /**
  * Authenticates against Jira, loads this machine's Agent Profile (when
  * configured), and wires up the role's JobHandler. This is the one place
@@ -139,7 +299,8 @@ export async function bootstrapAgent(deps: AgentRuntimeDeps): Promise<AgentRunti
   const self = await deps.jira.getMyself();
 
   if (!isProfileMode(deps.config)) {
-    const handler = createHandlerForRole(deps);
+    const handler =
+      deps.config.configVersion === 4 ? createDispatchHandler(deps) : createHandlerForRole(deps);
     return {
       self,
       cycleDeps: {
@@ -166,7 +327,10 @@ export async function bootstrapAgent(deps: AgentRuntimeDeps): Promise<AgentRunti
   }
 
   const loadContext = createContextLoader(deps.jira, deps.config, context, deps.logger);
-  const handler = createHandlerForRole(deps, loadContext);
+  const handler =
+    deps.config.configVersion === 4
+      ? createDispatchHandler(deps, loadContext)
+      : createHandlerForRole(deps, loadContext);
 
   return {
     self,
