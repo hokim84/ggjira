@@ -289,6 +289,27 @@ Create/Join 흐름의 세부 단계는 `src/setup/flows.ts`에 있다. 공통적
 Workflow 상태/전이 이름은 Workspace Configuration 이슈에서 읽어오므로(Join의 경우) 다시
 묻지 않는다. Machine ID는 `crypto.randomUUID()`로 최초 1회 생성해 로컬 config에 저장하고
 재실행 시 그대로 재사용한다(`agent.machineId`) — hostname은 더 이상 식별자로 쓰지 않는다.
+
+Workflow 설정은 **상태 3개가 전부다**(ADR
+[0015](./decisions/0015-status-based-workflow.md)). Create GGJira Workspace는
+`listProjectStatuses`로 받은 실제 상태 목록을 번호와 함께 출력하고, 그 중에서만 고르게 한다
+(`listStatuses`/`askStatus`/`askWorkflowStatuses` in `flows.ts`).
+
+```text
+사람: 이슈를 workflow.implementationStatus(예: "AI 작업 요청")로 이동
+  -> agent가 claim하며 workflow.inProgressStatus(예: "진행 중")로 이동
+  -> 구현 완료 후 workflow.reviewStatus(예: "검토 중")로 이동
+  -> 사람이 검토 후 완료 처리          (GGJIRA는 완료 상태로 전이하지 않는다)
+```
+
+전이(transition) 이름은 설정에 저장하지 않는다. 이동이 필요할 때
+`transitionIssueToStatus(key, targetStatus)`(`src/jira/client.ts`)가 그 이슈에서 가능한
+전이 중 도착 상태가 목표와 같은 것을 찾아 실행하고, 도달할 수 없으면 현재 상태와 도달 가능한
+상태를 담은 `StatusNotReachableError`를 던진다. 덕분에 프로젝트의 전이 라벨이 어떤 언어든
+설정과 어긋날 수 없다. 이미 workspace가 있으면 setup은 현재 3개를 보여주고 "Change these
+statuses? (y/N)"만 물어, 동의할 때 `updateWorkspaceConfig`로 Jira 이슈 description을 갱신한다.
+Join 흐름은 workflow를 아예 묻지 않는다. PM(계획) 관련 `planningStatus`/`needsDecisionStatus`는
+선택값이라 setup이 묻지 않으며, 없으면 planning 라우팅과 JQL에서 함께 빠진다.
 Manual 모드는 기존 2차 구현의 선형 흐름(Agent Identity/Role/Machine → Workspace → Provider
 → Workflow 5문항)을 그대로 유지한다. 세 모드 모두 `.env`(0600, `JIRA_EMAIL`/`JIRA_API_TOKEN`)와
 `ggjira.config.json`을 만들고 기존 파일은 `.bak`으로 보존한다. `ggjira setup --check`는

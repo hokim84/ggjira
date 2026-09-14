@@ -95,7 +95,9 @@ export async function reportForResult(
       issue.key,
       result.decisionRequest ?? buildFallbackDecisionComment(job, config, result),
     );
-    if (config.workflow.needsDecisionTransitionName) {
+    if (config.workflow.needsDecisionStatus) {
+      await jira.transitionIssueToStatus(issue.key, config.workflow.needsDecisionStatus);
+    } else if (config.workflow.needsDecisionTransitionName) {
       await jira.transitionIssue(issue.key, config.workflow.needsDecisionTransitionName);
     }
     return;
@@ -109,6 +111,11 @@ export async function reportForResult(
       } else {
         await jira.addLabel(issue.key, PLANNED_LABEL);
       }
+    } else if (config.workflow.reviewStatus) {
+      // Implementation is done; the issue moves to review and stops there.
+      // GGJIRA never transitions an issue to a completion status -- closing is
+      // the human's call (ADR 0015).
+      await jira.transitionIssueToStatus(issue.key, config.workflow.reviewStatus);
     } else {
       await jira.transitionIssue(issue.key, config.workflow.doneTransitionName);
     }

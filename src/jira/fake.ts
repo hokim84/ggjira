@@ -1,3 +1,4 @@
+import { StatusNotReachableError } from "./client.js";
 import type { JiraGateway } from "./gateway.js";
 import type {
   CreateIssueInput,
@@ -229,6 +230,28 @@ export class FakeJiraGateway implements JiraGateway {
       const match = transitions.find((t) => t.name === transitionName);
       this.issues.set(key, { ...issue, statusName: match?.toStatusName ?? issue.statusName });
     }
+  }
+
+  async transitionIssueToStatus(key: string, targetStatusName: string): Promise<void> {
+    if (this.failingTransitions.has(key)) {
+      this.failingTransitions.delete(key);
+      throw new Error(`FakeJiraGateway: transition to "${targetStatusName}" rejected for ${key}`);
+    }
+    const target = targetStatusName.normalize("NFC");
+    const issue = this.issues.get(key);
+    if (issue?.statusName.normalize("NFC") === target) return;
+    const transitions = this.transitionsByKey.get(key) ?? [];
+    const match = transitions.find((t) => t.toStatusName.normalize("NFC") === target);
+    if (!match) {
+      throw new StatusNotReachableError(
+        key,
+        targetStatusName,
+        issue?.statusName ?? "(unknown)",
+        transitions.map((t) => t.toStatusName),
+      );
+    }
+    this.transitions.push({ key, transitionName: match.name });
+    if (issue) this.issues.set(key, { ...issue, statusName: match.toStatusName });
   }
 
   async addLabel(key: string, label: string): Promise<void> {

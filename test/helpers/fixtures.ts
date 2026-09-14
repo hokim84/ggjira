@@ -33,6 +33,25 @@ export function buildTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   };
 }
 
+/**
+ * A v4 AppConfig: the status-based workflow setup writes today (ADR 0015).
+ * `buildTestConfig` stays on the legacy transition-name shape so both paths
+ * keep their coverage.
+ */
+export function buildV4Config(overrides: Partial<AppConfig> = {}): AppConfig {
+  const base = buildTestConfig({ configVersion: 4, ...overrides });
+  return {
+    ...base,
+    workflow: {
+      ...base.workflow,
+      implementationStatus: "AI Implementation",
+      inProgressStatus: "In Progress",
+      reviewStatus: "In Review",
+      ...overrides.workflow,
+    },
+  };
+}
+
 /** A profile-mode AppConfig (advanced_plan.md's Agent Profile flow), for tests exercising that path. */
 export function buildProfileModeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return buildTestConfig({

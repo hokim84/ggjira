@@ -173,9 +173,11 @@ function createDispatchHandler(
 
   return {
     async run(params) {
-      const planningStatus =
-        deps.config.workflow.planningStatus ?? deps.config.workflow.readyStatus;
-      if (params.issue.statusName === planningStatus) {
+      // Planning is opt-in: without workflow.planningStatus this install is
+      // implementation-only, and every issue it polls goes to the implement
+      // handler below (ADR 0015).
+      const planningStatus = deps.config.workflow.planningStatus;
+      if (planningStatus && params.issue.statusName === planningStatus) {
         const planningProfile = loadContext ? (await loadContext()).profile : undefined;
         const available = planningProfile?.capabilities.length
           ? planningProfile.capabilities

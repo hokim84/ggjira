@@ -1,15 +1,15 @@
 import os from "node:os";
 import { AGENT_ROLES, type AgentRole } from "../agent/role.js";
 import {
-  AppConfigSchema,
   type AppConfig,
+  AppConfigSchema,
   type JiraEnvSecrets,
   type JiraSecrets,
 } from "../config.js";
 import { JiraClient } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
-import type { JiraProjectIssueType } from "../jira/types.js";
-import { type Preset, PRESETS, findPreset } from "../profile/presets.js";
+import type { JiraProjectIssueType, JiraTransition } from "../jira/types.js";
+import { PRESETS, type Preset, findPreset } from "../profile/presets.js";
 import {
   ProfileAlreadyRegisteredError,
   claimAgentProfile,
@@ -18,7 +18,11 @@ import {
   findAgentProfiles,
 } from "../profile/profile.js";
 import type { AgentProfile, WorkspaceWorkflow } from "../profile/types.js";
-import { createWorkspaceConfig, findWorkspaceConfig } from "../profile/workspace.js";
+import {
+  createWorkspaceConfig,
+  findWorkspaceConfig,
+  updateWorkspaceConfig,
+} from "../profile/workspace.js";
 import { GGJIRA_VERSION } from "../version.js";
 import { SetupError, describeJiraError } from "./errors.js";
 import {
@@ -145,29 +149,98 @@ async function askIssueType(ctx: FlowContext, issueTypes: JiraProjectIssueType[]
   );
 }
 
-async function askImplementationStatus(
+/** Prints the project's real Jira statuses as a numbered list, for the status prompts to pick from. */
+async function listStatuses(
   ctx: FlowContext,
   jira: JiraGateway,
   projectKey: string,
-  defaultStatus: string,
-): Promise<string> {
+): Promise<string[]> {
   let statuses: string[] = [];
   try {
     statuses = await jira.listProjectStatuses(projectKey);
   } catch (error) {
     ctx.print(
-      `Could not list Jira statuses (${describeJiraError(error)}). Enter the agreed status name manually.`,
+      `Could not list Jira statuses (${describeJiraError(error)}). Type the status names instead.`,
     );
+    return [];
   }
-  if (statuses.length > 0) ctx.print(`Jira statuses in ${projectKey}: ${statuses.join(", ")}`);
-  const status = (await ctx.ask("AI implementation trigger status", defaultStatus)).trim();
-  if (!status) throw new SetupError("AI implementation trigger status is required.");
-  if (statuses.length > 0 && !statuses.includes(status)) {
+  if (statuses.length > 0) {
+    ctx.print(`\nJira statuses in ${projectKey}:`);
+    statuses.forEach((status, index) => ctx.print(`  ${index + 1}. ${status}`));
+  }
+  return statuses;
+}
+
+/** Accepts a number from the printed list or the status name itself, and rejects anything else. */
+async function askStatus(
+  ctx: FlowContext,
+  statuses: string[],
+  label: string,
+  defaultStatus: string | undefined,
+): Promise<string> {
+  const answer = (await ctx.ask(label, defaultStatus)).trim();
+  if (!answer) throw new SetupError(`${label} is required.`);
+  const index = Number(answer);
+  const picked =
+    Number.isInteger(index) && index >= 1 && index <= statuses.length
+      ? (statuses[index - 1] as string)
+      : answer;
+  if (statuses.length > 0 && !statuses.includes(picked)) {
     throw new SetupError(
-      `Status "${status}" does not exist in project ${projectKey}. Agree on a Jira status with the project administrator, then rerun setup.`,
+      `"${picked}" is not a status in this project. Pick one of: ${statuses.join(", ")}.`,
     );
   }
-  return status;
+  return picked;
+}
+
+export interface WorkflowStatuses {
+  implementationStatus: string;
+  inProgressStatus: string;
+  reviewStatus: string;
+}
+
+/**
+ * The whole workflow setup: the three board statuses of the AI loop
+ * (ADR 0015). Transition names are never asked for -- the runtime resolves
+ * the transition that reaches each status when it moves an issue, so a
+ * project's transition labels (in any language) can't drift out of the config.
+ */
+async function askWorkflowStatuses(
+  ctx: FlowContext,
+  jira: JiraGateway,
+  projectKey: string,
+  defaults: { [K in keyof WorkflowStatuses]?: string | null | undefined },
+): Promise<WorkflowStatuses> {
+  const statuses = await listStatuses(ctx, jira, projectKey);
+  ctx.print(
+    "\nPick the three statuses of the AI loop (enter a number or the status name):\n" +
+      "  human moves an issue here -> agent works here -> agent leaves it here for review",
+  );
+  const implementationStatus = await askStatus(
+    ctx,
+    statuses,
+    "1) AI request status (a human moves an issue here to start the agent)",
+    defaults.implementationStatus ?? "AI Implementation",
+  );
+  const inProgressStatus = await askStatus(
+    ctx,
+    statuses,
+    "2) In-progress status (the agent moves it here while working)",
+    defaults.inProgressStatus ?? "In Progress",
+  );
+  const reviewStatus = await askStatus(
+    ctx,
+    statuses,
+    "3) Review status (the agent moves it here when implementation is done)",
+    defaults.reviewStatus ?? "In Review",
+  );
+  const picked = [implementationStatus, inProgressStatus, reviewStatus];
+  if (new Set(picked).size !== picked.length) {
+    throw new SetupError(
+      `The three statuses must be different from each other (got: ${picked.join(", ")}).`,
+    );
+  }
+  return { implementationStatus, inProgressStatus, reviewStatus };
 }
 
 async function askPreset(ctx: FlowContext, role: AgentRole): Promise<Preset | undefined> {
@@ -212,7 +285,6 @@ interface BuildProfileConfigInput {
   role: AgentRole;
   machineId: string;
   workflow: WorkspaceWorkflow;
-  implementationStatus: string;
   local: LocalSettings;
 }
 
@@ -234,16 +306,14 @@ function buildProfileConfig(input: BuildProfileConfigInput): Record<string, unkn
       backends: ["filesystem", "git", "coding-runtime"],
     },
     workflow: {
-      readyStatus: input.workflow.readyStatus,
-      claimTransitionName: input.workflow.claimTransitionName,
-      doneTransitionName: input.workflow.doneTransitionName,
-      planningStatus: input.workflow.readyStatus,
-      implementationStatus: input.implementationStatus,
-      ...(input.workflow.needsDecisionTransitionName
-        ? { needsDecisionTransitionName: input.workflow.needsDecisionTransitionName }
-        : {}),
-      ...(input.workflow.plannedTransitionName
-        ? { plannedTransitionName: input.workflow.plannedTransitionName }
+      implementationStatus: input.workflow.implementationStatus,
+      inProgressStatus: input.workflow.inProgressStatus,
+      reviewStatus: input.workflow.reviewStatus,
+      // Planning is opt-in and setup never asks for it: it only lands in the
+      // config when the Workspace Configuration issue declares it by hand.
+      ...(input.workflow.planningStatus ? { planningStatus: input.workflow.planningStatus } : {}),
+      ...(input.workflow.needsDecisionStatus
+        ? { needsDecisionStatus: input.workflow.needsDecisionStatus }
         : {}),
     },
     workspace: { path: input.local.workspacePath, baseBranch: input.local.baseBranch },
@@ -252,12 +322,7 @@ function buildProfileConfig(input: BuildProfileConfigInput): Record<string, unkn
       command: input.local.providerCommand,
       model: input.local.model,
     },
-    pm: {
-      subtaskIssueType: input.workflow.subtaskIssueType,
-      ...(input.workflow.taskReadyTransitionName
-        ? { taskReadyTransitionName: input.workflow.taskReadyTransitionName }
-        : {}),
-    },
+    pm: { subtaskIssueType: input.workflow.subtaskIssueType },
     polling: { intervalMs: 60000 },
   };
 }
@@ -302,40 +367,30 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
   const { key: projectKey, issueTypes } = await askProject(ctx, jira);
 
   let workspace = await findWorkspaceConfig(jira, projectKey);
-  const implementationStatus = await askImplementationStatus(
-    ctx,
-    jira,
-    projectKey,
-    ctx.existingConfig?.workflow.implementationStatus ??
-      workspace?.workflow.implementationStatus ??
-      "AI Implementation",
-  );
-  if (workspace && implementationStatus === workspace.workflow.readyStatus) {
-    throw new SetupError("Planning and AI implementation trigger statuses must be different.");
-  }
   if (workspace) {
     print(`Found an existing GGJira workspace: ${workspace.issueKey} -- reusing it.`);
+    print(
+      `  AI request: "${workspace.workflow.implementationStatus}"` +
+        ` -> in progress: "${workspace.workflow.inProgressStatus}"` +
+        ` -> review: "${workspace.workflow.reviewStatus}"`,
+    );
+    const changeAnswer = await ask("Change these statuses? (y/N)", "n");
+    if (isYes(changeAnswer)) {
+      const statuses = await askWorkflowStatuses(ctx, jira, projectKey, workspace.workflow);
+      workspace = await updateWorkspaceConfig(jira, workspace, {
+        ggjiraVersion: GGJIRA_VERSION,
+        projectPolicy: workspace.projectPolicy,
+        workflow: { ...workspace.workflow, ...statuses },
+      });
+      print(`Updated ${workspace.issueKey}.`);
+    }
   } else {
     print("No GGJira workspace found in this project yet. Let's create one.");
-    const readyStatus = await ask(
-      "Ready-to-claim Jira status",
-      ctx.existingConfig?.workflow.readyStatus ?? "To Do",
-    );
-    if (implementationStatus === readyStatus) {
-      throw new SetupError("Planning and AI implementation trigger statuses must be different.");
-    }
-    const claimTransitionName = await ask(
-      "Claim transition name",
-      ctx.existingConfig?.workflow.claimTransitionName ?? "In Progress",
-    );
-    const doneTransitionName = await ask(
-      "Done transition name",
-      ctx.existingConfig?.workflow.doneTransitionName ?? "In Review",
-    );
-    const needsDecisionTransitionName = await ask(
-      "Needs-decision transition name",
-      ctx.existingConfig?.workflow.needsDecisionTransitionName ?? "Needs Decision",
-    );
+    const statuses = await askWorkflowStatuses(ctx, jira, projectKey, {
+      implementationStatus: ctx.existingConfig?.workflow.implementationStatus,
+      inProgressStatus: ctx.existingConfig?.workflow.inProgressStatus,
+      reviewStatus: ctx.existingConfig?.workflow.reviewStatus,
+    });
     const issueTypeName = await askIssueType(ctx, issueTypes);
 
     workspace = await createWorkspaceConfig(jira, {
@@ -343,16 +398,7 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
       configVersion: 4,
       ggjiraVersion: GGJIRA_VERSION,
       issueTypeName,
-      workflow: {
-        readyStatus,
-        implementationStatus,
-        claimTransitionName,
-        doneTransitionName,
-        needsDecisionTransitionName,
-        plannedTransitionName: "Plan Review",
-        taskReadyTransitionName: null,
-        subtaskIssueType: "Subtask",
-      },
+      workflow: { ...statuses, subtaskIssueType: "Subtask" },
       projectPolicy: [],
     });
     print(`Created ${workspace.issueKey}.`);
@@ -421,7 +467,6 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
     role: "pm",
     machineId,
     workflow: workspace.workflow,
-    implementationStatus,
     local,
   });
   validateAndWrite(ctx, raw, { email, apiToken });
@@ -472,18 +517,14 @@ export async function runJoinAgentFlow(ctx: FlowContext): Promise<SetupResult> {
     );
   }
 
-  const implementationStatus = await askImplementationStatus(
-    ctx,
-    jira,
-    projectKey,
-    ctx.existingConfig?.workflow.implementationStatus ??
-      workspace.workflow.implementationStatus ??
-      "AI Implementation",
+  // A joining machine asks nothing about the workflow: the statuses come from
+  // the project's Workspace Configuration, which the PM machine already set.
+  print(
+    `Workflow: AI request "${workspace.workflow.implementationStatus}"` +
+      ` -> in progress "${workspace.workflow.inProgressStatus}"` +
+      ` -> review "${workspace.workflow.reviewStatus}"`,
   );
 
-  if (implementationStatus === workspace.workflow.readyStatus) {
-    throw new SetupError("Planning and AI implementation trigger statuses must be different.");
-  }
   const agents = await findAgentProfiles(jira, projectKey, { includeDisabled: false });
   if (agents.length === 0) {
     throw new SetupError(
@@ -524,7 +565,6 @@ export async function runJoinAgentFlow(ctx: FlowContext): Promise<SetupResult> {
     role: profile.role,
     machineId,
     workflow: workspace.workflow,
-    implementationStatus,
     local,
   });
   validateAndWrite(ctx, raw, { email, apiToken });

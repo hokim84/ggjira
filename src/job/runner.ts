@@ -131,12 +131,16 @@ export async function runJobForIssue(
     issue.statusName === (config.workflow.implementationStatus ?? "AI Implementation") &&
     result.status === "succeeded"
   ) {
+    // Claiming moved the issue to the in-progress status, so that -- not the
+    // request status -- is where it should still be when the work finishes.
+    // Anything else means a human took it back mid-run (ADR 0015).
+    const expectedDuringRun =
+      config.workflow.inProgressStatus ??
+      config.workflow.implementationStatus ??
+      "AI Implementation";
     try {
       const latest = await deps.jira.getIssue(issue.key);
-      if (
-        latest.statusName !== (config.workflow.implementationStatus ?? "AI Implementation") ||
-        latest.assigneeAccountId === null
-      ) {
+      if (latest.statusName !== expectedDuringRun || latest.assigneeAccountId === null) {
         result = {
           status: "cancelled",
           summary:

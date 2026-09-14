@@ -84,13 +84,18 @@ export function createImplementHandler(deps: ImplementHandlerDeps): JobHandler {
       const workerLogPath = store.workerLogPath(issue.key, job.runId);
       const abort = new AbortController();
       let approvalLost = false;
+      // Where the issue should sit for the whole run: the in-progress status
+      // the claim moved it to, or -- before ADR 0015's status workflow -- the
+      // request status itself. A human moving it elsewhere revokes approval.
+      const approvedStatus =
+        config.workflow.inProgressStatus ??
+        config.workflow.implementationStatus ??
+        "AI Implementation";
       const checkApproval = async (): Promise<void> => {
         if (!deps.jira || config.configVersion !== 4) return;
         try {
           const latest = await deps.jira.getIssue(issue.key);
-          approvalLost =
-            latest.statusName !== (config.workflow.implementationStatus ?? "AI Implementation") ||
-            latest.assigneeAccountId === null;
+          approvalLost = latest.statusName !== approvedStatus || latest.assigneeAccountId === null;
         } catch {
           // Fail closed: Jira is the source of truth, so do not continue side effects
           // while the approval state cannot be verified.

@@ -20,9 +20,9 @@ export class ClaimLostError extends Error {
     /**
      * The transition rejection that triggered this, when there was one (vs.
      * a plain re-fetch showing the status already moved). A repeated
-     * `TransitionNotFoundError` here — same issue, every attempt — means
-     * `workflow.claimTransitionName` doesn't match a real Jira transition
-     * name, not an actual claim race (runbook.md §8).
+     * `StatusNotReachableError` here — same issue, every attempt — means no
+     * transition leads from the request status to `workflow.inProgressStatus`,
+     * not an actual claim race (runbook.md §8).
      */
     readonly cause?: unknown,
   ) {
@@ -56,18 +56,18 @@ export async function claimJob(
     throw new ClaimLostError(issue.key, fresh.statusName);
   }
 
-  // AI Implementation is itself the human approval state. Moving it merely to
-  // claim work would erase that source-of-truth signal, so the local execution
-  // lease is the claim for implementation jobs.
-  if (
-    config.configVersion !== 4 ||
-    expectedStatus !== (config.workflow.implementationStatus ?? "AI Implementation")
-  ) {
-    try {
+  // Moving the issue out of the request status is the claim: it is what stops
+  // a second machine picking the same issue up, and what shows a human on the
+  // board that the agent is working (ADR 0015). Status-based configs say where
+  // to move it; legacy configs still name the transition directly.
+  try {
+    if (config.workflow.inProgressStatus) {
+      await jira.transitionIssueToStatus(issue.key, config.workflow.inProgressStatus);
+    } else {
       await jira.transitionIssue(issue.key, config.workflow.claimTransitionName);
-    } catch (error) {
-      throw new ClaimLostError(issue.key, fresh.statusName, error);
     }
+  } catch (error) {
+    throw new ClaimLostError(issue.key, fresh.statusName, error);
   }
 
   try {

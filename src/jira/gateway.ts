@@ -21,6 +21,13 @@ export interface JiraGateway {
   getComments(key: string): Promise<JiraComment[]>;
   getTransitions(key: string): Promise<JiraTransition[]>;
   transitionIssue(key: string, transitionName: string): Promise<void>;
+  /**
+   * Moves an issue to `targetStatusName` by finding the transition that leads
+   * there. Setup collects statuses (board columns a human can see), not
+   * transition labels, so this is how the runtime applies them. A no-op when
+   * the issue already sits in that status.
+   */
+  transitionIssueToStatus(key: string, targetStatusName: string): Promise<void>;
   addLabel(key: string, label: string): Promise<void>;
   removeLabel(key: string, label: string): Promise<void>;
   /** The Jira user this client authenticates as (its own agent identity). */

@@ -55,6 +55,26 @@ export class TransitionNotFoundError extends Error {
   }
 }
 
+/**
+ * No transition leads from the issue's current status to the configured
+ * target status. Names the statuses (what a human sees on the board), not
+ * the transition labels, because that is what setup asks for.
+ */
+export class StatusNotReachableError extends Error {
+  constructor(
+    readonly issueKey: string,
+    readonly targetStatus: string,
+    readonly currentStatus: string,
+    readonly reachableStatuses: string[],
+  ) {
+    super(
+      `${issueKey} cannot move to "${targetStatus}" from its current status "${currentStatus}". ` +
+        `Reachable statuses from here: ${reachableStatuses.join(", ") || "(none)"}`,
+    );
+    this.name = "StatusNotReachableError";
+  }
+}
+
 interface RawJiraFields {
   summary?: string;
   description?: string | null;
@@ -321,6 +341,30 @@ export class JiraClient implements JiraGateway {
         key,
         transitionName,
         transitions.map((t) => t.name),
+      );
+    }
+    await this.request<unknown>(
+      "POST",
+      `/rest/api/2/issue/${encodeURIComponent(key)}/transitions`,
+      { transition: { id: match.id } },
+    );
+  }
+
+  async transitionIssueToStatus(key: string, targetStatusName: string): Promise<void> {
+    const target = targetStatusName.normalize("NFC");
+    const transitions = await this.getTransitions(key);
+    const match = transitions.find((t) => t.toStatusName.normalize("NFC") === target);
+    if (!match) {
+      // Costs an extra read, but only on what would otherwise be a failure:
+      // the issue may already sit in the target status (a retried report, or
+      // a human moved it), which is success, not a misconfiguration.
+      const issue = await this.getIssue(key, ["status"]);
+      if (issue.statusName.normalize("NFC") === target) return;
+      throw new StatusNotReachableError(
+        key,
+        targetStatusName,
+        issue.statusName,
+        transitions.map((t) => t.toStatusName),
       );
     }
     await this.request<unknown>(

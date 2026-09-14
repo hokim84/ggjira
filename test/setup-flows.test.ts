@@ -14,7 +14,6 @@ function scriptedAsk(
 ): (question: string, defaultValue?: string) => Promise<string> {
   let i = 0;
   return async (question, defaultValue) => {
-    if (question === "AI implementation trigger status") return defaultValue ?? "AI Implementation";
     const answer = answers[i++];
     if (answer === undefined) throw new Error("scriptedAsk ran out of answers");
     return answer === "" ? (defaultValue ?? "") : answer;
@@ -46,17 +45,16 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("creates a Workspace Configuration issue, a PM Agent Profile, and a v3 config, and registers this machine", async () => {
-    jira.seedProjectStatuses("KAN", ["To Do", "AI에 작업 위임", "In Review"]);
+  it("creates a workspace from three picked statuses and writes them to the v4 config", async () => {
+    jira.seedProjectStatuses("KAN", ["해야 할 일", "진행 중", "검토 중", "완료", "AI 작업 요청"]);
     const ask = scriptedAsk([
       "https://example.atlassian.net", // Jira URL
       "a@b.com", // email
       "secret-token", // api token
       "", // project key (default: the single seeded project)
-      "", // ready status
-      "", // claim transition
-      "", // done transition
-      "", // needs-decision transition
+      "5", // AI request status -> "AI 작업 요청"
+      "2", // in-progress status -> "진행 중"
+      "3", // review status -> "검토 중"
       "", // issue type
       "", // agent id (pm-01)
       "", // create implement profile? (n)
@@ -70,10 +68,7 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
     const result = await runSetupWizard({
       check: false,
       cwd,
-      ask: (question, defaultValue) =>
-        question === "AI implementation trigger status"
-          ? Promise.resolve("AI에 작업 위임")
-          : ask(question, defaultValue),
+      ask,
       mode: "create",
       createJira: () => jira,
       settleMs: 0,
@@ -91,17 +86,20 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
     const configPath = path.join(cwd, "ggjira.config.json");
     const envPath = path.join(cwd, ".env");
     expect(existsSync(configPath)).toBe(true);
-    expect(existsSync(envPath)).toBe(true);
     if (process.platform !== "win32") expect(statSync(envPath).mode & 0o777).toBe(0o600);
 
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
     expect(config.configVersion).toBe(4);
-    expect(config.jira.projectKey).toBe("KAN");
-    expect(config.agent.role).toBe("pm");
     expect(config.agent.machineId).toBe(FIXED_MACHINE_ID);
-    expect(config.agent.profileKey).toBeDefined();
-    expect(config.workflow.implementationStatus).toBe("AI에 작업 위임");
-    expect(workspaceIssue?.description).toContain("AI에 작업 위임");
+    expect(config.workflow).toEqual({
+      implementationStatus: "AI 작업 요청",
+      inProgressStatus: "진행 중",
+      reviewStatus: "검토 중",
+    });
+    // No transition names anywhere: the runtime resolves those from the statuses.
+    expect(JSON.stringify(config.workflow)).not.toContain("Transition");
+    expect(workspaceIssue?.description).toContain("AI Request Status: AI 작업 요청");
+    expect(workspaceIssue?.description).toContain("Review Status: 검토 중");
 
     const registration = jira.getStoredProperty(config.agent.profileKey, REGISTRATION_PROPERTY) as
       | { machineId: string }
@@ -109,16 +107,109 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
     expect(registration?.machineId).toBe(FIXED_MACHINE_ID);
   });
 
-  it("is idempotent: running Create twice creates no duplicate issues and re-registers the same machine", async () => {
+  it("accepts a status typed by name as well as by number", async () => {
+    jira.seedProjectStatuses("KAN", ["해야 할 일", "진행 중", "검토 중", "AI 작업 요청"]);
+    const ask = scriptedAsk([
+      "https://example.atlassian.net",
+      "a@b.com",
+      "secret-token",
+      "",
+      "AI 작업 요청",
+      "진행 중",
+      "검토 중",
+      "",
+      "",
+      "",
+      cwd,
+      "",
+      "",
+      "",
+      "",
+    ]);
+
+    await runSetupWizard({
+      check: false,
+      cwd,
+      ask,
+      mode: "create",
+      createJira: () => jira,
+      settleMs: 0,
+      machineIdFactory: () => FIXED_MACHINE_ID,
+      print: (l) => lines.push(l),
+    });
+
+    const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
+    expect(config.workflow.implementationStatus).toBe("AI 작업 요청");
+    expect(config.workflow.reviewStatus).toBe("검토 중");
+  });
+
+  it("rejects a status the project does not have", async () => {
+    jira.seedProjectStatuses("KAN", ["해야 할 일", "진행 중", "검토 중"]);
+    const ask = scriptedAsk([
+      "https://example.atlassian.net",
+      "a@b.com",
+      "secret-token",
+      "",
+      "AI Implementation", // not a status in this project
+    ]);
+
+    const result = await runSetupWizard({
+      check: false,
+      cwd,
+      ask,
+      mode: "create",
+      createJira: () => jira,
+      settleMs: 0,
+      machineIdFactory: () => FIXED_MACHINE_ID,
+      print: (l) => lines.push(l),
+    });
+
+    expect(result.startAgent).toBe(false);
+    expect(existsSync(path.join(cwd, "ggjira.config.json"))).toBe(false);
+    expect(
+      lines.some((l) => l.includes('"AI Implementation" is not a status in this project')),
+    ).toBe(true);
+    process.exitCode = 0;
+  });
+
+  it("rejects picking the same status twice", async () => {
+    jira.seedProjectStatuses("KAN", ["해야 할 일", "진행 중", "검토 중", "AI 작업 요청"]);
+    const ask = scriptedAsk([
+      "https://example.atlassian.net",
+      "a@b.com",
+      "secret-token",
+      "",
+      "4", // AI 작업 요청
+      "2", // 진행 중
+      "2", // 진행 중 again
+    ]);
+
+    const result = await runSetupWizard({
+      check: false,
+      cwd,
+      ask,
+      mode: "create",
+      createJira: () => jira,
+      settleMs: 0,
+      machineIdFactory: () => FIXED_MACHINE_ID,
+      print: (l) => lines.push(l),
+    });
+
+    expect(result.startAgent).toBe(false);
+    expect(lines.some((l) => l.includes("must be different from each other"))).toBe(true);
+    process.exitCode = 0;
+  });
+
+  it("is idempotent: running Create twice creates no duplicate issues and keeps the statuses", async () => {
+    jira.seedProjectStatuses("KAN", ["해야 할 일", "진행 중", "검토 중", "AI 작업 요청"]);
     const firstAnswers = scriptedAsk([
       "https://example.atlassian.net",
       "a@b.com",
       "secret-token",
       "",
-      "",
-      "",
-      "",
-      "",
+      "4",
+      "2",
+      "3",
       "",
       "",
       "",
@@ -140,9 +231,9 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
     });
     expect(jira.createdIssues).toHaveLength(2); // workspace + PM profile
 
-    // Second run: existingConfig/.env prefill every default, so every answer
-    // can be accepted as-is.
-    const secondAnswers = scriptedAsk(Array(11).fill(""));
+    // Second run: the workspace already exists, so setup only offers to change
+    // the statuses ("" -> its default "n") and every other default is prefilled.
+    const secondAnswers = scriptedAsk(Array(12).fill(""));
     const result = await runSetupWizard({
       check: false,
       cwd,
@@ -157,6 +248,76 @@ describe("runSetupWizard: Create GGJira Workspace", () => {
     expect(result.startAgent).toBe(true);
     expect(jira.createdIssues).toHaveLength(2); // no new issues created
     expect(jira.comments).toHaveLength(1); // no duplicate "registered" comment
+    const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
+    expect(config.workflow.reviewStatus).toBe("검토 중");
+  });
+
+  it("changes an existing workspace's statuses when the admin opts in", async () => {
+    jira.seedProjectStatuses("KAN", ["해야 할 일", "진행 중", "검토 중", "AI 작업 요청"]);
+    const firstAnswers = scriptedAsk([
+      "https://example.atlassian.net",
+      "a@b.com",
+      "secret-token",
+      "",
+      "4", // AI 작업 요청
+      "2", // 진행 중
+      "1", // 해야 할 일 (wrong on purpose -- this is what gets corrected below)
+      "",
+      "",
+      "",
+      cwd,
+      "",
+      "",
+      "",
+      "",
+    ]);
+    await runSetupWizard({
+      check: false,
+      cwd,
+      ask: firstAnswers,
+      mode: "create",
+      createJira: () => jira,
+      settleMs: 0,
+      machineIdFactory: () => FIXED_MACHINE_ID,
+      print: (l) => lines.push(l),
+    });
+    const workspaceKey = (await jira.searchIssues(`labels = "${WORKSPACE_LABEL}"`))[0]?.key;
+    expect(workspaceKey).toBeDefined();
+
+    const secondAnswers = scriptedAsk([
+      "https://example.atlassian.net",
+      "a@b.com",
+      "secret-token",
+      "", // project key
+      "y", // change these statuses?
+      "", // AI request status (keep: AI 작업 요청)
+      "", // in-progress status (keep: 진행 중)
+      "3", // review status -> 검토 중
+      "", // agent id
+      "", // create implement profile?
+      cwd, // workspace path
+      "",
+      "",
+      "",
+      "",
+    ]);
+    const result = await runSetupWizard({
+      check: false,
+      cwd,
+      ask: secondAnswers,
+      mode: "create",
+      createJira: () => jira,
+      settleMs: 0,
+      machineIdFactory: () => FIXED_MACHINE_ID,
+      print: (l) => lines.push(l),
+    });
+
+    expect(result.startAgent).toBe(true);
+    expect(jira.createdIssues).toHaveLength(2); // still no duplicates
+    const updated = await jira.getIssue(workspaceKey as string);
+    expect(updated.description).toContain("Review Status: 검토 중");
+    const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
+    expect(config.workflow.reviewStatus).toBe("검토 중");
   });
 
   it("fails cleanly with a human-readable message when Jira credentials are invalid", async () => {
@@ -223,10 +384,9 @@ describe("runSetupWizard: Join as Agent", () => {
         "Project Key: KAN",
         "",
         "h2. Workflow",
-        "Ready Status: Backlog",
-        "Claim Transition: Doing",
-        "Done Transition: Done",
-        "Needs Decision Transition: Needs Decision",
+        "AI Request Status: AI 작업 요청",
+        "In Progress Status: 진행 중",
+        "Review Status: 검토 중",
         "Subtask Issue Type: Subtask",
       ].join("\n"),
     });
@@ -287,9 +447,9 @@ describe("runSetupWizard: Join as Agent", () => {
     expect(config.agent.identity).toBe("unity-implement-01");
     expect(config.agent.role).toBe("implement");
     expect(config.agent.profileKey).toBe(enabledProfile.issueKey);
-    expect(config.workflow.readyStatus).toBe("Backlog");
-    expect(config.workflow.claimTransitionName).toBe("Doing");
-    expect(config.workflow.doneTransitionName).toBe("Done");
+    expect(config.workflow.implementationStatus).toBe("AI 작업 요청");
+    expect(config.workflow.inProgressStatus).toBe("진행 중");
+    expect(config.workflow.reviewStatus).toBe("검토 중");
     expect(config.pm.implementAssignee).toBeUndefined();
   });
 

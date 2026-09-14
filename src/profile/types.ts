@@ -46,14 +46,19 @@ export interface AgentProfileInput {
   humanInstructions: string[];
 }
 
+/**
+ * The project's shared workflow, expressed entirely as board statuses
+ * (ADR 0015): a human moves an issue to `implementationStatus`, the agent
+ * moves it to `inProgressStatus` while working and to `reviewStatus` when
+ * done. Transition names are resolved at run time, never stored.
+ */
 export interface WorkspaceWorkflow {
-  readyStatus: string;
-  implementationStatus?: string | null;
-  claimTransitionName: string;
-  doneTransitionName: string;
-  needsDecisionTransitionName: string | null;
-  plannedTransitionName: string | null;
-  taskReadyTransitionName: string | null;
+  implementationStatus: string;
+  inProgressStatus: string;
+  reviewStatus: string;
+  /** PM only, opt-in: setup doesn't ask, so these are set by editing the Jira issue. */
+  planningStatus?: string | null;
+  needsDecisionStatus?: string | null;
   subtaskIssueType: string;
 }
 

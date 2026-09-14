@@ -14,15 +14,10 @@
     "backends": ["filesystem", "git", "coding-runtime"]
   },
   "workflow": {
-    "readyStatus": "To Do",
-    "planningStatus": "Ready for Planning",
     "implementationStatus": "AI Implementation",
-    "completionStatus": "Done",
-    "claimTransitionName": "In Progress",
-    "doneTransitionName": "In Review",
-    "failureLabel": "ggjira-failed",
-    "needsDecisionTransitionName": "Needs Decision",
-    "plannedTransitionName": null
+    "inProgressStatus": "In Progress",
+    "reviewStatus": "In Review",
+    "failureLabel": "ggjira-failed"
   },
   "workspace": {
     "path": "/absolute/path/to/target-repo",
@@ -45,7 +40,6 @@
   },
   "pm": {
     "subtaskIssueType": "Subtask",
-    "taskReadyTransitionName": null,
     "maxTasksPerPlan": 20
   },
   "polling": {

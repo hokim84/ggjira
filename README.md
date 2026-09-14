@@ -65,23 +65,32 @@ GGJIRA Setup
 프로젝트에서 GGJIRA를 처음 쓰는 머신에서 `1`을 선택한다. Jira URL/이메일/API 토큰으로
 연결을 확인한 뒤, 프로젝트를 고르고(`listProjects`로 후보를 보여준다), 그 프로젝트에
 Workspace Configuration 이슈(`[GGJIRA] Workspace Configuration`)와 PM Agent Profile
-이슈(`[AGENT] pm-01` 등)가 없으면 새로 만든다 — 이 단계에서만 워크플로우 상태/전이
-이름을 묻는다(아래 표). 이후 로컬 저장소 경로/Provider/모델을 물은 뒤 `.env` +
+이슈(`[AGENT] pm-01` 등)가 없으면 새로 만든다 — 이 단계에서만 워크플로우 상태를
+묻는다(아래). 이후 로컬 저장소 경로/Provider/모델을 물은 뒤 `.env` +
 `ggjira.config.json`을 쓰고, 이 머신을 방금 만든 PM 프로필에 등록(claim)한다.
 
-| 질문 | 기본값 | 의미 |
-|---|---|---|
-| Ready-to-plan Jira status | `To Do` | 이 상태의 이슈에 planning 수행 |
-| Planning transition name | `In Progress` | planning 시작 시 이 전이로 이동 |
-| Review transition name | `In Review` | 구현 성공 시 Review로 이동 |
-| Needs-decision transition name | `Needs Decision` | 결정이 필요할 때 이 전이로 이동 |
+워크플로우 질문은 **상태 3개가 전부다.** 프로젝트의 실제 Jira 상태 목록을 번호와 함께
+보여주므로, 번호(또는 상태 이름)로 고르면 된다. 전이(transition) 이름은 묻지 않는다 —
+실행할 때 "그 상태로 가는 전이"를 GGJIRA가 알아서 찾는다(ADR
+[0015](./docs/decisions/0015-status-based-workflow.md)).
 
-보드의 실제 상태/전이 이름이 다르면(한글 컬럼명 등) 실제 이름을 그대로 입력한다.
-**입력할 이름은 보드의 "컬럼 표시 이름"이 아니라 이슈의 실제 status 이름이어야 한다** —
-확실한 값은 `jira:smoke <KEY>` 출력의 `status:` 줄이다. 이 문제로 이슈가 하나도 안
-잡힌다면(`No assigned issues ready to claim.`) [`docs/runbook.md`](./docs/runbook.md) §3을
-참고한다. `pm` 역할을 쓸 계획이면 워크플로우에 `Needs Decision` 상태와 그리로/에서
-나오는 전이를, 프로젝트에 Sub-task 이슈 타입을 미리 준비해 둔다.
+```text
+Jira statuses in KAN:
+  1. 해야 할 일
+  2. 진행 중
+  3. 검토 중
+  4. 완료
+  5. AI 작업 요청
+
+1) AI request status   -> 5   사람이 이 상태로 옮기면 agent가 작업을 시작한다
+2) In-progress status  -> 2   agent가 작업하는 동안 머무는 상태
+3) Review status       -> 3   구현이 끝나면 여기로 옮겨 사람이 검토한다
+```
+
+완료(Done) 상태는 묻지 않는다. GGJIRA는 이슈를 완료로 전이하지 않으며, 검토 후 닫는 것은
+항상 사람의 몫이다. 계획(PM) 기능을 쓰려면 Workspace Configuration 이슈의 Workflow 절에
+`Planning Status`/`Needs Decision Status`를 직접 적는다 — 없으면 이 설치는 구현 전용으로
+동작한다.
 
 설정이 끝나면 "Start the agent now? (Y/n)"에 Y로 답해 바로 데몬을 시작하거나, 나중에
 `npm run dev -- run`으로 시작한다.
@@ -241,8 +250,8 @@ Composition, PM Agent 라우팅)까지 코드와 자동 테스트(`npm run check
   `provider.type: "codex"`를 쓰기 전 반드시 `worker:run --schema`로 단독 확인한다.
 - **Claim(작업 이슈)은 완전한 원자적 락이 아니다** — Jira transition 실패를 항상 "경쟁
   패배"로 해석한다([`docs/decisions/0008-assignee-dispatch-and-transition-claim.md`](./docs/decisions/0008-assignee-dispatch-and-transition-claim.md)).
-  같은 이슈에서 반복적으로 실패하면 `claimTransitionName` 설정 오류를 의심한다
-  (`docs/runbook.md` §8).
+  같은 이슈에서 반복적으로 실패하면 경쟁이 아니라, `workflow.inProgressStatus`로 가는
+  전이가 워크플로우에 없는 것을 의심한다 (`docs/runbook.md` §3, §8).
 - **Replan은 완전한 plan diff가 아니다** — 아직 시작하지 않은 하위 이슈만 superseded
   처리한다([`docs/decisions/0009-plan-mode-as-jira-workflow.md`](./docs/decisions/0009-plan-mode-as-jira-workflow.md)).
 - **실제 다중 머신 시나리오는 이 세션에서 실측하지 않았다** — 코드는 여러 머신에서 독립

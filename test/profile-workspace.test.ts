@@ -15,12 +15,11 @@ const baseInput: WorkspaceConfigInput & { issueTypeName: string } = {
   ggjiraVersion: "0.1.0",
   issueTypeName: "Task",
   workflow: {
-    readyStatus: "To Do",
-    claimTransitionName: "In Progress",
-    doneTransitionName: "In Review",
-    needsDecisionTransitionName: "Needs Decision",
-    plannedTransitionName: null,
-    taskReadyTransitionName: null,
+    implementationStatus: "AI Implementation",
+    inProgressStatus: "In Progress",
+    reviewStatus: "In Review",
+    planningStatus: null,
+    needsDecisionStatus: null,
     subtaskIssueType: "Subtask",
   },
   projectPolicy: [],
@@ -36,7 +35,7 @@ describe("createWorkspaceConfig / findWorkspaceConfig", () => {
     expect(jira.createdIssues[0]?.summary).toBe(WORKSPACE_SUMMARY);
     expect(jira.createdIssues[0]?.labels).toEqual([WORKSPACE_LABEL]);
     expect(jira.assignments).toEqual([{ key: created.issueKey, accountId: null }]);
-    expect(created.workflow.readyStatus).toBe("To Do");
+    expect(created.workflow.implementationStatus).toBe("AI Implementation");
   });
 
   it("finds and reuses an existing workspace issue instead of creating a new one", async () => {
@@ -88,13 +87,13 @@ describe("createWorkspaceConfig / findWorkspaceConfig", () => {
     const issue = await jira.getIssue(created.issueKey);
 
     const editedDescription = `${issue.description}\n`.replace(
-      "Ready Status: To Do",
-      "Ready Status: Backlog",
+      "Review Status: In Review",
+      "Review Status: 검토 중",
     );
     jira.seedIssue({ ...issue, description: editedDescription });
 
     const found = await findWorkspaceConfig(jira, "KAN");
 
-    expect(found?.workflow.readyStatus).toBe("Backlog");
+    expect(found?.workflow.reviewStatus).toBe("검토 중");
   });
 });

@@ -62,10 +62,22 @@ GGJIRA가 실패하거나 예상과 다르게 동작할 때, 어디를 보고 �
 
 ## 3. Jira 설정이 의심될 때
 
-- **transition 이름 불일치**: `TransitionNotFoundError`가 뜨면 에러 메시지에 사용 가능한
-  transition 이름 목록이 함께 나온다. `ggjira.config.json`의 `workflow.claimTransitionName`/
-  `doneTransitionName`/`needsDecisionTransitionName`(pm)/`pm.taskReadyTransitionName`을 그
-  목록에 맞춰 고친다(`ggjira setup`을 다시 실행해도 된다). 배경:
+- **상태로 이동할 수 없음**: `StatusNotReachableError`("KAN-18 cannot move to X from its
+  current status Y. Reachable statuses from here: …")는 설정된 상태 자체는 존재하지만 지금
+  상태에서 그리로 가는 **전이가 워크플로우에 없다**는 뜻이다. Jira 워크플로우에 그 전이를
+  추가하거나, `ggjira setup`을 다시 실행해 실제로 도달 가능한 상태를 고른다. 배경: ADR
+  [`0015-status-based-workflow.md`](./decisions/0015-status-based-workflow.md).
+- **v4 config 로딩 실패(`workflow.reviewStatus is required ...`)**: ADR 0015 이전에 만들어진
+  config다(전이 이름만 들어 있음). `ggjira setup` → "Create GGJira Workspace"를 다시 실행해
+  상태 3개를 고르면 된다. 자동 변환은 하지 않는다 — 전이 이름으로는 상태를 알 수 없기 때문이다.
+- **상태를 바꾸고 싶을 때**: 아무 머신에서 `ggjira setup` → "Create GGJira Workspace"를 다시
+  실행하면, 워크스페이스가 이미 있어도 현재 상태 3개를 보여주고 "Change these statuses? (y/N)"를
+  물어본다. "y"면 실제 Jira 상태 목록에서 다시 고르고 Workspace Configuration 이슈가 갱신된다.
+  단, 이 워크스페이스를 이미 참조 중인 다른 머신의 로컬 `ggjira.config.json`은 자동으로
+  갱신되지 않으므로, 각 머신에서 "Join as Agent"를 다시 실행해 새 값을 받아야 한다.
+- **transition 이름 불일치(레거시 v2/v3 config)**: `TransitionNotFoundError`가 뜨면 에러
+  메시지에 사용 가능한 transition 이름 목록이 함께 나온다. `workflow.claimTransitionName`/
+  `doneTransitionName`을 그 목록에 맞춰 고친다. 배경:
   [`decisions/0002-jira-rest-api-v2.md`](./decisions/0002-jira-rest-api-v2.md).
 - **아무 이슈도 안 잡힘**: 기본 JQL은 `assignee = currentUser() AND status =
   "<workflow.readyStatus>"`다. 두 가지를 확인한다.

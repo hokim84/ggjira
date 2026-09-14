@@ -13,10 +13,21 @@ export function buildAssignedJql(config: AppConfig): string {
   if (config.configVersion !== 4) {
     return `assignee = currentUser() AND status = "${config.workflow.readyStatus}" ORDER BY created ASC`;
   }
-  const planningStatus = config.workflow.planningStatus ?? config.workflow.readyStatus;
   const project = config.jira.projectKey ? `project = "${config.jira.projectKey}" AND ` : "";
+  // Only statuses this install actually configured go into the JQL: naming a
+  // status the project doesn't have makes Jira reject the whole query, which
+  // would stop polling entirely. Planning is opt-in (setup doesn't ask for it).
+  const statuses = executableStatuses(config);
+  return `${project}status in (${statuses.map((s) => `"${s}"`).join(", ")}) ORDER BY created ASC`;
+}
+
+/** The statuses a v4 agent treats as "there is work here": planning (if set) and implementation. */
+function executableStatuses(config: AppConfig): string[] {
   const implementationStatus = config.workflow.implementationStatus ?? "AI Implementation";
-  return `${project}status in ("${planningStatus}", "${implementationStatus}") ORDER BY created ASC`;
+  const planningStatus = config.workflow.planningStatus;
+  return planningStatus && planningStatus !== implementationStatus
+    ? [planningStatus, implementationStatus]
+    : [implementationStatus];
 }
 
 /**
@@ -38,12 +49,11 @@ export async function findAssignedJobs(
 ): Promise<JiraIssue[]> {
   const issues = await jira.searchIssues(buildAssignedJql(config), { maxResults: 50, all: true });
   const claims = store.listClaims();
-  const planningStatus = config.workflow.planningStatus ?? config.workflow.readyStatus;
+  const statuses = executableStatuses(config);
   return issues.filter((issue) => {
     const executableStatus =
       config.configVersion === 4
-        ? issue.statusName === planningStatus ||
-          issue.statusName === (config.workflow.implementationStatus ?? "AI Implementation")
+        ? statuses.includes(issue.statusName)
         : issue.statusName === config.workflow.readyStatus && issue.assigneeAccountId !== null;
     return (
       executableStatus &&

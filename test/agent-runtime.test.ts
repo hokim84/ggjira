@@ -17,7 +17,12 @@ import type {
   WorkerResult,
   WorkerRunHooks,
 } from "../src/worker/provider.js";
-import { buildProfileModeConfig, buildTestConfig, buildTestIssue } from "./helpers/fixtures.js";
+import {
+  buildProfileModeConfig,
+  buildTestConfig,
+  buildTestIssue,
+  buildV4Config,
+} from "./helpers/fixtures.js";
 
 function git(cwd: string, args: string[]): void {
   execFileSync("git", args, { cwd, stdio: "ignore" });
@@ -89,8 +94,7 @@ describe("bootstrapAgent", () => {
 
   it("v4 implements an issue assigned to the same account as the agent", async () => {
     jira.setSelf({ accountId: "agent-account", displayName: "GGJIRA", emailAddress: null });
-    const config = buildTestConfig({
-      configVersion: 4,
+    const config = buildV4Config({
       jira: { baseUrl: "https://example.atlassian.net", projectKey: "KAN" },
       agent: {
         identity: "dev-machine",
@@ -102,6 +106,8 @@ describe("bootstrapAgent", () => {
         ...baseConfig.workflow,
         planningStatus: "Ready for Planning",
         implementationStatus: "AI Implementation",
+        inProgressStatus: "In Progress",
+        reviewStatus: "In Review",
       },
       workspace: { path: targetRepoPath, baseBranch: "main", validateCommand: null },
     });
@@ -139,7 +145,9 @@ describe("bootstrapAgent", () => {
       statusName: "Ready for Planning",
       assigneeAccountId: "human-account",
     });
-    jira.seedIssue(planningIssue, [{ id: "1", name: "In Progress", toStatusName: "AI Planning" }]);
+    jira.seedIssue(planningIssue, [
+      { id: "1", name: "Start planning", toStatusName: "In Progress" },
+    ]);
     const planningJob = await runJobForIssue(planningIssue, config, runtime.cycleDeps);
     expect(planningJob?.status).toBe("succeeded");
 
@@ -149,14 +157,17 @@ describe("bootstrapAgent", () => {
       assigneeAccountId: "agent-account",
       description: "Implement the requested change.",
     });
-    jira.seedIssue(implementationIssue, [{ id: "2", name: "In Review", toStatusName: "Review" }]);
+    jira.seedIssue(implementationIssue, [
+      { id: "2", name: "Start", toStatusName: "In Progress" },
+      { id: "3", name: "Send to review", toStatusName: "In Review" },
+    ]);
     const implementationJob = await runJobForIssue(implementationIssue, config, runtime.cycleDeps);
     expect(implementationJob?.status).toBe("succeeded");
     expect(jira.assignments).toHaveLength(0);
-    expect(jira.transitions).not.toContainEqual({
-      key: "KAN-21",
-      transitionName: config.workflow.claimTransitionName,
-    });
+    // The status-based workflow (ADR 0015): claiming moves the issue to the
+    // in-progress status, finishing moves it to review, and nothing closes it.
+    expect(jira.transitions).toContainEqual({ key: "KAN-21", transitionName: "Start" });
+    expect(jira.transitions).toContainEqual({ key: "KAN-21", transitionName: "Send to review" });
   });
 
   it("implements directly in a workspace without Git", async () => {

@@ -25,13 +25,11 @@ export function parseWorkspaceConfig(issue: JiraIssue): WorkspaceConfig {
     projectKey: getScalar(sections, "GGJira Workspace", "Project Key") ?? issue.projectKey ?? "",
     configVersion: configVersionRaw ? Number(configVersionRaw) : 3,
     workflow: {
-      readyStatus: getScalar(sections, "Workflow", "Ready Status") ?? "To Do",
-      implementationStatus: getScalar(sections, "Workflow", "Implementation Status"),
-      claimTransitionName: getScalar(sections, "Workflow", "Claim Transition") ?? "In Progress",
-      doneTransitionName: getScalar(sections, "Workflow", "Done Transition") ?? "In Review",
-      needsDecisionTransitionName: getScalar(sections, "Workflow", "Needs Decision Transition"),
-      plannedTransitionName: getScalar(sections, "Workflow", "Planned Transition"),
-      taskReadyTransitionName: getScalar(sections, "Workflow", "Task Ready Transition"),
+      implementationStatus: getScalar(sections, "Workflow", "AI Request Status") ?? "",
+      inProgressStatus: getScalar(sections, "Workflow", "In Progress Status") ?? "",
+      reviewStatus: getScalar(sections, "Workflow", "Review Status") ?? "",
+      planningStatus: getScalar(sections, "Workflow", "Planning Status"),
+      needsDecisionStatus: getScalar(sections, "Workflow", "Needs Decision Status"),
       subtaskIssueType: getScalar(sections, "Workflow", "Subtask Issue Type") ?? "Subtask",
     },
     projectPolicy: resolveProjectPolicy(getItems(sections, "Project Policy")),
@@ -52,13 +50,11 @@ export function renderWorkspaceDescription(input: WorkspaceConfigInput): string 
     {
       heading: "Workflow",
       scalars: [
-        ["Ready Status", input.workflow.readyStatus],
-        ["Implementation Status", input.workflow.implementationStatus ?? null],
-        ["Claim Transition", input.workflow.claimTransitionName],
-        ["Done Transition", input.workflow.doneTransitionName],
-        ["Needs Decision Transition", input.workflow.needsDecisionTransitionName],
-        ["Planned Transition", input.workflow.plannedTransitionName],
-        ["Task Ready Transition", input.workflow.taskReadyTransitionName],
+        ["AI Request Status", input.workflow.implementationStatus],
+        ["In Progress Status", input.workflow.inProgressStatus],
+        ["Review Status", input.workflow.reviewStatus],
+        ["Planning Status", input.workflow.planningStatus ?? null],
+        ["Needs Decision Status", input.workflow.needsDecisionStatus ?? null],
         ["Subtask Issue Type", input.workflow.subtaskIssueType],
       ],
     },
@@ -71,6 +67,36 @@ export function renderWorkspaceDescription(input: WorkspaceConfigInput): string 
       items: PRESETS.map((p) => `${p.id} — ${p.description}`),
     },
   ]);
+}
+
+/**
+ * Rewrites an existing Workspace Configuration issue's description in place
+ * (e.g. after re-validating workflow transition names against real Jira
+ * data). Keeps the issue key/type, config version, and project key as they
+ * were; only the caller-supplied fields (workflow, project policy) change.
+ */
+export async function updateWorkspaceConfig(
+  jira: JiraGateway,
+  current: Pick<WorkspaceConfig, "issueKey" | "issueTypeName" | "projectKey" | "configVersion">,
+  input: Pick<WorkspaceConfigInput, "workflow" | "projectPolicy" | "ggjiraVersion">,
+): Promise<WorkspaceConfig> {
+  const projectPolicy = resolveProjectPolicy(input.projectPolicy);
+  const description = renderWorkspaceDescription({
+    projectKey: current.projectKey,
+    configVersion: current.configVersion,
+    ggjiraVersion: input.ggjiraVersion,
+    workflow: input.workflow,
+    projectPolicy,
+  });
+  await jira.updateIssueDescription(current.issueKey, description);
+  return {
+    issueKey: current.issueKey,
+    issueTypeName: current.issueTypeName,
+    projectKey: current.projectKey,
+    configVersion: current.configVersion,
+    workflow: input.workflow,
+    projectPolicy,
+  };
 }
 
 /**

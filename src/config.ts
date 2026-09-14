@@ -55,6 +55,31 @@ const WorkflowConfigSchema = z.object({
     .min(1)
     .optional()
     .transform((s) => (s ? nfc(s) : s)),
+  /**
+   * v4 status-based workflow (ADR 0015). Setup asks for these three board
+   * statuses and nothing else; the transition that reaches each one is
+   * resolved at run time (`transitionIssueToStatus`), so a project's own
+   * transition labels -- in any language -- never enter the config.
+   *
+   *   human -> implementationStatus -> [agent claims] inProgressStatus
+   *         -> [implementation done] reviewStatus -> human
+   */
+  inProgressStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
+  reviewStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
+  /** Optional, PM only: where an issue goes when the agent needs a human decision. */
+  needsDecisionStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
   completionStatus: z
     .string()
     .min(1)
@@ -144,6 +169,21 @@ export const AppConfigSchema = z
     polling: PollingConfigSchema.default({ intervalMs: 60000 }),
   })
   .superRefine((config, ctx) => {
+    // v4 drives every Jira move from a board status, so the three statuses of
+    // the AI request -> in progress -> review loop must all be present. A v4
+    // config written before ADR 0015 only has transition names; failing here
+    // (instead of silently falling back) is what turns that into a fixable
+    // "rerun setup" message rather than a transition error mid-run.
+    if (config.configVersion === 4) {
+      for (const field of ["implementationStatus", "inProgressStatus", "reviewStatus"] as const) {
+        if (config.workflow[field]) continue;
+        ctx.addIssue({
+          code: "custom",
+          path: ["workflow", field],
+          message: `workflow.${field} is required — run "ggjira setup" to pick your project's Jira statuses`,
+        });
+      }
+    }
     if (config.agent.role !== "pm") return;
     // In profile mode the implement assignee is resolved from the registered
     // agent roster instead (pm/apply.ts), so implementAssignee becomes optional.
@@ -155,7 +195,9 @@ export const AppConfigSchema = z
           'pm.implementAssignee is required when agent.role is "pm" (unless agent.profileKey is set)',
       });
     }
-    if (!config.workflow.needsDecisionTransitionName) {
+    // v4 PM moves are status-based and optional (needsDecisionStatus); only
+    // the legacy shape still requires a transition name here.
+    if (config.configVersion !== 4 && !config.workflow.needsDecisionTransitionName) {
       ctx.addIssue({
         code: "custom",
         path: ["workflow", "needsDecisionTransitionName"],
