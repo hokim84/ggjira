@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -21,6 +21,150 @@ function scriptedAsk(
 }
 
 const FIXED_MACHINE_ID = "1d88f0a2-1111-4111-8111-111111111111";
+
+describe("runSetupWizard: Polling & statuses only", () => {
+  let cwd: string;
+  let jira: FakeJiraGateway;
+  let lines: string[];
+
+  beforeEach(async () => {
+    cwd = mkdtempSync(path.join(tmpdir(), "ggjira-setup-workflow-settings-test-"));
+    jira = new FakeJiraGateway();
+    jira.seedProject({
+      key: "KAN",
+      name: "Kanban",
+      issueTypes: [{ name: "Task", subtask: false }],
+    });
+    jira.seedProjectStatuses("KAN", ["Backlog", "Doing", "Review", "AI Request"]);
+    await jira.createIssue({
+      projectKey: "KAN",
+      issueTypeName: "Task",
+      summary: "[GGJIRA] Workspace Configuration",
+      labels: [WORKSPACE_LABEL],
+      description: [
+        "h2. GGJira Workspace",
+        "Config Version: 4",
+        "GGJira Version: 0.1.0",
+        "Project Key: KAN",
+        "",
+        "h2. Workflow",
+        "AI Request Status: AI Request",
+        "In Progress Status: Doing",
+        "Review Status: Backlog",
+        "Subtask Issue Type: Subtask",
+      ].join("\n"),
+    });
+    writeFileSync(path.join(cwd, ".env"), "JIRA_EMAIL=a@b.com\nJIRA_API_TOKEN=secret-token\n");
+    writeFileSync(
+      path.join(cwd, "ggjira.config.json"),
+      `${JSON.stringify(
+        {
+          configVersion: 4,
+          jira: { baseUrl: "https://example.atlassian.net", projectKey: "KAN" },
+          agent: { identity: "agent-1", role: "implement", machine: "machine-1" },
+          // Simulates a pre-ADR-0015 v4 config which full validation can no longer load.
+          workflow: { implementationStatus: "AI Request" },
+          workspace: { path: cwd, baseBranch: "develop" },
+          provider: { type: "codex", command: "custom-codex", model: "gpt-test" },
+          polling: { intervalMs: 60000 },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    lines = [];
+  });
+
+  afterEach(() => {
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("repairs statuses and changes polling without rewriting credentials or unrelated settings", async () => {
+    const originalEnv = readFileSync(path.join(cwd, ".env"), "utf-8");
+    const ask = scriptedAsk(["4", "4", "2", "3", "15"]);
+
+    const result = await runSetupWizard({
+      check: false,
+      cwd,
+      ask,
+      createJira: () => jira,
+      print: (line) => lines.push(line),
+    });
+
+    expect(result.startAgent).toBe(false);
+    expect(readFileSync(path.join(cwd, ".env"), "utf-8")).toBe(originalEnv);
+    expect(existsSync(path.join(cwd, ".env.bak"))).toBe(false);
+
+    const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
+    expect(config.workflow).toEqual({
+      implementationStatus: "AI Request",
+      inProgressStatus: "Doing",
+      reviewStatus: "Review",
+    });
+    expect(config.polling.intervalMs).toBe(15000);
+    expect(config.workspace).toEqual({ path: cwd, baseBranch: "develop" });
+    expect(config.provider).toEqual({
+      type: "codex",
+      command: "custom-codex",
+      model: "gpt-test",
+    });
+
+    const workspace = (await jira.searchIssues(`labels = "${WORKSPACE_LABEL}"`))[0];
+    expect(workspace?.description).toContain("Review Status: Review");
+    expect(lines.some((line) => line.includes("Polling & statuses only"))).toBe(true);
+  });
+
+  it("configures human approval statuses and canonical execution-agent IDs", async () => {
+    jira.seedProjectStatuses("KAN", [
+      "AI Request",
+      "Doing",
+      "Review",
+      "Planning",
+      "Planning In Progress",
+      "Plan Review",
+      "Execution Approved",
+      "Waiting",
+    ]);
+    const ask = scriptedAsk([
+      "", // enable
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "12345",
+      "workspace-a",
+      "option-agent-a",
+    ]);
+
+    await runSetupWizard({
+      check: false,
+      cwd,
+      ask,
+      mode: "distribution-settings",
+      createJira: () => jira,
+      print: (line) => lines.push(line),
+    });
+
+    const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
+    expect(config.workflow).toMatchObject({
+      planningStatus: "Planning",
+      planningInProgressStatus: "Planning In Progress",
+      planReviewStatus: "Plan Review",
+      executionApprovedStatus: "Execution Approved",
+      taskWaitingStatus: "Waiting",
+    });
+    expect(config.distribution).toEqual({
+      enabled: true,
+      executionAgentFieldId: "customfield_12345",
+      executionAgentOptionId: "option-agent-a",
+      workspaceId: "workspace-a",
+    });
+  });
+});
 
 describe("runSetupWizard: Create GGJira Workspace", () => {
   let cwd: string;

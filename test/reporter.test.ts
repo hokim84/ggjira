@@ -102,6 +102,22 @@ describe("reportForResult", () => {
     expect(jira.labelChanges).toEqual([{ key: "KAN-1", label: "ggjira-failed", action: "add" }]);
   });
 
+  it("does not duplicate the result comment when the same report is retried", async () => {
+    const jira = new FakeJiraGateway();
+    jira.seedIssue(issue, [{ id: "31", name: "In Review", toStatusName: "In Review" }]);
+    const running = transitionJob(
+      transitionJob(createJob("KAN-1", "run-retry"), "claimed"),
+      "running",
+    );
+    const job = transitionJob(running, "succeeded", { summary: "done" });
+    const result: ExecutionResult = { status: "succeeded", summary: "done" };
+
+    await reportForResult(jira, config, issue, job, result);
+    await reportForResult(jira, config, issue, job, result);
+
+    expect(jira.comments).toHaveLength(1);
+  });
+
   it("for a planned result, transitions using plannedTransitionName when configured", async () => {
     const jira = new FakeJiraGateway();
     const withPlannedTransition = buildTestConfig({

@@ -6,18 +6,19 @@ import type { CycleDeps } from "../job/cycle.js";
 import type { JobStore } from "../job/store.js";
 import type { Logger } from "../logger.js";
 import { createPmHandler } from "../pm/executor.js";
+import { PLAN_PROPERTY_KEY, PlanMetadataSchema, readPlanTaskMetadata } from "../pm/metadata.js";
 import { buildPmSystemPrompt } from "../pm/prompt.js";
 import { findAgentProfiles } from "../profile/profile.js";
 import type { AgentProfile, WorkspaceConfig } from "../profile/types.js";
 import { findWorkspaceConfig } from "../profile/workspace.js";
-import type { WorkerProvider } from "../worker/provider.js";
 import { buildImplementSystemPrompt } from "../worker/prompt.js";
+import type { WorkerProvider } from "../worker/provider.js";
+import { BackendRegistry } from "./backend.js";
+import { canHandle, requiredBackends, unknownCapabilities } from "./capability.js";
 import { type AgentContext, loadAgentContext, verifyRegistration } from "./context.js";
 import type { JobHandler } from "./handler.js";
-import { canHandle, requiredBackends, unknownCapabilities } from "./capability.js";
-import { BackendRegistry } from "./backend.js";
-import { readIssueRequirements } from "./requirements.js";
 import { composeSystemPrompt } from "./prompt.js";
+import { readIssueRequirements } from "./requirements.js";
 
 export interface AgentRuntimeDeps {
   config: AppConfig;
@@ -197,6 +198,49 @@ function createDispatchHandler(
         params.issue.statusName ===
         (deps.config.workflow.implementationStatus ?? "AI Implementation")
       ) {
+        if (deps.config.distribution.enabled) {
+          if (
+            params.issue.executionAgentOptionId !== deps.config.distribution.executionAgentOptionId
+          ) {
+            return {
+              status: "cancelled",
+              summary: "AI implementation assignment was withdrawn before execution.",
+            };
+          }
+          const taskMetadata = await readPlanTaskMetadata(deps.jira, params.issue.key);
+          if (taskMetadata) {
+            if (taskMetadata.workspaceId !== deps.config.distribution.workspaceId) {
+              return {
+                status: "failed",
+                summary: "This task belongs to a different workspace.",
+                failureReason: `Expected workspace ${deps.config.distribution.workspaceId}, got ${taskMetadata.workspaceId}.`,
+              };
+            }
+            const parent = await deps.jira.getIssue(taskMetadata.parentKey);
+            if (parent.statusName !== deps.config.workflow.executionApprovedStatus) {
+              return {
+                status: "cancelled",
+                summary: "The parent plan is not approved for execution.",
+              };
+            }
+            const planMetadata = PlanMetadataSchema.safeParse(
+              await deps.jira.getIssueProperty(parent.key, PLAN_PROPERTY_KEY),
+            );
+            if (!planMetadata.success || planMetadata.data.version !== taskMetadata.planVersion) {
+              return {
+                status: "failed",
+                summary: "The task no longer matches the current parent plan.",
+                failureReason: "Plan version mismatch or missing plan metadata.",
+              };
+            }
+            if (planMetadata.data.status !== "approved") {
+              await deps.jira.setIssueProperty(parent.key, PLAN_PROPERTY_KEY, {
+                ...planMetadata.data,
+                status: "approved",
+              });
+            }
+          }
+        }
         if (!params.issue.assigneeAccountId) {
           return {
             status: "failed",

@@ -15,6 +15,8 @@ export const PlanDecisionSchema = z.object({
 });
 
 export const PlanTaskSchema = z.object({
+  /** Stable identifier used by other tasks' dependencies (for example "backend-api"). */
+  taskId: z.string().min(1).optional(),
   title: z.string().min(1),
   description: z.string().min(1),
   acceptance: z.array(z.string()).default([]),
@@ -113,6 +115,7 @@ export const PLAN_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         required: [
+          "taskId",
           "title",
           "description",
           "acceptance",
@@ -121,6 +124,7 @@ export const PLAN_JSON_SCHEMA = {
           "requiredCapabilities",
         ],
         properties: {
+          taskId: { type: "string" },
           title: { type: "string" },
           description: { type: "string" },
           acceptance: { type: "array", items: { type: "string" } },

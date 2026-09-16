@@ -240,3 +240,11 @@ npm run dev -- worktrees:prune --olderThanDays 3   # 임계값 직접 지정
 - **Workspace Configuration이 여러 개 생겼을 때**: `findWorkspaceConfig`는 가장 오래된
   것을 쓰고 경고 로그를 남긴다 — 정상적으로는 발생하지 않아야 하며(생성 전에 항상
   먼저 검색한다), 발생했다면 나머지는 사람이 직접 정리(예: 라벨 제거 또는 삭제)한다.
+
+## Retry a failed Jira report
+
+After fixing the Jira workflow or connectivity problem, run
+`ggjira report:retry <RUN-ID>`. This retries only the saved Jira report; it does not rerun the
+worker. Report comments carry an idempotency marker, so a transition-only retry does not duplicate
+the already-written comment. Jobs from older versions without `reportingResult` require manual
+recovery.

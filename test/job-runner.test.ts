@@ -181,6 +181,9 @@ describe("runJobForIssue", () => {
 
     // persisted to disk too, not just the in-memory return value
     expect(store.loadJob(issue.key, job.runId)?.reportingFailed).toBe(true);
+    expect(store.loadJob(issue.key, job.runId)?.reportingResult).toMatchObject({
+      status: "succeeded",
+    });
   });
 
   it("cancels (not fails) the job when Jira rejects the claim transition — another agent got there first", async () => {

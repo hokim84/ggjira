@@ -1,15 +1,16 @@
+import type { z } from "zod";
 import type { AppConfig } from "../config.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
+import { renderSections } from "../profile/description.js";
 import {
   createAgentProfile,
   disableAgentProfile,
   findAgentProfileById,
 } from "../profile/profile.js";
 import type { AgentProfile, WorkspaceConfig } from "../profile/types.js";
-import { renderSections } from "../profile/description.js";
+import { PLAN_PROPERTY_KEY, PLAN_TASK_PROPERTY_KEY } from "./metadata.js";
 import type { Plan, PlanTaskSchema } from "./plan.js";
-import type { z } from "zod";
 
 const SUPERSEDED_LABEL = "ggjira-superseded";
 
@@ -70,6 +71,38 @@ function renderTaskDescription(task: z.infer<typeof PlanTaskSchema>): string {
   ].join("\n");
 }
 
+function validateTaskGraph(tasks: Array<z.infer<typeof PlanTaskSchema>>, taskIds: string[]): void {
+  const known = new Set(taskIds);
+  const graph = new Map<string, string[]>();
+  for (const [index, task] of tasks.entries()) {
+    const taskId = taskIds[index] ?? `task-${index + 1}`;
+    const unresolved = (task.dependencies ?? []).filter(
+      (dependency) => !known.has(dependency) && !/^[A-Z][A-Z0-9_]+-\d+$/.test(dependency),
+    );
+    if (unresolved.length > 0) {
+      throw new PlanApplyError(
+        `Task ${taskId} has unresolved dependencies: ${unresolved.join(", ")}`,
+      );
+    }
+    graph.set(
+      taskId,
+      (task.dependencies ?? []).filter((dependency) => known.has(dependency)),
+    );
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (taskId: string): void => {
+    if (visiting.has(taskId))
+      throw new PlanApplyError(`Plan contains a dependency cycle at ${taskId}`);
+    if (visited.has(taskId)) return;
+    visiting.add(taskId);
+    for (const dependency of graph.get(taskId) ?? []) visit(dependency);
+    visiting.delete(taskId);
+    visited.add(taskId);
+  };
+  for (const taskId of taskIds) visit(taskId);
+}
+
 const PLAN_START = "{noformat}[GGJIRA:PLAN:START]{noformat}";
 const PLAN_END = "{noformat}[GGJIRA:PLAN:END]{noformat}";
 
@@ -117,6 +150,8 @@ export async function applyPlan(
   existingSubtasks: JiraIssue[],
   roster?: AgentProfile[],
   workspace?: WorkspaceConfig | null,
+  planVersion = `plan-${Date.now()}`,
+  decisionId?: string,
 ): Promise<ApplyPlanResult> {
   if (plan.tasks.length > config.pm.maxTasksPerPlan) {
     throw new PlanApplyError(
@@ -132,7 +167,16 @@ export async function applyPlan(
   }
 
   const createdKeys: string[] = [];
-  for (const task of plan.tasks) {
+  const taskIds = plan.tasks.map((task, index) => task.taskId ?? `task-${index + 1}`);
+  if (new Set(taskIds).size !== taskIds.length) {
+    throw new PlanApplyError("Plan taskId values must be unique");
+  }
+  if (config.distribution.enabled) {
+    validateTaskGraph(plan.tasks, taskIds);
+  }
+  const createdByTaskId = new Map<string, string>();
+  for (const [index, task] of plan.tasks.entries()) {
+    const taskId = taskIds[index] ?? `task-${index + 1}`;
     const description =
       config.configVersion === 4
         ? renderTaskDescription(task)
@@ -151,10 +195,43 @@ export async function applyPlan(
           : {}
         : { assigneeAccountId: await resolveLegacyAssignee(jira, config, roster, task) }),
     });
-    if (config.pm.taskReadyTransitionName) {
+    createdByTaskId.set(taskId, key);
+    if (config.distribution.enabled && config.workflow.taskWaitingStatus) {
+      await jira.transitionIssueToStatus(key, config.workflow.taskWaitingStatus);
+    } else if (config.pm.taskReadyTransitionName) {
       await jira.transitionIssue(key, config.pm.taskReadyTransitionName);
     }
     createdKeys.push(key);
+  }
+
+  if (config.distribution.enabled) {
+    for (const [index, task] of plan.tasks.entries()) {
+      const taskId = taskIds[index] ?? `task-${index + 1}`;
+      const key = createdByTaskId.get(taskId);
+      if (!key) throw new PlanApplyError(`Created issue missing for taskId ${taskId}`);
+      const dependencies = (task.dependencies ?? []).map(
+        (dependency) => createdByTaskId.get(dependency) ?? dependency,
+      );
+      if (dependencies.join("\n") !== (task.dependencies ?? []).join("\n")) {
+        await jira.updateIssueDescription(key, renderTaskDescription({ ...task, dependencies }));
+      }
+      await jira.setIssueProperty(key, PLAN_TASK_PROPERTY_KEY, {
+        planVersion,
+        taskId,
+        parentKey: parent.key,
+        workspaceId: config.distribution.workspaceId ?? config.workspace.path,
+        dependencies,
+      });
+    }
+  }
+
+  if (config.distribution.enabled) {
+    await jira.setIssueProperty(parent.key, PLAN_PROPERTY_KEY, {
+      version: planVersion,
+      status: "review",
+      taskIds,
+      ...(decisionId ? { decisionId } : {}),
+    });
   }
 
   const keep = new Set(plan.keepTaskKeys);

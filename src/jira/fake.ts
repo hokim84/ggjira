@@ -90,6 +90,7 @@ export class FakeJiraGateway implements JiraGateway {
       issueTypeName: issue.issueTypeName ?? null,
       parentKey: issue.parentKey ?? null,
       projectKey: issue.projectKey ?? issue.key.split("-")[0] ?? null,
+      executionAgentOptionId: issue.executionAgentOptionId ?? null,
       updatedAt: issue.updatedAt ?? new Date().toISOString(),
     };
     this.issues.set(full.key, full);
@@ -303,6 +304,7 @@ export class FakeJiraGateway implements JiraGateway {
       parentKey: input.parentKey ?? null,
       projectKey: input.projectKey,
       assigneeAccountId: input.assigneeAccountId ?? null,
+      executionAgentOptionId: null,
     });
     if (input.assigneeAccountId) {
       this.assignments.push({ key, accountId: input.assigneeAccountId });

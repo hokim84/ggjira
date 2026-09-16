@@ -1,14 +1,14 @@
-import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 // The classic callback-based readline module, not `node:readline/promises`:
 // the promises Interface doesn't expose `_writeToOutput` (needed to mask
 // secret input, see askSecretViaInterface) on this Node version.
 import { type Interface, createInterface } from "node:readline";
-import path from "node:path";
 import {
   type AppConfig,
-  type JiraSecrets,
   ConfigError,
+  type JiraSecrets,
   isProfileMode,
   loadAppConfig,
   loadJiraSecretsFromEnv,
@@ -24,8 +24,10 @@ import {
   askChoice,
   defaultCreateJira,
   runCreateWorkspaceFlow,
+  runDistributionSettingsFlow,
   runJoinAgentFlow,
   runManualFlow,
+  runWorkflowSettingsFlow,
 } from "./flows.js";
 import { checkJiraConnection, checkProviderCommand, checkWorkspacePath } from "./validators.js";
 
@@ -39,7 +41,7 @@ export interface SetupOptions {
   askSecret?: AskFn;
   print?: (line: string) => void;
   /** Skips the menu and runs one flow directly -- used by tests and non-interactive callers. */
-  mode?: "create" | "join" | "manual";
+  mode?: "create" | "join" | "manual" | "workflow-settings" | "distribution-settings";
   /** Defaults to a real JiraClient; tests inject a FakeJiraGateway here. */
   createJira?: (secrets: JiraSecrets) => JiraGateway;
   /** Delay claimAgentProfile waits before re-reading to detect a race; 0 in tests. Defaults to 1000ms. */
@@ -47,7 +49,7 @@ export interface SetupOptions {
   machineIdFactory?: () => string;
 }
 
-const MODE_CHOICES = ["1", "2", "3"] as const;
+const MODE_CHOICES = ["1", "2", "3", "4", "5"] as const;
 
 async function askMode(ask: AskFn, print: (line: string) => void, existingConfig?: AppConfig) {
   print(
@@ -56,12 +58,16 @@ async function askMode(ask: AskFn, print: (line: string) => void, existingConfig
       "  1) Create GGJira Workspace   -- first PM machine for this project",
       "  2) Join as Agent             -- register this machine as an existing Agent Profile",
       "  3) Manual setup (legacy)     -- enter every value by hand, no Agent Profile",
+      "  4) Polling & statuses only   -- keep credentials, agent, provider, and workspace settings",
+      "  5) PM approval & distribution -- configure human plan approval and execution-agent selection",
     ].join("\n"),
   );
   const defaultChoice = existingConfig?.agent.profileKey ? "2" : "1";
   const choice = await askChoice(ask, "Choice", MODE_CHOICES, defaultChoice);
   if (choice === "2") return "join" as const;
   if (choice === "3") return "manual" as const;
+  if (choice === "4") return "workflow-settings" as const;
+  if (choice === "5") return "distribution-settings" as const;
   return "create" as const;
 }
 
@@ -186,6 +192,23 @@ async function runCheck(
       const found = statuses.includes(trigger);
       print(`implementation trigger status: ${found ? "OK" : "FAILED"} (${trigger})`);
       if (!found) process.exitCode = 1;
+      if (config.distribution.enabled) {
+        const configured = [
+          config.workflow.planningStatus,
+          config.workflow.planningInProgressStatus,
+          config.workflow.planReviewStatus,
+          config.workflow.executionApprovedStatus,
+          config.workflow.taskWaitingStatus,
+        ].filter((status): status is string => Boolean(status));
+        const missing = configured.filter((status) => !statuses.includes(status));
+        print(
+          `distribution workflow statuses: ${missing.length === 0 ? "OK" : "FAILED"}${missing.length > 0 ? ` (missing: ${missing.join(", ")})` : ""}`,
+        );
+        if (missing.length > 0) process.exitCode = 1;
+        print(
+          `execution agent field: OK (${config.distribution.executionAgentFieldId}, option ${config.distribution.executionAgentOptionId ?? "not required on PM"})`,
+        );
+      }
     } catch (error) {
       print(`implementation trigger status: could not verify (${describeJiraError(error)})`);
     }
@@ -277,6 +300,15 @@ export async function runSetupWizard(opts: SetupOptions): Promise<SetupResult> {
   // ConfigError is what surfaces migration problems; here we just have
   // nothing to prefill from.
   let existingConfig: AppConfig | undefined;
+  let existingRawConfig: Record<string, unknown> | undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf-8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      existingRawConfig = parsed as Record<string, unknown>;
+    }
+  } catch {
+    existingRawConfig = undefined;
+  }
   try {
     existingConfig = loadAppConfig(configPath);
   } catch {
@@ -299,6 +331,7 @@ export async function runSetupWizard(opts: SetupOptions): Promise<SetupResult> {
     settleMs: opts.settleMs ?? 1000,
     machineIdFactory: opts.machineIdFactory ?? randomUUID,
     ...(existingConfig ? { existingConfig } : {}),
+    ...(existingRawConfig ? { existingRawConfig } : {}),
     ...(existingSecrets ? { existingSecrets } : {}),
   };
 
@@ -312,6 +345,8 @@ export async function runSetupWizard(opts: SetupOptions): Promise<SetupResult> {
 
     if (mode === "create") return await runCreateWorkspaceFlow(flowCtx);
     if (mode === "join") return await runJoinAgentFlow(flowCtx);
+    if (mode === "workflow-settings") return await runWorkflowSettingsFlow(flowCtx);
+    if (mode === "distribution-settings") return await runDistributionSettingsFlow(flowCtx);
     return await runManualFlow(flowCtx);
   } catch (error) {
     if (error instanceof SetupError || error instanceof ConfigError) {

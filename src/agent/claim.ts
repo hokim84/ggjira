@@ -61,8 +61,12 @@ export async function claimJob(
   // board that the agent is working (ADR 0015). Status-based configs say where
   // to move it; legacy configs still name the transition directly.
   try {
-    if (config.workflow.inProgressStatus) {
-      await jira.transitionIssueToStatus(issue.key, config.workflow.inProgressStatus);
+    const targetStatus =
+      issue.statusName === config.workflow.planningStatus
+        ? (config.workflow.planningInProgressStatus ?? config.workflow.inProgressStatus)
+        : config.workflow.inProgressStatus;
+    if (targetStatus) {
+      await jira.transitionIssueToStatus(issue.key, targetStatus);
     } else {
       await jira.transitionIssue(issue.key, config.workflow.claimTransitionName);
     }

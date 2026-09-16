@@ -7,6 +7,29 @@ import { buildTestConfig, buildTestIssue } from "./helpers/fixtures.js";
 const config = buildTestConfig();
 
 describe("claimJob", () => {
+  it("claims planning work into the planning-specific in-progress status", async () => {
+    const jira = new FakeJiraGateway();
+    const issue = buildTestIssue({ key: "KAN-10", statusName: "AI Planning" });
+    const planningConfig = buildTestConfig({
+      configVersion: 4,
+      workflow: {
+        ...config.workflow,
+        planningStatus: "AI Planning",
+        planningInProgressStatus: "Planning In Progress",
+        implementationStatus: "AI Implementation",
+        inProgressStatus: "In Progress",
+        reviewStatus: "In Review",
+      },
+    });
+    jira.seedIssue(issue, [
+      { id: "31", name: "Start planning", toStatusName: "Planning In Progress" },
+    ]);
+
+    await claimJob(jira, planningConfig, issue, "run-plan");
+
+    expect(jira.transitions).toEqual([{ key: "KAN-10", transitionName: "Start planning" }]);
+  });
+
   it("transitions then posts a start comment when the issue is still ready", async () => {
     const jira = new FakeJiraGateway();
     const issue = buildTestIssue({ key: "KAN-1", statusName: "To Do" });

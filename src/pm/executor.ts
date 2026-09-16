@@ -55,6 +55,7 @@ export function createPmHandler(deps: PmHandlerDeps): JobHandler {
         existingSubtasks,
         self.accountId,
         roster?.agents,
+        issue.assigneeAccountId,
       );
 
       const branch = `ggjira-pm/${issue.key}-${job.runId}`;
@@ -117,7 +118,7 @@ export function createPmHandler(deps: PmHandlerDeps): JobHandler {
         return {
           status: "needs_decision",
           summary: plan.summary,
-          decisionRequest: buildDecisionRequestComment(plan, config),
+          decisionRequest: buildDecisionRequestComment(plan, config, job.runId),
         };
       }
 
@@ -130,6 +131,8 @@ export function createPmHandler(deps: PmHandlerDeps): JobHandler {
           existingSubtasks,
           roster?.agents,
           roster?.workspace,
+          job.runId,
+          planningContext.humanDecision?.decisionId,
         );
         return {
           status: "planned",

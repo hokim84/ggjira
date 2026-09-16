@@ -6,6 +6,18 @@ import type { Job } from "../job/job.js";
 
 const PLANNED_LABEL = "ggjira-planned";
 
+async function addCommentOnce(
+  jira: JiraGateway,
+  issueKey: string,
+  runId: string,
+  body: string,
+): Promise<void> {
+  const marker = `[GGJIRA:REPORT:${runId}]`;
+  const comments = await jira.getComments(issueKey);
+  if (comments.some((comment) => comment.body.includes(marker))) return;
+  await jira.addComment(issueKey, `${marker}\n${body}`);
+}
+
 function agentTag(config: AppConfig): string {
   return `${config.agent.identity}@${config.agent.machine}`;
 }
@@ -77,8 +89,10 @@ export async function reportForResult(
   result: ExecutionResult,
 ): Promise<void> {
   if (result.status === "cancelled") {
-    await jira.addComment(
+    await addCommentOnce(
+      jira,
       issue.key,
+      job.runId,
       [
         "AI execution stopped.",
         "",
@@ -91,8 +105,10 @@ export async function reportForResult(
     return;
   }
   if (result.status === "needs_decision") {
-    await jira.addComment(
+    await addCommentOnce(
+      jira,
       issue.key,
+      job.runId,
       result.decisionRequest ?? buildFallbackDecisionComment(job, config, result),
     );
     if (config.workflow.needsDecisionStatus) {
@@ -104,9 +120,11 @@ export async function reportForResult(
   }
 
   if (job.status === "succeeded") {
-    await jira.addComment(issue.key, buildSuccessComment(job, config, result));
+    await addCommentOnce(jira, issue.key, job.runId, buildSuccessComment(job, config, result));
     if (result.status === "planned") {
-      if (config.workflow.plannedTransitionName) {
+      if (config.workflow.planReviewStatus) {
+        await jira.transitionIssueToStatus(issue.key, config.workflow.planReviewStatus);
+      } else if (config.workflow.plannedTransitionName) {
         await jira.transitionIssue(issue.key, config.workflow.plannedTransitionName);
       } else {
         await jira.addLabel(issue.key, PLANNED_LABEL);
@@ -122,6 +140,6 @@ export async function reportForResult(
     return;
   }
 
-  await jira.addComment(issue.key, buildFailureComment(job, config, result));
+  await addCommentOnce(jira, issue.key, job.runId, buildFailureComment(job, config, result));
   await jira.addLabel(issue.key, config.workflow.failureLabel);
 }

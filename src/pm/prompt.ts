@@ -11,6 +11,7 @@ export function buildPmSystemPrompt(): string {
     "If the requirement has more than one reasonable implementation approach with materially different consequences, set needsDecision to true and describe the options instead of choosing one yourself.",
     "Otherwise set needsDecision to false and describe the objective, acceptance criteria, dependencies, constraints, required capabilities, and suggested execution strategy.",
     "Create subtasks only for independently completable units with their own acceptance criteria or dependencies. Keep low-level implementation steps in the strategy, not Jira tasks.",
+    "Give every task a stable taskId. Express dependencies on tasks in this plan using those taskIds; use Jira issue keys for pre-existing dependencies.",
   ].join(" ");
 }
 
@@ -60,13 +61,18 @@ export function buildPlanningPrompt(ctx: PlanningContext): string {
     "",
     "Produce a plan as JSON matching the given schema. If existing subtasks are still valid, list their keys in keepTaskKeys instead of recreating them; anything not listed there will be treated as superseded.",
     "Each executable task must list canonical requiredCapabilities. Do not select or assign an agent; Jira assignees remain unchanged during AI delegation.",
+    "Every task needs a unique taskId, and intra-plan dependencies must reference those taskIds.",
     "Agent Profiles are human-managed configuration. Never create, disable, or assign an Agent Profile from a plan.",
   );
 
   return parts.join("\n");
 }
 
-export function buildDecisionRequestComment(plan: Plan, config: AppConfig): string {
+export function buildDecisionRequestComment(
+  plan: Plan,
+  config: AppConfig,
+  planVersion?: string,
+): string {
   const decision = plan.decision;
   if (!decision) {
     throw new Error("buildDecisionRequestComment called on a plan with no decision");
@@ -74,6 +80,7 @@ export function buildDecisionRequestComment(plan: Plan, config: AppConfig): stri
 
   const lines = [
     DECISION_REQUEST_MARKER,
+    ...(planVersion ? [`planVersion: ${planVersion}`, `decisionId: ${planVersion}-decision`] : []),
     "",
     "GGJIRA needs a decision before it can continue planning.",
     "",
@@ -90,7 +97,7 @@ export function buildDecisionRequestComment(plan: Plan, config: AppConfig): stri
   if (decision.impact) lines.push("", `Impact: ${decision.impact}`);
   lines.push(
     "",
-    `To respond: comment "Decision: <option id>" on this issue and move it back to "${config.workflow.readyStatus}".`,
+    `To respond: comment "Decision: <option id>${planVersion ? `\ndecisionId: ${planVersion}-decision` : ""}" on this issue and move it back to "${config.workflow.planningStatus ?? config.workflow.readyStatus}".`,
     "",
     `agent: ${config.agent.identity}@${config.agent.machine}`,
   );

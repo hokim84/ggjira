@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { JiraComment } from "../src/jira/types.js";
 import { buildPlanningContext, findHumanDecision } from "../src/pm/context.js";
 import { DECISION_REQUEST_MARKER } from "../src/pm/marker.js";
-import type { JiraComment } from "../src/jira/types.js";
 import { buildTestIssue } from "./helpers/fixtures.js";
 
 const SELF = "pm-account-id";
@@ -64,6 +64,21 @@ describe("findHumanDecision", () => {
       comment({ body: "Decision: A", authorAccountId: "human-1" }),
     ];
     expect(findHumanDecision(comments, SELF)?.optionId).toBe("A");
+  });
+
+  it("accepts a matching decision ID from the human owner even when Jira uses the agent account", () => {
+    const comments = [
+      comment({
+        body: `${DECISION_REQUEST_MARKER}\nplanVersion: v1\ndecisionId: d1`,
+        authorAccountId: SELF,
+      }),
+      comment({ body: "Decision: A\ndecisionId: stale", authorAccountId: SELF }),
+      comment({ body: "Decision: B\ndecisionId: d1", authorAccountId: SELF }),
+    ];
+
+    const decision = findHumanDecision(comments, SELF, SELF);
+
+    expect(decision).toMatchObject({ optionId: "B", decisionId: "d1", planVersion: "v1" });
   });
 });
 

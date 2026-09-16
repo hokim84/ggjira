@@ -173,6 +173,7 @@ export async function runJobForIssue(
             failureStage: "worker",
             error: result.failureReason ?? result.summary,
           });
+  job = { ...job, reportingResult: result };
   deps.store.saveJob(job);
   deps.store.writeSummary(issue.key, runId, buildSummaryMarkdown(job, result));
 

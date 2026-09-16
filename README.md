@@ -58,7 +58,21 @@ GGJIRA Setup
   1) Create GGJira Workspace   -- 이 프로젝트에서 처음 실행하는 PM 머신
   2) Join as Agent             -- 이미 만들어진 Agent Profile로 이 머신을 등록
   3) Manual setup (legacy)     -- Agent Profile 없이 모든 값을 직접 입력
+  4) Polling & statuses only   -- keep the rest of an existing setup
+  5) PM approval & distribution -- human approval and execution-agent routing
 ```
+
+### Human-approved PM distribution
+
+Choose setup option 5 on each machine after the normal Create/Join setup. The PM creates
+reviewable subtasks first and moves the parent to the configured plan-review status. A human then
+reviews the plan, selects an execution agent in a Jira single-select custom field, moves each chosen
+task to `workflow.implementationStatus`, and moves the parent to
+`workflow.executionApprovedStatus`. Assignee remains the human owner.
+
+Use Jira's canonical custom-field and option IDs (`customfield_12345` and the option `id`), not
+display labels. Each implement machine stores its own option ID. Generated tasks carry versioned
+`ggjira.plan-task` metadata; a worker skips tasks for another workspace or an unapproved parent.
 
 ### 첫 머신: Create GGJira Workspace
 
@@ -94,6 +108,10 @@ Jira statuses in KAN:
 
 설정이 끝나면 "Start the agent now? (Y/n)"에 Y로 답해 바로 데몬을 시작하거나, 나중에
 `npm run dev -- run`으로 시작한다.
+
+기존 인증·에이전트·Provider·workspace 설정은 그대로 두고 폴링 주기와 상태 3개만
+바꾸려면 setup 메뉴에서 `4) Polling & statuses only`를 선택한다. 폴링 주기는 초 단위로
+입력하며, 상태 변경은 로컬 config와 Jira의 Workspace Configuration 이슈에 함께 반영된다.
 
 ### 새 워커 머신: Join as Agent
 

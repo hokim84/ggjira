@@ -44,5 +44,8 @@
   },
   "polling": {
     "intervalMs": 60000
+  },
+  "distribution": {
+    "enabled": false
   }
 }

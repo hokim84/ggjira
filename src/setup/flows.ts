@@ -50,6 +50,7 @@ export interface FlowContext {
   settleMs: number;
   machineIdFactory: () => string;
   existingConfig?: AppConfig;
+  existingRawConfig?: Record<string, unknown>;
   existingSecrets?: JiraEnvSecrets;
 }
 
@@ -241,6 +242,219 @@ async function askWorkflowStatuses(
     );
   }
   return { implementationStatus, inProgressStatus, reviewStatus };
+}
+
+function requireObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new SetupError(`${label} is missing or invalid in ggjira.config.json.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+/** Updates only the polling interval and the three v4 workflow statuses. */
+export async function runWorkflowSettingsFlow(ctx: FlowContext): Promise<SetupResult> {
+  const raw = ctx.existingRawConfig;
+  const secrets = ctx.existingSecrets;
+  if (!raw) throw new SetupError("No existing ggjira.config.json found. Run full setup first.");
+  if (!secrets)
+    throw new SetupError("No valid Jira credentials found in .env. Run full setup first.");
+
+  const jiraConfig = requireObject(raw.jira, "jira");
+  const workflow =
+    raw.workflow && typeof raw.workflow === "object" && !Array.isArray(raw.workflow)
+      ? (raw.workflow as Record<string, unknown>)
+      : {};
+  const polling =
+    raw.polling && typeof raw.polling === "object" && !Array.isArray(raw.polling)
+      ? (raw.polling as Record<string, unknown>)
+      : {};
+  const baseUrl = jiraConfig.baseUrl;
+  const projectKey = jiraConfig.projectKey;
+  if (typeof baseUrl !== "string" || !baseUrl) {
+    throw new SetupError("jira.baseUrl is missing or invalid in ggjira.config.json.");
+  }
+  if (typeof projectKey !== "string" || !projectKey) {
+    throw new SetupError("jira.projectKey is missing or invalid in ggjira.config.json.");
+  }
+
+  ctx.print("Checking Jira connection...");
+  const jira = ctx.createJira({ baseUrl, email: secrets.email, apiToken: secrets.apiToken });
+  const connection = await checkJiraConnection(jira);
+  if (!connection.ok) throw new SetupError(`Could not connect to Jira: ${connection.message}`);
+  ctx.print(`  ${connection.message}`);
+
+  const statuses = await askWorkflowStatuses(ctx, jira, projectKey, {
+    implementationStatus:
+      typeof workflow.implementationStatus === "string" ? workflow.implementationStatus : undefined,
+    inProgressStatus:
+      typeof workflow.inProgressStatus === "string" ? workflow.inProgressStatus : undefined,
+    reviewStatus: typeof workflow.reviewStatus === "string" ? workflow.reviewStatus : undefined,
+  });
+
+  const currentIntervalMs =
+    typeof polling.intervalMs === "number" && polling.intervalMs > 0 ? polling.intervalMs : 60000;
+  const secondsText = await ctx.ask("Polling interval (seconds)", String(currentIntervalMs / 1000));
+  const seconds = Number(secondsText);
+  const intervalMs = seconds * 1000;
+  if (!Number.isFinite(seconds) || seconds <= 0 || !Number.isInteger(intervalMs)) {
+    throw new SetupError("Polling interval must be a positive number of seconds.");
+  }
+
+  const updated = {
+    ...raw,
+    workflow: { ...workflow, ...statuses },
+    polling: { ...polling, intervalMs },
+  };
+  const result = AppConfigSchema.safeParse(updated);
+  if (!result.success) {
+    throw new SetupError(`Updated config failed validation: ${result.error.message}`);
+  }
+
+  const workspace = await findWorkspaceConfig(jira, projectKey);
+  if (workspace) {
+    await updateWorkspaceConfig(jira, workspace, {
+      ggjiraVersion: GGJIRA_VERSION,
+      projectPolicy: workspace.projectPolicy,
+      workflow: { ...workspace.workflow, ...statuses },
+    });
+    ctx.print(`Updated workflow statuses in ${workspace.issueKey}.`);
+  }
+
+  writeConfigFile(ctx.configPath, updated);
+  ctx.print(`Updated ${ctx.configPath} (polling: ${seconds}s).`);
+  return { startAgent: false };
+}
+
+/** Enables/configures the human-approved PM plan and execution-agent distribution workflow. */
+export async function runDistributionSettingsFlow(ctx: FlowContext): Promise<SetupResult> {
+  const raw = ctx.existingRawConfig;
+  const secrets = ctx.existingSecrets;
+  if (!raw) throw new SetupError("No existing ggjira.config.json found. Run full setup first.");
+  if (!secrets)
+    throw new SetupError("No valid Jira credentials found in .env. Run full setup first.");
+
+  const jiraConfig = requireObject(raw.jira, "jira");
+  const agent = requireObject(raw.agent, "agent");
+  const workflow = requireObject(raw.workflow, "workflow");
+  const previous =
+    raw.distribution && typeof raw.distribution === "object" && !Array.isArray(raw.distribution)
+      ? (raw.distribution as Record<string, unknown>)
+      : {};
+  const baseUrl = jiraConfig.baseUrl;
+  const projectKey = jiraConfig.projectKey;
+  if (typeof baseUrl !== "string" || typeof projectKey !== "string") {
+    throw new SetupError("jira.baseUrl and jira.projectKey are required for distribution setup.");
+  }
+
+  const jira = ctx.createJira({ baseUrl, email: secrets.email, apiToken: secrets.apiToken });
+  const connection = await checkJiraConnection(jira);
+  if (!connection.ok) throw new SetupError(`Could not connect to Jira: ${connection.message}`);
+  const enabled = isYes(
+    await ctx.ask("Enable human plan approval and agent distribution? (Y/n)", "y"),
+  );
+  if (!enabled) {
+    const updated = { ...raw, distribution: { ...previous, enabled: false } };
+    writeConfigFile(ctx.configPath, updated);
+    ctx.print(`Updated ${ctx.configPath} (human distribution disabled).`);
+    return { startAgent: false };
+  }
+
+  const statuses = await listStatuses(ctx, jira, projectKey);
+  const askConfiguredStatus = (label: string, field: string, fallback: string) =>
+    askStatus(
+      ctx,
+      statuses,
+      label,
+      typeof workflow[field] === "string" ? (workflow[field] as string) : fallback,
+    );
+  const implementationStatus = await askConfiguredStatus(
+    "1) Implementation request status",
+    "implementationStatus",
+    "AI Implementation",
+  );
+  const inProgressStatus = await askConfiguredStatus(
+    "2) Implementation in-progress status",
+    "inProgressStatus",
+    "In Progress",
+  );
+  const reviewStatus = await askConfiguredStatus(
+    "3) Implementation review status",
+    "reviewStatus",
+    "In Review",
+  );
+  const planningStatus = await askConfiguredStatus(
+    "4) Planning request status",
+    "planningStatus",
+    "AI Planning",
+  );
+  const planningInProgressStatus = await askConfiguredStatus(
+    "5) Planning in-progress status",
+    "planningInProgressStatus",
+    "AI Planning In Progress",
+  );
+  const planReviewStatus = await askConfiguredStatus(
+    "6) Human plan review status",
+    "planReviewStatus",
+    "Plan Review",
+  );
+  const executionApprovedStatus = await askConfiguredStatus(
+    "7) Parent plan approved status",
+    "executionApprovedStatus",
+    "Execution Approved",
+  );
+  const taskWaitingStatus = await askConfiguredStatus(
+    "8) Generated task waiting-for-distribution status",
+    "taskWaitingStatus",
+    "Waiting for Assignment",
+  );
+  const fieldIdInput = await ctx.ask(
+    "Execution agent Jira single-select field ID (customfield_12345 or 12345; not the field name)",
+    typeof previous.executionAgentFieldId === "string" ? previous.executionAgentFieldId : undefined,
+  );
+  const fieldId = /^\d+$/.test(fieldIdInput.trim())
+    ? `customfield_${fieldIdInput.trim()}`
+    : fieldIdInput.trim();
+  const workspaceId = await ctx.ask(
+    "Canonical workspace ID",
+    typeof previous.workspaceId === "string" ? previous.workspaceId : projectKey,
+  );
+  let executionAgentOptionId: string | undefined;
+  if (agent.role === "implement") {
+    executionAgentOptionId = await ctx.ask(
+      "This agent's option ID in the execution-agent field",
+      typeof previous.executionAgentOptionId === "string"
+        ? previous.executionAgentOptionId
+        : undefined,
+    );
+  }
+
+  const updated = {
+    ...raw,
+    workflow: {
+      ...workflow,
+      implementationStatus,
+      inProgressStatus,
+      reviewStatus,
+      planningStatus,
+      planningInProgressStatus,
+      planReviewStatus,
+      executionApprovedStatus,
+      taskWaitingStatus,
+    },
+    distribution: {
+      enabled: true,
+      executionAgentFieldId: fieldId,
+      workspaceId,
+      ...(executionAgentOptionId ? { executionAgentOptionId } : {}),
+    },
+  };
+  const parsed = AppConfigSchema.safeParse(updated);
+  if (!parsed.success) {
+    throw new SetupError(`Updated config failed validation: ${parsed.error.message}`);
+  }
+  writeConfigFile(ctx.configPath, updated);
+  ctx.print(`Updated ${ctx.configPath} (human distribution enabled).`);
+  return { startAgent: false };
 }
 
 async function askPreset(ctx: FlowContext, role: AgentRole): Promise<Preset | undefined> {

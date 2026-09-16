@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { JobStore } from "../src/job/store.js";
+import { PLAN_TASK_PROPERTY_KEY } from "../src/pm/metadata.js";
 import { buildAssignedJql, findAssignedJobs } from "../src/poller/poller.js";
 import { AGENT_LABEL, WORKSPACE_LABEL } from "../src/profile/types.js";
 import { buildTestConfig, buildTestIssue } from "./helpers/fixtures.js";
@@ -113,5 +114,51 @@ describe("findAssignedJobs", () => {
     const candidates = await findAssignedJobs(jira, config, store);
 
     expect(candidates.map((i) => i.key)).toEqual(["KAN-1"]);
+  });
+
+  it("only returns a distributed planned task after parent approval and agent selection", async () => {
+    const jira = new FakeJiraGateway();
+    const distributed = buildTestConfig({
+      configVersion: 4,
+      workflow: {
+        ...config.workflow,
+        planningStatus: "AI Planning",
+        planningInProgressStatus: "Planning In Progress",
+        planReviewStatus: "Plan Review",
+        executionApprovedStatus: "Execution Approved",
+        taskWaitingStatus: "Waiting",
+        implementationStatus: "AI Implementation",
+        inProgressStatus: "In Progress",
+        reviewStatus: "In Review",
+      },
+      distribution: {
+        enabled: true,
+        executionAgentFieldId: "customfield_12345",
+        executionAgentOptionId: "agent-a",
+        workspaceId: "workspace-a",
+      },
+    });
+    jira.seedIssue(buildTestIssue({ key: "KAN-10", statusName: "Plan Review" }));
+    jira.seedIssue(
+      buildTestIssue({
+        key: "KAN-11",
+        parentKey: "KAN-10",
+        statusName: "AI Implementation",
+        executionAgentOptionId: "agent-a",
+      }),
+    );
+    await jira.setIssueProperty("KAN-11", PLAN_TASK_PROPERTY_KEY, {
+      planVersion: "v1",
+      taskId: "task-1",
+      parentKey: "KAN-10",
+      workspaceId: "workspace-a",
+      dependencies: [],
+    });
+
+    expect(await findAssignedJobs(jira, distributed, store)).toEqual([]);
+    jira.seedIssue(buildTestIssue({ key: "KAN-10", statusName: "Execution Approved" }));
+    expect((await findAssignedJobs(jira, distributed, store)).map((issue) => issue.key)).toEqual([
+      "KAN-11",
+    ]);
   });
 });

@@ -1,7 +1,21 @@
 #!/usr/bin/env node
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { type AgentRole, isAgentRole } from "./agent/role.js";
 import { bootstrapAgent } from "./agent/runtime.js";
+import {
+  type AppConfig,
+  ConfigError,
+  loadAppConfig,
+  loadJiraSecretsFromEnv,
+  resolveJiraSecrets,
+} from "./config.js";
+import { JiraApiError, JiraClient } from "./jira/client.js";
+import { type CycleDeps, recoverStaleClaims, runPollCycle } from "./job/cycle.js";
+import { markReportingSucceeded } from "./job/job.js";
+import { JobStore } from "./job/store.js";
+import type { Logger } from "./logger.js";
+import { rootLogger } from "./logger.js";
 import { applyPlan } from "./pm/apply.js";
 import { buildPlanningContext } from "./pm/context.js";
 import { PLAN_JSON_SCHEMA, parsePlan } from "./pm/plan.js";
@@ -10,20 +24,8 @@ import {
   buildPlanningPrompt,
   buildPmSystemPrompt,
 } from "./pm/prompt.js";
-import {
-  type AppConfig,
-  ConfigError,
-  loadAppConfig,
-  loadJiraSecretsFromEnv,
-  resolveJiraSecrets,
-} from "./config.js";
-import { recoverStaleClaims, runPollCycle, type CycleDeps } from "./job/cycle.js";
-import { JiraApiError, JiraClient } from "./jira/client.js";
-import { JobStore } from "./job/store.js";
-import type { Logger } from "./logger.js";
-import { rootLogger } from "./logger.js";
-import { type AgentRole, isAgentRole } from "./agent/role.js";
 import { createAgentCommand, disableAgentCommand, listAgentsCommand } from "./profile/commands.js";
+import { reportForResult } from "./reporter/reporter.js";
 import { hasLocalConfig } from "./setup/first-run.js";
 import { loadEnvFileVars, runSetupWizard } from "./setup/wizard.js";
 import { createProvider } from "./worker/factory.js";
@@ -63,6 +65,7 @@ Commands:
   pm:plan <KEY>      Run the pm role's planning step against one issue
                        --dry-run          print the plan without writing anything to Jira
   status             Show current job claims and recorded runs
+  report:retry <RUN-ID> Retry only the Jira comment/transition for a recorded run
   worktrees:prune    Remove old worktrees under data/worktrees/
                        --olderThanDays <n>  default 7
   agent:list         List Agent Profiles in this project (profile mode only)
@@ -89,6 +92,7 @@ const KNOWN_COMMANDS = new Set([
   "worker:run",
   "pm:plan",
   "status",
+  "report:retry",
   "worktrees:prune",
   "agent:list",
   "agent:create",
@@ -112,7 +116,12 @@ function loadConfigOrPrintError(): AppConfig | undefined {
 function createJiraClientOrPrintError(config: AppConfig, logger: Logger): JiraClient | undefined {
   try {
     const envSecrets = loadJiraSecretsFromEnv();
-    return new JiraClient(resolveJiraSecrets(config, envSecrets), { logger });
+    return new JiraClient(resolveJiraSecrets(config, envSecrets), {
+      logger,
+      ...(config.distribution.executionAgentFieldId
+        ? { executionAgentFieldId: config.distribution.executionAgentFieldId }
+        : {}),
+    });
   } catch (error) {
     if (error instanceof ConfigError) {
       process.stderr.write(`Config error: ${error.message}\n`);
@@ -418,6 +427,50 @@ async function runStatus(): Promise<void> {
   }
 }
 
+async function runReportRetry(args: string[]): Promise<void> {
+  const runId = args[0];
+  if (!runId) {
+    process.stderr.write("Usage: ggjira report:retry <RUN-ID>\n");
+    process.exitCode = 1;
+    return;
+  }
+  const config = loadConfigOrPrintError();
+  if (!config) return;
+  const jira = createJiraClientOrPrintError(config, rootLogger.child({ layer: "reporter", runId }));
+  if (!jira) return;
+  const store = new JobStore();
+  const matches = store
+    .listIssueKeys()
+    .map((issueKey) => store.loadJob(issueKey, runId))
+    .filter((job) => job !== undefined);
+  if (matches.length !== 1) {
+    process.stderr.write(
+      matches.length === 0
+        ? `No recorded job found for runId ${runId}.\n`
+        : `More than one recorded job matched runId ${runId}; refusing an ambiguous retry.\n`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const job = matches[0];
+  if (!job) return;
+  if (!job.reportingFailed) {
+    process.stdout.write(`Run ${runId} has no failed Jira report.\n`);
+    return;
+  }
+  if (!job.reportingResult) {
+    process.stderr.write(
+      `Run ${runId} predates report snapshots and cannot be retried without re-running it.\n`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const issue = await jira.getIssue(job.issueKey);
+  await reportForResult(jira, config, issue, job, job.reportingResult);
+  store.saveJob(markReportingSucceeded(job));
+  process.stdout.write(`Jira report retried successfully for ${job.issueKey} (${runId}).\n`);
+}
+
 async function runWorktreesPrune(args: string[]): Promise<void> {
   let olderThanDays = 7;
   for (let i = 0; i < args.length; i++) {
@@ -705,6 +758,11 @@ async function main(argv: string[]): Promise<void> {
 
   if (command === "status") {
     await runStatus();
+    return;
+  }
+
+  if (command === "report:retry") {
+    await runReportRetry(rest);
     return;
   }
 

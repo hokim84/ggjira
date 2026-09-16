@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { PlanApplyError, applyPlan } from "../src/pm/apply.js";
+import { PLAN_PROPERTY_KEY, PLAN_TASK_PROPERTY_KEY } from "../src/pm/metadata.js";
 import type { Plan } from "../src/pm/plan.js";
 import {
   claimAgentProfile,
@@ -29,6 +30,81 @@ function basePlan(overrides: Partial<Plan> = {}): Plan {
 }
 
 describe("applyPlan", () => {
+  it("stores versioned plan/task metadata for human distribution", async () => {
+    const jira = new FakeJiraGateway();
+    const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN", statusName: "Planning" });
+    jira.seedIssue(parent);
+    const config = buildTestConfig({
+      configVersion: 4,
+      workflow: {
+        ...buildTestConfig().workflow,
+        planningStatus: "Planning",
+        planningInProgressStatus: "Planning In Progress",
+        planReviewStatus: "Plan Review",
+        executionApprovedStatus: "Execution Approved",
+        taskWaitingStatus: "To Do",
+        implementationStatus: "AI Implementation",
+        inProgressStatus: "In Progress",
+        reviewStatus: "In Review",
+      },
+      distribution: {
+        enabled: true,
+        executionAgentFieldId: "customfield_12345",
+        workspaceId: "workspace-a",
+      },
+    });
+
+    const result = await applyPlan(
+      jira,
+      config,
+      parent,
+      basePlan({
+        tasks: [
+          { taskId: "foundation", title: "Foundation", description: "Build base", acceptance: [] },
+          {
+            taskId: "feature",
+            title: "Feature",
+            description: "Build feature",
+            acceptance: [],
+            dependencies: ["foundation"],
+          },
+        ],
+      }),
+      [],
+      undefined,
+      undefined,
+      "v1",
+    );
+
+    expect(jira.getStoredProperty("KAN-1", PLAN_PROPERTY_KEY)).toEqual({
+      version: "v1",
+      status: "review",
+      taskIds: ["foundation", "feature"],
+    });
+    expect(jira.getStoredProperty(result.createdKeys[0] as string, PLAN_TASK_PROPERTY_KEY)).toEqual(
+      {
+        planVersion: "v1",
+        taskId: "foundation",
+        parentKey: "KAN-1",
+        workspaceId: "workspace-a",
+        dependencies: [],
+      },
+    );
+    expect(jira.getStoredProperty(result.createdKeys[1] as string, PLAN_TASK_PROPERTY_KEY)).toEqual(
+      {
+        planVersion: "v1",
+        taskId: "feature",
+        parentKey: "KAN-1",
+        workspaceId: "workspace-a",
+        dependencies: [result.createdKeys[0]],
+      },
+    );
+    expect((await jira.getIssue(result.createdKeys[1] as string)).description).toContain(
+      result.createdKeys[0],
+    );
+    expect(jira.createdIssues[0]?.assigneeAccountId).toBeUndefined();
+  });
+
   it("creates a subtask per plan task, assigned to the resolved implement identity", async () => {
     const jira = new FakeJiraGateway();
     jira.seedUser(IMPLEMENT_USER);
@@ -79,6 +155,40 @@ describe("applyPlan", () => {
     });
 
     await expect(applyPlan(jira, config, parent, plan, [])).rejects.toBeInstanceOf(PlanApplyError);
+    expect(jira.createdIssues).toHaveLength(0);
+  });
+
+  it("rejects cyclic taskId dependencies before creating partial Jira tasks", async () => {
+    const jira = new FakeJiraGateway();
+    const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN" });
+    jira.seedIssue(parent);
+    const config = buildTestConfig({
+      configVersion: 4,
+      workflow: {
+        ...buildTestConfig().workflow,
+        planningStatus: "Planning",
+        planningInProgressStatus: "Planning In Progress",
+        planReviewStatus: "Plan Review",
+        executionApprovedStatus: "Execution Approved",
+        taskWaitingStatus: "Waiting",
+        implementationStatus: "AI Implementation",
+        inProgressStatus: "In Progress",
+        reviewStatus: "In Review",
+      },
+      distribution: {
+        enabled: true,
+        executionAgentFieldId: "customfield_12345",
+        workspaceId: "workspace-a",
+      },
+    });
+    const plan = basePlan({
+      tasks: [
+        { taskId: "a", title: "A", description: "a", acceptance: [], dependencies: ["b"] },
+        { taskId: "b", title: "B", description: "b", acceptance: [], dependencies: ["a"] },
+      ],
+    });
+
+    await expect(applyPlan(jira, config, parent, plan, [])).rejects.toThrow("dependency cycle");
     expect(jira.createdIssues).toHaveLength(0);
   });
 

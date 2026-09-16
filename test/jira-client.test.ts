@@ -114,6 +114,32 @@ describe("JiraClient", () => {
     ]);
   });
 
+  it("requests and maps the configured execution-agent option by canonical ID", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        issues: [
+          {
+            id: "10000",
+            key: "KAN-1",
+            fields: {
+              summary: "Distributed task",
+              status: { name: "AI Implementation" },
+              customfield_12345: { id: "option-agent-a", value: "Agent A" },
+            },
+          },
+        ],
+        isLast: true,
+      }),
+    );
+    const client = new JiraClient(secrets, { executionAgentFieldId: "customfield_12345" });
+
+    const issues = await client.searchIssues("project = KAN");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string).fields).toContain("customfield_12345");
+    expect(issues[0]?.executionAgentOptionId).toBe("option-agent-a");
+  });
+
   it("getIssue fetches by key and maps fields", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(200, {

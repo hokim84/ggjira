@@ -22,6 +22,8 @@ export interface Job {
   /** True when the job itself finished, but writing the outcome back to Jira failed. */
   reportingFailed?: boolean;
   reportingError?: string;
+  /** Persisted so a Jira-only failure can be retried without re-running the worker. */
+  reportingResult?: ExecutionResult;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<JobStatus> = new Set([
@@ -80,6 +82,11 @@ export function markReportingFailed(job: Job, error: unknown, now: Date = new Da
   };
 }
 
+export function markReportingSucceeded(job: Job, now: Date = new Date()): Job {
+  const { reportingFailed: _failed, reportingError: _error, ...rest } = job;
+  return { ...rest, updatedAt: now.toISOString() };
+}
+
 export function transitionJob(
   job: Job,
   next: JobStatus,
@@ -96,3 +103,4 @@ export function transitionJob(
     updatedAt: now.toISOString(),
   };
 }
+import type { ExecutionResult } from "../agent/result.js";

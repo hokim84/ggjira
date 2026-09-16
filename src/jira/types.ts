@@ -10,6 +10,7 @@ export interface JiraIssue {
   parentKey: string | null;
   projectKey: string | null;
   updatedAt?: string;
+  executionAgentOptionId?: string | null;
 }
 
 export interface JiraTransition {

@@ -29,6 +29,7 @@ export function buildTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       implementAssignee: "ggjira-implement@example.com",
     },
     polling: { intervalMs: 60000 },
+    distribution: { enabled: false },
     ...overrides,
   };
 }

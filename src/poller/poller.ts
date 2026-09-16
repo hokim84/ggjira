@@ -2,6 +2,7 @@ import type { AppConfig } from "../config.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { JobStore } from "../job/store.js";
+import { readPlanTaskMetadata } from "../pm/metadata.js";
 import { AGENT_LABEL, WORKSPACE_LABEL } from "../profile/types.js";
 
 /** GGJIRA's own meta issues carry one of these labels and must never be picked up as work. */
@@ -50,16 +51,34 @@ export async function findAssignedJobs(
   const issues = await jira.searchIssues(buildAssignedJql(config), { maxResults: 50, all: true });
   const claims = store.listClaims();
   const statuses = executableStatuses(config);
-  return issues.filter((issue) => {
+  const locallyEligible = issues.filter((issue) => {
     const executableStatus =
       config.configVersion === 4
         ? statuses.includes(issue.statusName)
         : issue.statusName === config.workflow.readyStatus && issue.assigneeAccountId !== null;
     return (
       executableStatus &&
+      (!config.distribution.enabled ||
+        issue.statusName === config.workflow.planningStatus ||
+        issue.executionAgentOptionId === config.distribution.executionAgentOptionId) &&
       !(issue.key in claims) &&
       (config.configVersion !== 4 || !store.wasHandled(issue)) &&
       !issue.labels.some((label) => META_LABELS.has(label))
     );
   });
+  if (!config.distribution.enabled) return locallyEligible;
+
+  const checked = await Promise.all(
+    locallyEligible.map(async (issue) => {
+      if (issue.statusName === config.workflow.planningStatus) return issue;
+      const metadata = await readPlanTaskMetadata(jira, issue.key);
+      // Manually created implementation issues remain supported. Planned
+      // subtasks, however, are gated by their parent's explicit approval.
+      if (!metadata) return issue;
+      if (metadata.workspaceId !== config.distribution.workspaceId) return null;
+      const parent = await jira.getIssue(metadata.parentKey);
+      return parent.statusName === config.workflow.executionApprovedStatus ? issue : null;
+    }),
+  );
+  return checked.filter((issue): issue is JiraIssue => issue !== null);
 }

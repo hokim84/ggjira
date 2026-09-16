@@ -76,6 +76,7 @@ export class StatusNotReachableError extends Error {
 }
 
 interface RawJiraFields {
+  [fieldId: string]: unknown;
   summary?: string;
   description?: string | null;
   status?: { name?: string };
@@ -139,7 +140,13 @@ interface RawIssuePropertyResponse {
   value: unknown;
 }
 
-function mapRawIssue(raw: RawJiraIssue): JiraIssue {
+function selectedOptionId(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || !("id" in value)) return null;
+  const id = (value as { id?: unknown }).id;
+  return typeof id === "string" ? id : null;
+}
+
+function mapRawIssue(raw: RawJiraIssue, executionAgentFieldId?: string): JiraIssue {
   return {
     key: raw.key,
     id: raw.id,
@@ -151,6 +158,9 @@ function mapRawIssue(raw: RawJiraIssue): JiraIssue {
     issueTypeName: raw.fields.issuetype?.name ?? null,
     parentKey: raw.fields.parent?.key ?? null,
     projectKey: raw.fields.project?.key ?? null,
+    ...(executionAgentFieldId
+      ? { executionAgentOptionId: selectedOptionId(raw.fields[executionAgentFieldId]) }
+      : {}),
     ...(raw.fields.updated ? { updatedAt: raw.fields.updated } : {}),
   };
 }
@@ -200,11 +210,13 @@ export class JiraClient implements JiraGateway {
   private readonly baseUrl: string;
   private readonly authHeader: string;
   private readonly logger: Logger | undefined;
+  private readonly executionAgentFieldId: string | undefined;
 
-  constructor(secrets: JiraSecrets, opts?: { logger?: Logger }) {
+  constructor(secrets: JiraSecrets, opts?: { logger?: Logger; executionAgentFieldId?: string }) {
     this.baseUrl = secrets.baseUrl.replace(/\/+$/, "");
     this.authHeader = `Basic ${Buffer.from(`${secrets.email}:${secrets.apiToken}`).toString("base64")}`;
     this.logger = opts?.logger;
+    this.executionAgentFieldId = opts?.executionAgentFieldId;
   }
 
   private async request<T>(
@@ -259,27 +271,38 @@ export class JiraClient implements JiraGateway {
           this.request<RawSearchResponse>("POST", "/rest/api/2/search/jql", {
             jql,
             maxResults: opts.maxResults ?? 50,
-            fields: opts.fields ?? DEFAULT_FIELDS,
+            fields:
+              opts.fields ??
+              (this.executionAgentFieldId
+                ? [...DEFAULT_FIELDS, this.executionAgentFieldId]
+                : DEFAULT_FIELDS),
             ...(nextPageToken ? { nextPageToken } : {}),
           }),
         { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
       );
-      issues.push(...response.issues.map(mapRawIssue));
+      issues.push(
+        ...response.issues.map((issue) => mapRawIssue(issue, this.executionAgentFieldId)),
+      );
       nextPageToken = opts.all && !response.isLast ? response.nextPageToken : undefined;
     } while (nextPageToken);
     return issues;
   }
 
-  async getIssue(key: string, fields: string[] = DEFAULT_FIELDS): Promise<JiraIssue> {
+  async getIssue(key: string, fields?: string[]): Promise<JiraIssue> {
+    const selectedFields =
+      fields ??
+      (this.executionAgentFieldId
+        ? [...DEFAULT_FIELDS, this.executionAgentFieldId]
+        : DEFAULT_FIELDS);
     const raw = await withRetry(
       () =>
         this.request<RawJiraIssue>(
           "GET",
-          `/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields.join(",")}`,
+          `/rest/api/2/issue/${encodeURIComponent(key)}?fields=${selectedFields.join(",")}`,
         ),
       { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
     );
-    return mapRawIssue(raw);
+    return mapRawIssue(raw, this.executionAgentFieldId);
   }
 
   async addComment(key: string, body: string): Promise<void> {
@@ -422,7 +445,6 @@ export class JiraClient implements JiraGateway {
     if (input.parentKey) fields.parent = { key: input.parentKey };
     if (input.assigneeAccountId) fields.assignee = { accountId: input.assigneeAccountId };
     if (input.labels?.length) fields.labels = input.labels;
-
     const raw = await this.request<RawCreateIssueResponse>("POST", "/rest/api/2/issue", { fields });
     return { key: raw.key };
   }

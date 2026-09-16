@@ -115,6 +115,39 @@ describe("loadAppConfig", () => {
     const result = AppConfigSchema.safeParse(raw);
     expect(result.success).toBe(false);
   });
+
+  it("normalizes a numeric execution-agent field ID and reports invalid display names clearly", () => {
+    const raw = JSON.parse(readFileSync("test/fixtures/valid-config-v3-profile.json", "utf-8"));
+    raw.configVersion = 4;
+    raw.agent.role = "implement";
+    raw.workflow = {
+      implementationStatus: "Implementation",
+      inProgressStatus: "In Progress",
+      reviewStatus: "Review",
+      planningStatus: "Planning",
+      planningInProgressStatus: "Planning In Progress",
+      planReviewStatus: "Plan Review",
+      executionApprovedStatus: "Execution Approved",
+      taskWaitingStatus: "Waiting",
+    };
+    raw.distribution = {
+      enabled: true,
+      executionAgentFieldId: "12345",
+      executionAgentOptionId: "agent-a",
+      workspaceId: "workspace-a",
+    };
+
+    const numeric = AppConfigSchema.safeParse(raw);
+    expect(numeric.success && numeric.data.distribution.executionAgentFieldId).toBe(
+      "customfield_12345",
+    );
+
+    raw.distribution.executionAgentFieldId = "Execution Agent";
+    const invalid = AppConfigSchema.safeParse(raw);
+    expect(invalid.success).toBe(false);
+    expect(invalid.success || invalid.error.issues).toHaveLength(1);
+    expect(invalid.success || invalid.error.issues[0]?.message).toContain("numeric ID");
+  });
 });
 
 describe("loadJiraSecretsFromEnv", () => {

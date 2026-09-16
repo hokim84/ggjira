@@ -50,6 +50,26 @@ const WorkflowConfigSchema = z.object({
     .min(1)
     .optional()
     .transform((s) => (s ? nfc(s) : s)),
+  planningInProgressStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
+  planReviewStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
+  executionApprovedStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
+  taskWaitingStatus: z
+    .string()
+    .min(1)
+    .optional()
+    .transform((s) => (s ? nfc(s) : s)),
   implementationStatus: z
     .string()
     .min(1)
@@ -156,6 +176,20 @@ const PollingConfigSchema = z.object({
   intervalMs: z.number().int().positive().default(60000),
 });
 
+const DistributionConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    executionAgentFieldId: z
+      .string()
+      .trim()
+      .min(1)
+      .transform((value) => (/^\d+$/.test(value) ? `customfield_${value}` : value))
+      .optional(),
+    executionAgentOptionId: z.string().min(1).optional(),
+    workspaceId: z.string().min(1).optional(),
+  })
+  .default({ enabled: false });
+
 export const AppConfigSchema = z
   .object({
     /** Absent or 2 = the pre-Agent-Profile config shape ("legacy mode"). 3 = profile-capable. */
@@ -167,6 +201,7 @@ export const AppConfigSchema = z
     provider: ProviderConfigSchema.default({}),
     pm: PmConfigSchema.default({}),
     polling: PollingConfigSchema.default({ intervalMs: 60000 }),
+    distribution: DistributionConfigSchema,
   })
   .superRefine((config, ctx) => {
     // v4 drives every Jira move from a board status, so the three statuses of
@@ -182,6 +217,62 @@ export const AppConfigSchema = z
           path: ["workflow", field],
           message: `workflow.${field} is required — run "ggjira setup" to pick your project's Jira statuses`,
         });
+      }
+      if (config.distribution.enabled) {
+        const distributionStatusFields = [
+          "implementationStatus",
+          "inProgressStatus",
+          "reviewStatus",
+          "planningStatus",
+          "planningInProgressStatus",
+          "planReviewStatus",
+          "executionApprovedStatus",
+          "taskWaitingStatus",
+        ] as const;
+        for (const field of distributionStatusFields) {
+          if (config.workflow[field]) continue;
+          ctx.addIssue({
+            code: "custom",
+            path: ["workflow", field],
+            message: `workflow.${field} is required when human distribution is enabled`,
+          });
+        }
+        const configuredStatuses = distributionStatusFields
+          .map((field) => config.workflow[field])
+          .filter((status): status is string => Boolean(status));
+        if (new Set(configuredStatuses).size !== configuredStatuses.length) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["workflow"],
+            message: "human distribution workflow statuses must all be different",
+          });
+        }
+        for (const field of ["executionAgentFieldId", "workspaceId"] as const) {
+          if (config.distribution[field]) continue;
+          ctx.addIssue({
+            code: "custom",
+            path: ["distribution", field],
+            message: `distribution.${field} is required when human distribution is enabled`,
+          });
+        }
+        if (
+          config.distribution.executionAgentFieldId &&
+          !/^customfield_\d+$/.test(config.distribution.executionAgentFieldId)
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["distribution", "executionAgentFieldId"],
+            message:
+              'Enter the Jira custom field ID as "customfield_12345" or just its numeric ID "12345"; the field display name is not accepted',
+          });
+        }
+        if (config.agent.role === "implement" && !config.distribution.executionAgentOptionId) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["distribution", "executionAgentOptionId"],
+            message: "distribution.executionAgentOptionId is required for implement agents",
+          });
+        }
       }
     }
     if (config.agent.role !== "pm") return;
