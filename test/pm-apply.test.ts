@@ -221,6 +221,106 @@ describe("applyPlan", () => {
     ]);
   });
 
+  function buildDistributionConfig() {
+    return buildTestConfig({
+      configVersion: 4,
+      workflow: {
+        ...buildTestConfig().workflow,
+        planningStatus: "Planning",
+        planningInProgressStatus: "Planning In Progress",
+        planReviewStatus: "Plan Review",
+        executionApprovedStatus: "Execution Approved",
+        taskWaitingStatus: "Waiting for Assignment",
+        implementationStatus: "AI Implementation",
+        inProgressStatus: "In Progress",
+        reviewStatus: "In Review",
+      },
+      distribution: {
+        enabled: true,
+        executionAgentFieldId: "customfield_12345",
+        workspaceId: "workspace-a",
+      },
+    });
+  }
+
+  it("supersedes a dropped subtask sitting at taskWaitingStatus, even though it never reached workflow.readyStatus", async () => {
+    const jira = new FakeJiraGateway();
+    const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN", statusName: "Planning" });
+    jira.seedIssue(parent);
+    // Distribution mode parks a fresh task at taskWaitingStatus ("Waiting for Assignment"), never
+    // workflow.readyStatus ("To Do") -- a supersede check pinned to readyStatus would never fire.
+    const waitingStale = buildTestIssue({
+      key: "KAN-2",
+      parentKey: "KAN-1",
+      statusName: "Waiting for Assignment",
+    });
+    const inProgress = buildTestIssue({
+      key: "KAN-3",
+      parentKey: "KAN-1",
+      statusName: "In Progress",
+    });
+    jira.seedIssue(waitingStale);
+    jira.seedIssue(inProgress);
+    const config = buildDistributionConfig();
+    const plan = basePlan({ tasks: [], needsDecision: false, keepTaskKeys: [] });
+
+    const result = await applyPlan(jira, config, parent, plan, [waitingStale, inProgress]);
+
+    expect(result.supersededKeys).toEqual(["KAN-2"]);
+  });
+
+  it("re-stamps a kept task's plan-task metadata to the new planVersion on replan", async () => {
+    const jira = new FakeJiraGateway();
+    const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN", statusName: "Planning" });
+    jira.seedIssue(parent);
+    const kept = buildTestIssue({
+      key: "KAN-2",
+      parentKey: "KAN-1",
+      statusName: "Waiting for Assignment",
+    });
+    jira.seedIssue(kept);
+    await jira.setIssueProperty(kept.key, PLAN_TASK_PROPERTY_KEY, {
+      planVersion: "v1",
+      taskId: "foundation",
+      parentKey: "KAN-1",
+      workspaceId: "workspace-a",
+      dependencies: [],
+    });
+    // taskWaitingStatus matches FakeJiraGateway's default creation status ("To Do") so the newly
+    // created "feature" task doesn't need a seeded transition -- unrelated to what this test
+    // covers (the *kept* task's metadata, not the new task's post-creation transition).
+    const config = buildDistributionConfig();
+    config.workflow.taskWaitingStatus = "To Do";
+    const plan = basePlan({
+      tasks: [
+        {
+          taskId: "feature",
+          title: "Feature",
+          description: "Build feature",
+          acceptance: [],
+          dependencies: ["KAN-2"],
+        },
+      ],
+      keepTaskKeys: ["KAN-2"],
+    });
+
+    await applyPlan(jira, config, parent, plan, [kept], undefined, undefined, "v2");
+
+    // Left at "v1", KAN-2 would fail its version check at execution time against the parent's
+    // new "v2" plan property (agent/runtime.ts), even though the board still shows it approved.
+    expect(jira.getStoredProperty("KAN-2", PLAN_TASK_PROPERTY_KEY)).toEqual({
+      planVersion: "v2",
+      taskId: "foundation",
+      parentKey: "KAN-1",
+      workspaceId: "workspace-a",
+      dependencies: [],
+    });
+    expect(jira.getStoredProperty("KAN-1", PLAN_PROPERTY_KEY)).toMatchObject({
+      version: "v2",
+      taskIds: expect.arrayContaining(["feature", "foundation"]),
+    });
+  });
+
   it("throws PlanApplyError when pm.implementAssignee matches no Jira user", async () => {
     const jira = new FakeJiraGateway();
     const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN" });

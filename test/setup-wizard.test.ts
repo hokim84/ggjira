@@ -1,7 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeJiraGateway } from "../src/jira/fake.js";
 import { runSetupWizard } from "../src/setup/wizard.js";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -244,6 +245,92 @@ describe("runSetupWizard", () => {
       await runSetupWizard({ check: true, cwd, print: (l) => lines.push(l) });
       expect(lines.some((l) => l.startsWith("config: FAILED"))).toBe(true);
       expect(process.exitCode).toBe(1);
+      process.exitCode = 0;
+    });
+
+    function writeDistributionConfig(executionAgentFieldId: string): void {
+      writeFileSync(path.join(cwd, ".env"), "JIRA_EMAIL=a@b.com\nJIRA_API_TOKEN=secret-token\n");
+      writeFileSync(
+        path.join(cwd, "ggjira.config.json"),
+        JSON.stringify({
+          configVersion: 4,
+          jira: { baseUrl: "https://example.atlassian.net", projectKey: "KAN" },
+          agent: { identity: "impl-1", role: "implement", machine: "test-machine" },
+          workflow: {
+            implementationStatus: "AI Implementation",
+            inProgressStatus: "In Progress",
+            reviewStatus: "In Review",
+            planningStatus: "AI Planning",
+            planningInProgressStatus: "AI Planning In Progress",
+            planReviewStatus: "Plan Review",
+            executionApprovedStatus: "Execution Approved",
+            taskWaitingStatus: "Waiting",
+          },
+          workspace: { path: cwd, baseBranch: "main" },
+          provider: { type: "claude-code", command: "claude" },
+          distribution: {
+            enabled: true,
+            executionAgentFieldId,
+            workspaceId: "workspace-a",
+            executionAgentOptionId: "agent-a",
+          },
+        }),
+      );
+    }
+
+    it("reports FAILED when the configured execution-agent field ID doesn't exist in Jira", async () => {
+      writeDistributionConfig("customfield_99999");
+      const jira = new FakeJiraGateway();
+      jira.seedProjectStatuses("KAN", [
+        "AI Implementation",
+        "In Progress",
+        "In Review",
+        "AI Planning",
+        "AI Planning In Progress",
+        "Plan Review",
+        "Execution Approved",
+        "Waiting",
+      ]);
+      jira.seedFields([{ id: "customfield_12345", name: "Execution Agent" }]);
+
+      await runSetupWizard({
+        check: true,
+        cwd,
+        createJira: () => jira,
+        print: (l) => lines.push(l),
+      });
+
+      expect(lines.some((l) => l.startsWith("execution agent field: FAILED"))).toBe(true);
+      expect(process.exitCode).toBe(1);
+      process.exitCode = 0;
+    });
+
+    it("reports OK when the configured execution-agent field ID exists in Jira", async () => {
+      writeDistributionConfig("customfield_12345");
+      const jira = new FakeJiraGateway();
+      jira.seedProjectStatuses("KAN", [
+        "AI Implementation",
+        "In Progress",
+        "In Review",
+        "AI Planning",
+        "AI Planning In Progress",
+        "Plan Review",
+        "Execution Approved",
+        "Waiting",
+      ]);
+      jira.seedFields([{ id: "customfield_12345", name: "Execution Agent" }]);
+
+      await runSetupWizard({
+        check: true,
+        cwd,
+        createJira: () => jira,
+        print: (l) => lines.push(l),
+      });
+
+      expect(lines.some((l) => l.startsWith("execution agent field: OK"))).toBe(true);
+      // The option ID within that field is never verified automatically (no field-context
+      // lookup was added just for this check) -- the check must say so, not claim OK.
+      expect(lines.some((l) => l.startsWith("execution agent option: not verified"))).toBe(true);
       process.exitCode = 0;
     });
   });

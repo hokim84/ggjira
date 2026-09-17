@@ -9,7 +9,7 @@ import {
   findAgentProfileById,
 } from "../profile/profile.js";
 import type { AgentProfile, WorkspaceConfig } from "../profile/types.js";
-import { PLAN_PROPERTY_KEY, PLAN_TASK_PROPERTY_KEY } from "./metadata.js";
+import { PLAN_PROPERTY_KEY, PLAN_TASK_PROPERTY_KEY, readPlanTaskMetadata } from "./metadata.js";
 import type { Plan, PlanTaskSchema } from "./plan.js";
 
 const SUPERSEDED_LABEL = "ggjira-superseded";
@@ -101,6 +101,28 @@ function validateTaskGraph(tasks: Array<z.infer<typeof PlanTaskSchema>>, taskIds
     visited.add(taskId);
   };
   for (const taskId of taskIds) visit(taskId);
+}
+
+/**
+ * Whether an existing subtask is still untouched and safe to supersede on a replan. In v2/legacy
+ * mode a fresh task always sits at `workflow.readyStatus`, so equality is exact. In v4 mode a
+ * fresh task can land in any of several "not yet claimed" statuses depending on setup
+ * (`implementationStatus`, `taskWaitingStatus`, or wherever `pm.taskReadyTransitionName` happens
+ * to lead) -- so instead of matching one fixed "ready" status, treat anything that hasn't reached
+ * in-progress/review/done/plan-review as still pending.
+ */
+function isStillPending(config: AppConfig, task: JiraIssue): boolean {
+  if (config.configVersion !== 4) return task.statusName === config.workflow.readyStatus;
+  const startedStatuses = new Set(
+    [
+      config.workflow.inProgressStatus,
+      config.workflow.reviewStatus,
+      config.workflow.completionStatus,
+      config.workflow.planningInProgressStatus,
+      config.workflow.planReviewStatus,
+    ].filter((status): status is string => Boolean(status)),
+  );
+  return !startedStatuses.has(task.statusName);
 }
 
 const PLAN_START = "{noformat}[GGJIRA:PLAN:START]{noformat}";
@@ -219,9 +241,32 @@ export async function applyPlan(
         planVersion,
         taskId,
         parentKey: parent.key,
-        workspaceId: config.distribution.workspaceId ?? config.workspace.path,
+        // config.ts's superRefine requires distribution.workspaceId whenever distribution is
+        // enabled, so this branch never sees it unset; falling back to workspace.path (a local
+        // git worktree path, unrelated to the shared distribution workspace ID) would be wrong.
+        workspaceId: config.distribution.workspaceId,
         dependencies,
       });
+    }
+  }
+
+  const keep = new Set(plan.keepTaskKeys);
+  const keptTaskIds: string[] = [];
+  if (config.distribution.enabled) {
+    // A kept task's own ggjira.plan-task property still names the previous planVersion. Left
+    // alone, the parent's plan property below moves to the new version and every kept task
+    // then fails its version check at execution time (looks approved on the board, but the
+    // runtime rejects it as "no longer matches the current parent plan"). Re-stamp it to the
+    // new version so a replan that keeps a task doesn't strand it.
+    for (const keptKey of keep) {
+      const existing = await readPlanTaskMetadata(jira, keptKey);
+      if (!existing) continue; // not a plan-tracked task (e.g. created manually) -- leave as is
+      await jira.setIssueProperty(keptKey, PLAN_TASK_PROPERTY_KEY, {
+        ...existing,
+        planVersion,
+        parentKey: parent.key,
+      });
+      keptTaskIds.push(existing.taskId);
     }
   }
 
@@ -229,16 +274,15 @@ export async function applyPlan(
     await jira.setIssueProperty(parent.key, PLAN_PROPERTY_KEY, {
       version: planVersion,
       status: "review",
-      taskIds,
+      taskIds: [...taskIds, ...keptTaskIds],
       ...(decisionId ? { decisionId } : {}),
     });
   }
 
-  const keep = new Set(plan.keepTaskKeys);
   const supersededKeys: string[] = [];
   for (const task of existingSubtasks) {
     if (keep.has(task.key)) continue;
-    if (task.statusName !== config.workflow.readyStatus) continue;
+    if (!isStillPending(config, task)) continue;
     if (config.configVersion !== 4) await jira.assignIssue(task.key, null);
     await jira.addLabel(task.key, SUPERSEDED_LABEL);
     await jira.addComment(task.key, "Superseded by a replan of the parent issue.");

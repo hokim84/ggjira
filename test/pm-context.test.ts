@@ -80,6 +80,23 @@ describe("findHumanDecision", () => {
 
     expect(decision).toMatchObject({ optionId: "B", decisionId: "d1", planVersion: "v1" });
   });
+
+  it("accepts a plain 'Decision: X' reply with no decisionId line, even when the request has one", () => {
+    // The human-facing instructions never ask for a decisionId line (pm/prompt.ts) -- a real
+    // reply won't have one, and it's already scoped to comments after the latest request, so
+    // nothing else could be answering.
+    const comments = [
+      comment({
+        body: `${DECISION_REQUEST_MARKER}\nplanVersion: v1\ndecisionId: d1`,
+        authorAccountId: SELF,
+      }),
+      comment({ body: "Decision: A", authorAccountId: "human-1" }),
+    ];
+
+    const decision = findHumanDecision(comments, SELF);
+
+    expect(decision).toMatchObject({ optionId: "A", decisionId: "d1", planVersion: "v1" });
+  });
 });
 
 describe("buildPlanningContext", () => {

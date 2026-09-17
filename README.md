@@ -58,21 +58,26 @@ GGJIRA Setup
   1) Create GGJira Workspace   -- 이 프로젝트에서 처음 실행하는 PM 머신
   2) Join as Agent             -- 이미 만들어진 Agent Profile로 이 머신을 등록
   3) Manual setup (legacy)     -- Agent Profile 없이 모든 값을 직접 입력
-  4) Polling & statuses only   -- keep the rest of an existing setup
-  5) PM approval & distribution -- human approval and execution-agent routing
+  4) Polling & statuses only   -- 기존 설정 중 폴링 주기와 상태만 다시 설정
+  5) PM approval & distribution -- 사람의 계획 승인과 실행 Agent 지정 기능 설정
 ```
 
-### Human-approved PM distribution
+### Human-approved PM distribution (사람 승인 기반 배포)
 
-Choose setup option 5 on each machine after the normal Create/Join setup. The PM creates
-reviewable subtasks first and moves the parent to the configured plan-review status. A human then
-reviews the plan, selects an execution agent in a Jira single-select custom field, moves each chosen
-task to `workflow.implementationStatus`, and moves the parent to
-`workflow.executionApprovedStatus`. Assignee remains the human owner.
+일반 Create/Join 설정이 끝난 뒤, 각 머신에서 5번을 선택해 이 기능을 켠다. PM은 먼저
+검토 가능한 하위 이슈를 만들고 부모를 설정된 plan-review 상태로 옮긴다. 그 다음 사람이
+계획을 검토해 Jira의 single-select 커스텀 필드에서 실행 Agent를 고르고, 선택한 각
+하위 이슈를 `workflow.implementationStatus`로, 부모를 `workflow.executionApprovedStatus`로
+옮긴다. Assignee는 그대로 사람 책임자로 남는다.
 
-Use Jira's canonical custom-field and option IDs (`customfield_12345` and the option `id`), not
-display labels. Each implement machine stores its own option ID. Generated tasks carry versioned
-`ggjira.plan-task` metadata; a worker skips tasks for another workspace or an unapproved parent.
+커스텀 필드/옵션은 화면에 보이는 이름이 아니라 Jira의 실제 ID(`customfield_12345`와
+옵션의 `id`)를 쓴다. 이 옵션 ID는 머신마다 로컬에 따로 저장한다 — 공유
+`[GGJIRA] Workspace Configuration` 이슈에는 상태 이름·필드 ID·workspace ID만 함께
+기록되고, 이 값은 기록되지 않는다(Join 시 implement 역할에만 새로 물어본다). 생성된
+하위 이슈에는 버전이 붙은 `ggjira.plan-task` 메타데이터가 함께 저장되며, worker는
+다른 workspace의 작업이거나 부모가 아직 승인되지 않은 작업을 건너뛴다. 세부 규칙은
+[`docs/architecture.md`](./docs/architecture.md)의 "Human-approved PM 배포"와
+[ADR 0016](./docs/decisions/0016-human-approved-distribution-metadata.md)을 참고한다.
 
 ### 첫 머신: Create GGJira Workspace
 

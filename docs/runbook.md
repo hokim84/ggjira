@@ -149,9 +149,11 @@ npm run dev -- worktrees:prune --olderThanDays 3   # 임계값 직접 지정
   않는다. Jira 댓글에서 `[GGJIRA:DECISION-REQUEST]`로 시작하는 댓글을 찾아 안내된 형식(
   `Decision: <option id>`)으로 답한 뒤, 이슈 상태를 `workflow.readyStatus`(기본 "To Do")로
   직접 되돌린다 — PM은 상태를 대신 되돌려주지 않는다.
-- **Replan 후 이전 하위 이슈가 남아있음**: 아직 시작하지 않은(=`workflow.readyStatus`) 하위
-  이슈만 `ggjira-superseded` 라벨이 붙고 할당 해제된다. 이미 진행 중이거나 완료된 하위
-  이슈는 자동으로 건드리지 않으므로, 필요하면 사람이 직접 정리한다.
+- **Replan 후 이전 하위 이슈가 남아있음**: 아직 시작하지 않은 하위 이슈만
+  `ggjira-superseded` 라벨이 붙고 할당 해제된다("아직 시작 안 함"의 정의는
+  architecture.md §"Plan Mode (pm 역할)" 참고 — legacy는 `workflow.readyStatus`,
+  v4는 in-progress/review/done/plan-review 어디에도 없는 상태). 이미 진행 중이거나
+  완료된 하위 이슈는 자동으로 건드리지 않으므로, 필요하면 사람이 직접 정리한다.
 - **plan 파싱 실패**: `job.json.error`가 `"failed to parse plan output"`이면 provider가
   반환한 텍스트가 `pm/plan.ts`의 `PlanSchema`(JSON Schema로 요청한 형태)와 맞지 않은 것이다.
   `worker.jsonl`에서 provider의 원문 출력을 확인한다. Claude Code는 `--json-schema`를 그대로
@@ -241,10 +243,41 @@ npm run dev -- worktrees:prune --olderThanDays 3   # 임계값 직접 지정
   것을 쓰고 경고 로그를 남긴다 — 정상적으로는 발생하지 않아야 하며(생성 전에 항상
   먼저 검색한다), 발생했다면 나머지는 사람이 직접 정리(예: 라벨 제거 또는 삭제)한다.
 
-## Retry a failed Jira report
+## 11. Human-approved 배포에서 하위 이슈가 실행되지 않을 때
 
-After fixing the Jira workflow or connectivity problem, run
-`ggjira report:retry <RUN-ID>`. This retries only the saved Jira report; it does not rerun the
-worker. Report comments carry an idempotency marker, so a transition-only retry does not duplicate
-the already-written comment. Jobs from older versions without `reportingResult` require manual
-recovery.
+`config.distribution.enabled`가 true인 설정에서만 해당한다(architecture.md §"Human-approved
+PM 배포"). `job.json.error`의 문구로 원인을 좁힌다.
+
+- **"AI implementation assignment was withdrawn before execution" (cancelled)**: 이 하위
+  이슈의 실행-Agent 필드 선택값이 이 머신의 `distribution.executionAgentOptionId`와
+  다르다 — 사람이 다른 Agent를 선택했거나 아직 선택하지 않은 상태다. 실행할 머신을 다시
+  확인하거나, Jira에서 필드 선택값을 이 머신의 옵션으로 바꾼다.
+- **"This task belongs to a different workspace" (failed)**: `ggjira.plan-task.workspaceId`가
+  이 머신의 `distribution.workspaceId`와 다르다. 서로 다른 프로젝트/환경의 config를 같은
+  Jira 프로젝트에 잘못 연결했을 가능성이 크다.
+- **"The parent plan is not approved for execution" (cancelled)**: 부모 이슈가 아직
+  `workflow.executionApprovedStatus`가 아니다 — 사람이 계획을 검토해 부모를 그 상태로
+  옮겨야 한다.
+- **"The task no longer matches the current parent plan" (failed)**: 부모의
+  `ggjira.plan.version`과 이 하위 이슈의 `ggjira.plan-task.planVersion`이 다르다.
+  보통 재계획이 일어났는데 이 하위 이슈가 `keepTaskKeys`에 없었거나(=의도적으로
+  superseded 대상), 또는 재계획 자체가 옛 GGJIRA 버전(ADR 0016 이전)으로 실행돼
+  `keepTaskKeys`의 재기록 로직이 없었던 경우다. 최신 버전으로 다시 재계획하거나, 이
+  하위 이슈를 사람이 직접 정리한다.
+- **"This task's plan metadata is corrupted and could not be verified" (failed)**: 이
+  이슈의 `ggjira.plan-task` issue property가 존재하지만 예상 스키마와 맞지 않는다(수동
+  편집 등). `GET /rest/api/2/issue/{key}/properties/ggjira.plan-task`로 실제 값을 확인해
+  사람이 직접 고치거나, 이슈를 삭제 후 재계획으로 다시 만든다. 폴러는 이 이슈 하나만
+  제외하고 다른 후보는 계속 폴링한다(`layer:"poller"`의 경고 로그 참고).
+- **`ggjira setup --check`의 "execution agent field: FAILED"**: `distribution.executionAgentFieldId`가
+  가리키는 커스텀 필드가 이 Jira 사이트에 없다 — Jira 관리자 화면에서 필드 ID를 다시
+  확인한다(`GET /rest/api/2/field`로 직접 조회 가능). "execution agent option: not
+  verified automatically"는 실패가 아니라, 그 필드 안에 그 옵션이 실제로 있는지는 자동
+  확인 대상이 아니라는 안내다 — Jira 관리자 화면에서 직접 확인한다.
+
+## 12. 실패한 Jira 보고 재시도
+
+Jira workflow나 연결 문제를 고친 뒤 `ggjira report:retry <RUN-ID>`를 실행한다. 이미
+저장된 Jira 보고(댓글/전이)만 다시 시도하며, worker를 재실행하지 않는다. 보고 댓글에는
+멱등성 마커가 붙어 있어 전이만 재시도해도 이미 남긴 댓글이 중복되지 않는다. `reportingResult`가
+없는 옛 버전의 job은 수동으로 복구해야 한다.

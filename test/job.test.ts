@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { InvalidJobTransitionError, createJob, transitionJob } from "../src/job/job.js";
+import {
+  InvalidJobTransitionError,
+  createJob,
+  markReportingFailed,
+  markReportingSucceeded,
+  transitionJob,
+} from "../src/job/job.js";
 
 describe("job state machine", () => {
   it("creates a job in the queued status", () => {
@@ -66,5 +72,27 @@ describe("job state machine", () => {
     job = transitionJob(job, "running");
 
     expect(() => transitionJob(job, "claimed")).toThrow(InvalidJobTransitionError);
+  });
+
+  it("markReportingSucceeded clears a prior reportingFailed/reportingError flag (ggjira report:retry)", () => {
+    let job = createJob("KAN-1", "run-1", new Date("2026-01-01T00:00:00.000Z"));
+    job = transitionJob(job, "claimed");
+    job = transitionJob(job, "running");
+    job = transitionJob(job, "succeeded", { summary: "did the thing" });
+    job = markReportingFailed(
+      job,
+      new Error("Jira was down"),
+      new Date("2026-01-01T00:00:01.000Z"),
+    );
+    expect(job.reportingFailed).toBe(true);
+    expect(job.reportingError).toBe("Jira was down");
+
+    const retried = markReportingSucceeded(job, new Date("2026-01-01T00:00:02.000Z"));
+
+    expect(retried.reportingFailed).toBeUndefined();
+    expect(retried.reportingError).toBeUndefined();
+    expect(retried.status).toBe("succeeded");
+    expect(retried.summary).toBe("did the thing");
+    expect(retried.updatedAt).toBe("2026-01-01T00:00:02.000Z");
   });
 });

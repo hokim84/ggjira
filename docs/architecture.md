@@ -179,11 +179,75 @@ JSON Schema 출력(`pm/plan.ts`의 `PLAN_JSON_SCHEMA`)을 요청한다. `needsDe
 함께 댓글로 남기고 `Needs Decision`으로 전이한다.
 
 인간이 `Decision: <id>` 형식(또는 자유 텍스트)으로 댓글을 남기고 이슈를 다시
-`workflow.readyStatus`로 되돌리면, 다음 사이클에서 PM이 재발견한다. `pm/context.ts`의
-`findHumanDecision`이 가장 최근 DECISION-REQUEST 이후 사람(자기 자신이 아닌)의 첫 댓글을
-찾아 replan 프롬프트에 포함시킨다. `pm/apply.ts`는 이전 계획 중 `keepTaskKeys`에 없고 아직
-`readyStatus`인(= 아직 시작 안 한) 하위 이슈만 `ggjira-superseded` 라벨을 붙이고 할당
-해제한다 — 진행 중이거나 완료된 작업은 건드리지 않는다.
+`workflow.readyStatus`(v4는 `workflow.planningStatus`)로 되돌리면, 다음 사이클에서 PM이
+재발견한다. `pm/context.ts`의 `findHumanDecision`이 가장 최근 DECISION-REQUEST 이후
+사람(자기 자신이 아닌, 또는 자신과 같은 계정을 쓰는 human owner)의 첫 댓글을 찾아 replan
+프롬프트에 포함시킨다. 요청 댓글에 `decisionId:` 줄이 있어도 사람이 그대로 옮겨 적을
+필요는 없다 — 응답에 `decisionId`가 아예 없으면(실제 사람 답장의 기본형) 최신 요청에 대한
+답으로 받아들이고, 응답에 **다른** `decisionId`가 명시된 경우만 오래된 요청에 대한 응답으로
+보고 무시한다.
+
+`pm/apply.ts`는 이전 계획 중 `keepTaskKeys`에 없고 아직 시작 안 한 하위 이슈만
+`ggjira-superseded` 라벨을 붙이고 할당 해제한다 — 진행 중이거나 완료된 작업은 건드리지
+않는다. "아직 시작 안 했다"의 판정은 config 모드에 따라 다르다: legacy(v2)는
+`workflow.readyStatus`와 정확히 일치하는지로 보고, v4는 반대로 `inProgressStatus` /
+`reviewStatus` / `completionStatus` / `planningInProgressStatus` / `planReviewStatus`
+중 어디에도 해당하지 않으면 아직 시작 안 한 것으로 본다 — v4에서 새 하위 이슈가 실제로
+멈춰 있는 상태(`implementationStatus`, `taskWaitingStatus`, 또는 `pm.taskReadyTransitionName`이
+이끄는 임의의 상태)가 설정마다 다르기 때문에, 하나의 고정된 "ready" 상태와 비교하는 방식은
+쓸 수 없다.
+
+## Human-approved PM 배포 (Distribution)
+
+`config.distribution.enabled`가 true면 PM이 만든 하위 이슈를 Implement Agent가 곧바로
+집어가지 않고, 사람이 계획을 검토하고 실행 Agent를 지정한 뒤에만 실행되도록 한 단계를
+더 강제한다(`GGJira_Phase2_Implementation_Plan.md`, `docs/decisions/0016-*.md`). 관여하는
+Jira 상태:
+
+```
+planningStatus → (PM claim) → planningInProgressStatus → (계획 완료) → planReviewStatus
+                                                                            ↓ (사람 검토)
+                                                              executionApprovedStatus (부모)
+                                                                            ↓
+implementationStatus (하위 이슈, taskWaitingStatus에서 사람이 이동) → inProgressStatus → reviewStatus
+```
+
+**메타데이터 (issue property, Jira Workflow는 건드리지 않음)**:
+
+- 부모 이슈의 `ggjira.plan` — `{ version, status, taskIds, decisionId? }`. `version`은
+  `applyPlan`을 호출할 때마다 새로 발급되는 문자열(보통 `job.runId`)이고, 재계획 때마다
+  갱신된다.
+- 각 하위 이슈의 `ggjira.plan-task` — `{ planVersion, taskId, parentKey, workspaceId,
+  dependencies }`. `dependencies`는 계획 내부 참조(taskId)가 실제 생성된 Jira 키로 치환된
+  배열이다.
+
+**승인 게이트는 부모의 Jira status 하나뿐**이다 — `ggjira.plan.status` 필드는 PM이 재계획
+때 `"review"`로 쓰지만, 실행 시점에 `"approved"`로 다시 쓰지 않는다(과거에는 Implement
+Agent가 실행 직전에 이 필드를 덮어썼으나, 같은 계획의 형제 태스크를 여러 머신이 동시에
+집어가면 이 공유 쓰기가 경합했다 — 승인 여부는 이미 부모 status
+(`executionApprovedStatus`)로 판별되므로 제거했다). `poller.ts`와
+`agent/runtime.ts`의 dispatch 핸들러 양쪽에서, 하위 이슈를 실행하기 전에 다음을 모두
+확인한다: (1) 이슈의 실행-Agent 필드 선택값이 이 머신의 `distribution.executionAgentOptionId`와
+일치, (2) `ggjira.plan-task.workspaceId`가 이 workspace와 일치, (3) 부모가
+`executionApprovedStatus`, (4) 부모의 `ggjira.plan.version` == 하위 이슈의
+`planVersion`. 재계획으로 `keepTaskKeys`에 남은 하위 이슈는 `applyPlan`이 그 자리에서
+`planVersion`을 새 값으로 재기록한다 — 하지 않으면 부모만 새 버전으로 넘어가고 유지된
+하위 이슈는 (4)에서 영원히 실패한다.
+
+`ggjira.plan-task` property가 **존재하지만 스키마와 맞지 않으면**(수동 편집 등으로 깨진
+경우) `readPlanTaskMetadata`는 `PlanMetadataError`를 던진다 — property가 아예 없는 경우
+(수동으로 만든, 배포 대상이 아닌 이슈)와 구분해야, 깨진 데이터를 "게이팅 없음"으로 착각해
+승인 없이 실행하는 사고를 막을 수 있다. `poller.ts`는 이 에러를 해당 이슈 하나만 후보에서
+제외하고 다음 사이클에 재시도하며, 다른 이슈의 폴링은 막지 않는다.
+
+**Setup 전파**: `ggjira setup`의 5번(`PM approval & distribution`)이 입력받은 8개 상태 +
+`executionAgentFieldId` + `workspaceId`는 `[GGJIRA] Workspace Configuration` 이슈에도
+함께 기록된다(`profile/workspace.ts`의 "Distribution" 섹션) — 여러 머신이 각자 상태
+이름을 다르게 입력해 어긋나는 사고(ADR 0015가 기본 3개 상태에 대해 고친 것과 같은 종류)를
+막기 위해서다. `executionAgentOptionId`만은 예외로, 이 필드는 "이 머신이 실행-Agent
+필드에서 어떤 옵션인지"를 가리키므로 절대 공유 이슈에 쓰지 않고 머신마다 로컬 config에만
+둔다(README §Human-approved PM distribution) — Join 흐름은 workspace 쪽 Distribution이
+활성화돼 있으면 role이 implement인 새 머신에게만 이 값을 물어본다.
 
 ## Provider 경계
 

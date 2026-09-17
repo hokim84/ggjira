@@ -4,7 +4,7 @@ import type { Logger } from "../logger.js";
 import { getItems, getScalar, parseSections, renderSections } from "./description.js";
 import { PRESETS } from "./presets.js";
 import { WORKSPACE_LABEL } from "./types.js";
-import type { WorkspaceConfig, WorkspaceConfigInput } from "./types.js";
+import type { WorkspaceConfig, WorkspaceConfigInput, WorkspaceDistribution } from "./types.js";
 
 export const WORKSPACE_SUMMARY = "[GGJIRA] Workspace Configuration";
 
@@ -14,10 +14,24 @@ function resolveProjectPolicy(items: string[]): string[] {
   return items.length ? items : [DEFAULT_PROJECT_POLICY_PLACEHOLDER];
 }
 
+/** Parses the "Distribution" section, if present -- unset entirely on workspaces that never ran setup option 5. */
+function parseDistribution(
+  sections: ReturnType<typeof parseSections>,
+): WorkspaceDistribution | undefined {
+  const enabledRaw = getScalar(sections, "Distribution", "Enabled");
+  if (enabledRaw === null) return undefined;
+  return {
+    enabled: enabledRaw.trim().toLowerCase() === "true",
+    executionAgentFieldId: getScalar(sections, "Distribution", "Execution Agent Field ID"),
+    workspaceId: getScalar(sections, "Distribution", "Workspace ID"),
+  };
+}
+
 /** Parses a `[GGJIRA] Workspace Configuration` issue. Missing Workflow fields fall back to config.ts's own defaults. */
 export function parseWorkspaceConfig(issue: JiraIssue): WorkspaceConfig {
   const sections = parseSections(issue.description ?? "");
   const configVersionRaw = getScalar(sections, "GGJira Workspace", "Config Version");
+  const distribution = parseDistribution(sections);
 
   return {
     issueKey: issue.key,
@@ -30,8 +44,13 @@ export function parseWorkspaceConfig(issue: JiraIssue): WorkspaceConfig {
       reviewStatus: getScalar(sections, "Workflow", "Review Status") ?? "",
       planningStatus: getScalar(sections, "Workflow", "Planning Status"),
       needsDecisionStatus: getScalar(sections, "Workflow", "Needs Decision Status"),
+      planningInProgressStatus: getScalar(sections, "Workflow", "Planning In Progress Status"),
+      planReviewStatus: getScalar(sections, "Workflow", "Plan Review Status"),
+      executionApprovedStatus: getScalar(sections, "Workflow", "Execution Approved Status"),
+      taskWaitingStatus: getScalar(sections, "Workflow", "Task Waiting Status"),
       subtaskIssueType: getScalar(sections, "Workflow", "Subtask Issue Type") ?? "Subtask",
     },
+    ...(distribution ? { distribution } : {}),
     projectPolicy: resolveProjectPolicy(getItems(sections, "Project Policy")),
   };
 }
@@ -55,9 +74,25 @@ export function renderWorkspaceDescription(input: WorkspaceConfigInput): string 
         ["Review Status", input.workflow.reviewStatus],
         ["Planning Status", input.workflow.planningStatus ?? null],
         ["Needs Decision Status", input.workflow.needsDecisionStatus ?? null],
+        ["Planning In Progress Status", input.workflow.planningInProgressStatus ?? null],
+        ["Plan Review Status", input.workflow.planReviewStatus ?? null],
+        ["Execution Approved Status", input.workflow.executionApprovedStatus ?? null],
+        ["Task Waiting Status", input.workflow.taskWaitingStatus ?? null],
         ["Subtask Issue Type", input.workflow.subtaskIssueType],
       ],
     },
+    ...(input.distribution
+      ? [
+          {
+            heading: "Distribution",
+            scalars: [
+              ["Enabled", String(input.distribution.enabled)],
+              ["Execution Agent Field ID", input.distribution.executionAgentFieldId ?? null],
+              ["Workspace ID", input.distribution.workspaceId ?? null],
+            ] satisfies [string, string | null][],
+          },
+        ]
+      : []),
     {
       heading: "Project Policy",
       items: resolveProjectPolicy(input.projectPolicy),
@@ -78,7 +113,10 @@ export function renderWorkspaceDescription(input: WorkspaceConfigInput): string 
 export async function updateWorkspaceConfig(
   jira: JiraGateway,
   current: Pick<WorkspaceConfig, "issueKey" | "issueTypeName" | "projectKey" | "configVersion">,
-  input: Pick<WorkspaceConfigInput, "workflow" | "projectPolicy" | "ggjiraVersion">,
+  input: Pick<
+    WorkspaceConfigInput,
+    "workflow" | "projectPolicy" | "ggjiraVersion" | "distribution"
+  >,
 ): Promise<WorkspaceConfig> {
   const projectPolicy = resolveProjectPolicy(input.projectPolicy);
   const description = renderWorkspaceDescription({
@@ -86,6 +124,7 @@ export async function updateWorkspaceConfig(
     configVersion: current.configVersion,
     ggjiraVersion: input.ggjiraVersion,
     workflow: input.workflow,
+    ...(input.distribution ? { distribution: input.distribution } : {}),
     projectPolicy,
   });
   await jira.updateIssueDescription(current.issueKey, description);
@@ -95,6 +134,7 @@ export async function updateWorkspaceConfig(
     projectKey: current.projectKey,
     configVersion: current.configVersion,
     workflow: input.workflow,
+    ...(input.distribution ? { distribution: input.distribution } : {}),
     projectPolicy,
   };
 }

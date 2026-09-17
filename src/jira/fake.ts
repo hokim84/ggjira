@@ -67,6 +67,7 @@ export class FakeJiraGateway implements JiraGateway {
   private readonly commentFailurePredicates = new Map<string, (body: string) => boolean>();
   private readonly projects = new Map<string, JiraProject>();
   private readonly projectStatuses = new Map<string, string[]>();
+  private fields: Array<{ id: string; name: string }> = [];
   private readonly properties = new Map<string, Map<string, unknown>>();
   private self: JiraUser = {
     accountId: "self-account-id",
@@ -111,6 +112,14 @@ export class FakeJiraGateway implements JiraGateway {
 
   async listProjectStatuses(projectKey: string): Promise<string[]> {
     return this.projectStatuses.get(projectKey) ?? [];
+  }
+
+  seedFields(fields: Array<{ id: string; name: string }>): void {
+    this.fields = fields;
+  }
+
+  async listFields(): Promise<Array<{ id: string; name: string }>> {
+    return this.fields;
   }
 
   /** Reads back what setIssueProperty stored, for assertions in tests. */

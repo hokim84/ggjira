@@ -9,6 +9,7 @@ import type { AppConfig } from "../src/config.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { runJobForIssue } from "../src/job/runner.js";
 import { JobStore } from "../src/job/store.js";
+import { PLAN_PROPERTY_KEY, PLAN_TASK_PROPERTY_KEY } from "../src/pm/metadata.js";
 import { claimAgentProfile, createAgentProfile } from "../src/profile/profile.js";
 import { buildImplementSystemPrompt } from "../src/worker/prompt.js";
 import type {
@@ -470,5 +471,248 @@ describe("bootstrapAgent", () => {
     });
 
     expect(await runtime.cycleDeps.shouldPoll?.()).toBe(false);
+  });
+});
+
+describe("bootstrapAgent distribution gating", () => {
+  let tempDir: string;
+  let targetRepoPath: string;
+  let worktreesRoot: string;
+  let store: JobStore;
+  let jira: FakeJiraGateway;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(path.join(tmpdir(), "ggjira-runtime-distribution-test-"));
+    targetRepoPath = path.join(tempDir, "target-repo");
+    worktreesRoot = path.join(tempDir, "worktrees");
+    initTargetRepo(targetRepoPath);
+    store = new JobStore(path.join(tempDir, "data"));
+    jira = new FakeJiraGateway();
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function buildDistributionConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+    return buildTestConfig({
+      configVersion: 4,
+      jira: { baseUrl: "https://example.atlassian.net", projectKey: "KAN" },
+      agent: { identity: "impl-1", role: "implement", machine: "test-machine" },
+      workflow: {
+        ...buildTestConfig().workflow,
+        implementationStatus: "AI Implementation",
+        inProgressStatus: "In Progress",
+        reviewStatus: "In Review",
+        planningStatus: "AI Planning",
+        planningInProgressStatus: "AI Planning In Progress",
+        planReviewStatus: "Plan Review",
+        executionApprovedStatus: "Execution Approved",
+        taskWaitingStatus: "Waiting for Assignment",
+      },
+      workspace: { path: targetRepoPath, baseBranch: "main", validateCommand: null },
+      distribution: {
+        enabled: true,
+        executionAgentFieldId: "customfield_12345",
+        workspaceId: "workspace-a",
+        executionAgentOptionId: "agent-a",
+      },
+      ...overrides,
+    });
+  }
+
+  const successProvider = () =>
+    new StaticProvider({
+      exitReason: "completed",
+      isError: false,
+      summary: "ok",
+      durationMs: 1,
+      exitCode: 0,
+    });
+
+  it("cancels when the execution agent assignment was withdrawn before execution", async () => {
+    const config = buildDistributionConfig();
+    const issue = buildTestIssue({
+      key: "KAN-40",
+      statusName: "AI Implementation",
+      assigneeAccountId: "human-account",
+      executionAgentOptionId: "some-other-agent",
+    });
+    jira.seedIssue(issue, [{ id: "1", name: "Start", toStatusName: "In Progress" }]);
+    const runtime = await bootstrapAgent({
+      config,
+      jira,
+      store,
+      provider: successProvider(),
+      worktreesRoot,
+    });
+
+    const job = await runJobForIssue(issue, config, runtime.cycleDeps);
+
+    expect(job?.status).toBe("cancelled");
+    expect(job?.summary).toContain("withdrawn before execution");
+  });
+
+  it("fails when the plan-task metadata names a different workspace", async () => {
+    const config = buildDistributionConfig();
+    const issue = buildTestIssue({
+      key: "KAN-41",
+      statusName: "AI Implementation",
+      assigneeAccountId: "human-account",
+      executionAgentOptionId: "agent-a",
+    });
+    jira.seedIssue(issue, [{ id: "1", name: "Start", toStatusName: "In Progress" }]);
+    await jira.setIssueProperty(issue.key, PLAN_TASK_PROPERTY_KEY, {
+      planVersion: "v1",
+      taskId: "task-1",
+      parentKey: "KAN-1",
+      workspaceId: "some-other-workspace",
+      dependencies: [],
+    });
+    const runtime = await bootstrapAgent({
+      config,
+      jira,
+      store,
+      provider: successProvider(),
+      worktreesRoot,
+    });
+
+    const job = await runJobForIssue(issue, config, runtime.cycleDeps);
+
+    expect(job?.status).toBe("failed");
+    expect(job?.error).toContain("Expected workspace workspace-a");
+  });
+
+  it("cancels when the parent plan is not (yet, or no longer) approved for execution", async () => {
+    const config = buildDistributionConfig();
+    const parent = buildTestIssue({ key: "KAN-1", statusName: "Plan Review" });
+    jira.seedIssue(parent);
+    const issue = buildTestIssue({
+      key: "KAN-42",
+      statusName: "AI Implementation",
+      assigneeAccountId: "human-account",
+      executionAgentOptionId: "agent-a",
+    });
+    jira.seedIssue(issue, [{ id: "1", name: "Start", toStatusName: "In Progress" }]);
+    await jira.setIssueProperty(issue.key, PLAN_TASK_PROPERTY_KEY, {
+      planVersion: "v1",
+      taskId: "task-1",
+      parentKey: "KAN-1",
+      workspaceId: "workspace-a",
+      dependencies: [],
+    });
+    const runtime = await bootstrapAgent({
+      config,
+      jira,
+      store,
+      provider: successProvider(),
+      worktreesRoot,
+    });
+
+    const job = await runJobForIssue(issue, config, runtime.cycleDeps);
+
+    expect(job?.status).toBe("cancelled");
+    expect(job?.summary).toContain("not approved for execution");
+  });
+
+  it("fails when the task's plan version no longer matches the parent's current plan", async () => {
+    const config = buildDistributionConfig();
+    const parent = buildTestIssue({ key: "KAN-1", statusName: "Execution Approved" });
+    jira.seedIssue(parent);
+    await jira.setIssueProperty(parent.key, PLAN_PROPERTY_KEY, {
+      version: "v2",
+      status: "review",
+      taskIds: ["task-1"],
+    });
+    const issue = buildTestIssue({
+      key: "KAN-43",
+      statusName: "AI Implementation",
+      assigneeAccountId: "human-account",
+      executionAgentOptionId: "agent-a",
+    });
+    jira.seedIssue(issue, [{ id: "1", name: "Start", toStatusName: "In Progress" }]);
+    await jira.setIssueProperty(issue.key, PLAN_TASK_PROPERTY_KEY, {
+      planVersion: "v1", // stale -- a replan moved the parent to v2 without refreshing this task
+      taskId: "task-1",
+      parentKey: "KAN-1",
+      workspaceId: "workspace-a",
+      dependencies: [],
+    });
+    const runtime = await bootstrapAgent({
+      config,
+      jira,
+      store,
+      provider: successProvider(),
+      worktreesRoot,
+    });
+
+    const job = await runJobForIssue(issue, config, runtime.cycleDeps);
+
+    expect(job?.status).toBe("failed");
+    expect(job?.error).toContain("Plan version mismatch");
+  });
+
+  it("fails closed when the plan-task metadata is present but corrupted", async () => {
+    const config = buildDistributionConfig();
+    const issue = buildTestIssue({
+      key: "KAN-44",
+      statusName: "AI Implementation",
+      assigneeAccountId: "human-account",
+      executionAgentOptionId: "agent-a",
+    });
+    jira.seedIssue(issue, [{ id: "1", name: "Start", toStatusName: "In Progress" }]);
+    // Missing required fields (taskId, parentKey, workspaceId) -- present but not schema-shaped.
+    await jira.setIssueProperty(issue.key, PLAN_TASK_PROPERTY_KEY, { planVersion: "v1" });
+    const runtime = await bootstrapAgent({
+      config,
+      jira,
+      store,
+      provider: successProvider(),
+      worktreesRoot,
+    });
+
+    const job = await runJobForIssue(issue, config, runtime.cycleDeps);
+
+    expect(job?.status).toBe("failed");
+    expect(job?.error).toContain("doesn't match the expected shape");
+  });
+
+  it("proceeds when the option, workspace, parent approval, and plan version all agree", async () => {
+    const config = buildDistributionConfig();
+    const parent = buildTestIssue({ key: "KAN-1", statusName: "Execution Approved" });
+    jira.seedIssue(parent);
+    await jira.setIssueProperty(parent.key, PLAN_PROPERTY_KEY, {
+      version: "v1",
+      status: "review",
+      taskIds: ["task-1"],
+    });
+    const issue = buildTestIssue({
+      key: "KAN-45",
+      statusName: "AI Implementation",
+      assigneeAccountId: "human-account",
+      executionAgentOptionId: "agent-a",
+    });
+    jira.seedIssue(issue, [
+      { id: "1", name: "Start", toStatusName: "In Progress" },
+      { id: "2", name: "Send to review", toStatusName: "In Review" },
+    ]);
+    await jira.setIssueProperty(issue.key, PLAN_TASK_PROPERTY_KEY, {
+      planVersion: "v1",
+      taskId: "task-1",
+      parentKey: "KAN-1",
+      workspaceId: "workspace-a",
+      dependencies: [],
+    });
+    const runtime = await bootstrapAgent({
+      config,
+      jira,
+      store,
+      provider: successProvider(),
+      worktreesRoot,
+    });
+
+    const job = await runJobForIssue(issue, config, runtime.cycleDeps);
+
+    expect(job?.status).toBe("succeeded");
   });
 });

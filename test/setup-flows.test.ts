@@ -163,6 +163,38 @@ describe("runSetupWizard: Polling & statuses only", () => {
       executionAgentOptionId: "option-agent-a",
       workspaceId: "workspace-a",
     });
+
+    // The statuses, field ID, and workspace ID must also reach the shared Workspace
+    // Configuration issue -- otherwise every other machine has to hand-type them (and risks
+    // the same per-machine typo/inconsistency ADR 0015 fixed for the original three statuses).
+    // executionAgentOptionId names this one machine, so it's deliberately absent here.
+    const workspace = (await jira.searchIssues(`labels = "${WORKSPACE_LABEL}"`))[0];
+    expect(workspace?.description).toContain("Planning Status: Planning");
+    expect(workspace?.description).toContain("Plan Review Status: Plan Review");
+    expect(workspace?.description).toContain("Execution Approved Status: Execution Approved");
+    expect(workspace?.description).toContain("Task Waiting Status: Waiting");
+    expect(workspace?.description).toContain("Enabled: true");
+    expect(workspace?.description).toContain("Execution Agent Field ID: customfield_12345");
+    expect(workspace?.description).toContain("Workspace ID: workspace-a");
+    expect(workspace?.description).not.toContain("option-agent-a");
+  });
+
+  it("disables human distribution and propagates that to the shared workspace issue too", async () => {
+    const ask = scriptedAsk(["n"]);
+
+    await runSetupWizard({
+      check: false,
+      cwd,
+      ask,
+      mode: "distribution-settings",
+      createJira: () => jira,
+      print: (line) => lines.push(line),
+    });
+
+    const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
+    expect(config.distribution.enabled).toBe(false);
+    const workspace = (await jira.searchIssues(`labels = "${WORKSPACE_LABEL}"`))[0];
+    expect(workspace?.description).toContain("Enabled: false");
   });
 });
 
@@ -595,6 +627,84 @@ describe("runSetupWizard: Join as Agent", () => {
     expect(config.workflow.inProgressStatus).toBe("진행 중");
     expect(config.workflow.reviewStatus).toBe("검토 중");
     expect(config.pm.implementAssignee).toBeUndefined();
+  });
+
+  it("when the workspace has distribution enabled, asks an implement joiner for its own option ID", async () => {
+    await jira.createIssue({
+      projectKey: "KAN",
+      issueTypeName: "Task",
+      summary: "[GGJIRA] Workspace Configuration",
+      labels: [WORKSPACE_LABEL],
+      description: [
+        "h2. GGJira Workspace",
+        "Config Version: 4",
+        "GGJira Version: 0.1.0",
+        "Project Key: KAN",
+        "",
+        "h2. Workflow",
+        "AI Request Status: AI Implementation",
+        "In Progress Status: In Progress",
+        "Review Status: In Review",
+        "Planning Status: AI Planning",
+        "Planning In Progress Status: AI Planning In Progress",
+        "Plan Review Status: Plan Review",
+        "Execution Approved Status: Execution Approved",
+        "Task Waiting Status: Waiting",
+        "Subtask Issue Type: Subtask",
+        "",
+        "h2. Distribution",
+        "Enabled: true",
+        "Execution Agent Field ID: customfield_12345",
+        "Workspace ID: workspace-a",
+      ].join("\n"),
+    });
+    const profile = await createAgentProfile(jira, {
+      projectKey: "KAN",
+      issueTypeName: "Task",
+      agentId: "unity-implement-01",
+      displayName: "Unity Implement 01",
+      role: "implement",
+      preset: null,
+      capabilities: [],
+      workStyle: [],
+      humanInstructions: [],
+    });
+
+    const ask = scriptedAsk([
+      "https://example.atlassian.net",
+      "a@b.com",
+      "secret-token",
+      "", // project key
+      "unity-implement-01", // select agent
+      "option-agent-a", // this agent's execution-agent option ID
+      cwd, // workspace path
+      "", // base branch
+      "", // provider
+      "", // model
+      "", // start agent
+    ]);
+
+    await runSetupWizard({
+      check: false,
+      cwd,
+      ask,
+      mode: "join",
+      createJira: () => jira,
+      settleMs: 0,
+      machineIdFactory: () => FIXED_MACHINE_ID,
+      print: (l) => lines.push(l),
+    });
+
+    const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
+    expect(config.agent.profileKey).toBe(profile.issueKey);
+    expect(config.workflow.executionApprovedStatus).toBe("Execution Approved");
+    expect(config.workflow.taskWaitingStatus).toBe("Waiting");
+    expect(config.distribution).toEqual({
+      enabled: true,
+      executionAgentFieldId: "customfield_12345",
+      workspaceId: "workspace-a",
+      executionAgentOptionId: "option-agent-a",
+    });
   });
 
   it("throws a clear error when no workspace configuration exists yet", async () => {

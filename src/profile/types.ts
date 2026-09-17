@@ -59,7 +59,23 @@ export interface WorkspaceWorkflow {
   /** PM only, opt-in: setup doesn't ask, so these are set by editing the Jira issue. */
   planningStatus?: string | null;
   needsDecisionStatus?: string | null;
+  /** Human-approved PM distribution statuses (setup option 5); unset unless distribution is enabled. */
+  planningInProgressStatus?: string | null;
+  planReviewStatus?: string | null;
+  executionApprovedStatus?: string | null;
+  taskWaitingStatus?: string | null;
   subtaskIssueType: string;
+}
+
+/**
+ * Shared human-approved PM distribution settings (setup option 5). Deliberately excludes
+ * `executionAgentOptionId`: that identifies one specific implement machine, so it's asked and
+ * stored locally per machine, never centralized here (README §Human-approved PM distribution).
+ */
+export interface WorkspaceDistribution {
+  enabled: boolean;
+  executionAgentFieldId?: string | null;
+  workspaceId?: string | null;
 }
 
 /** A parsed `[GGJIRA] Workspace Configuration` issue: the project's shared, human-editable settings. */
@@ -70,6 +86,7 @@ export interface WorkspaceConfig {
   projectKey: string;
   configVersion: number;
   workflow: WorkspaceWorkflow;
+  distribution?: WorkspaceDistribution;
   /** Free-text project policy bullet items, rendered into the prompt composition layer. */
   projectPolicy: string[];
 }
@@ -79,5 +96,6 @@ export interface WorkspaceConfigInput {
   configVersion: number;
   ggjiraVersion: string;
   workflow: WorkspaceWorkflow;
+  distribution?: WorkspaceDistribution;
   projectPolicy: string[];
 }

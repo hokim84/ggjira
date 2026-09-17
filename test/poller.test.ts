@@ -161,4 +161,59 @@ describe("findAssignedJobs", () => {
       "KAN-11",
     ]);
   });
+
+  it("excludes only the issue with corrupted plan-task metadata, not the whole cycle", async () => {
+    const jira = new FakeJiraGateway();
+    const distributed = buildTestConfig({
+      configVersion: 4,
+      workflow: {
+        ...config.workflow,
+        planningStatus: "AI Planning",
+        planningInProgressStatus: "Planning In Progress",
+        planReviewStatus: "Plan Review",
+        executionApprovedStatus: "Execution Approved",
+        taskWaitingStatus: "Waiting",
+        implementationStatus: "AI Implementation",
+        inProgressStatus: "In Progress",
+        reviewStatus: "In Review",
+      },
+      distribution: {
+        enabled: true,
+        executionAgentFieldId: "customfield_12345",
+        executionAgentOptionId: "agent-a",
+        workspaceId: "workspace-a",
+      },
+    });
+    jira.seedIssue(buildTestIssue({ key: "KAN-10", statusName: "Execution Approved" }));
+    jira.seedIssue(
+      buildTestIssue({
+        key: "KAN-11",
+        parentKey: "KAN-10",
+        statusName: "AI Implementation",
+        executionAgentOptionId: "agent-a",
+      }),
+    );
+    // Present but not schema-shaped -- absent (null) would be treated as a manually created,
+    // untracked task instead, which is a different case (poller.test.ts's other assertions).
+    await jira.setIssueProperty("KAN-11", PLAN_TASK_PROPERTY_KEY, { planVersion: "v1" });
+    jira.seedIssue(
+      buildTestIssue({
+        key: "KAN-12",
+        parentKey: "KAN-10",
+        statusName: "AI Implementation",
+        executionAgentOptionId: "agent-a",
+      }),
+    );
+    await jira.setIssueProperty("KAN-12", PLAN_TASK_PROPERTY_KEY, {
+      planVersion: "v1",
+      taskId: "task-2",
+      parentKey: "KAN-10",
+      workspaceId: "workspace-a",
+      dependencies: [],
+    });
+
+    const candidates = await findAssignedJobs(jira, distributed, store);
+
+    expect(candidates.map((issue) => issue.key)).toEqual(["KAN-12"]);
+  });
 });

@@ -2,7 +2,8 @@ import type { AppConfig } from "../config.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { JobStore } from "../job/store.js";
-import { readPlanTaskMetadata } from "../pm/metadata.js";
+import type { Logger } from "../logger.js";
+import { PlanMetadataError, readPlanTaskMetadata } from "../pm/metadata.js";
 import { AGENT_LABEL, WORKSPACE_LABEL } from "../profile/types.js";
 
 /** GGJIRA's own meta issues carry one of these labels and must never be picked up as work. */
@@ -47,6 +48,7 @@ export async function findAssignedJobs(
   jira: JiraGateway,
   config: AppConfig,
   store: JobStore,
+  logger?: Logger,
 ): Promise<JiraIssue[]> {
   const issues = await jira.searchIssues(buildAssignedJql(config), { maxResults: 50, all: true });
   const claims = store.listClaims();
@@ -71,13 +73,28 @@ export async function findAssignedJobs(
   const checked = await Promise.all(
     locallyEligible.map(async (issue) => {
       if (issue.statusName === config.workflow.planningStatus) return issue;
-      const metadata = await readPlanTaskMetadata(jira, issue.key);
-      // Manually created implementation issues remain supported. Planned
-      // subtasks, however, are gated by their parent's explicit approval.
-      if (!metadata) return issue;
-      if (metadata.workspaceId !== config.distribution.workspaceId) return null;
-      const parent = await jira.getIssue(metadata.parentKey);
-      return parent.statusName === config.workflow.executionApprovedStatus ? issue : null;
+      try {
+        const metadata = await readPlanTaskMetadata(jira, issue.key);
+        // Manually created implementation issues remain supported. Planned
+        // subtasks, however, are gated by their parent's explicit approval.
+        if (!metadata) return issue;
+        if (metadata.workspaceId !== config.distribution.workspaceId) return null;
+        const parent = await jira.getIssue(metadata.parentKey);
+        return parent.statusName === config.workflow.executionApprovedStatus ? issue : null;
+      } catch (error) {
+        // Corrupted plan-task metadata excludes only this issue (fail closed)
+        // rather than the whole cycle -- other candidates are unaffected.
+        if (error instanceof PlanMetadataError) {
+          logger
+            ?.child({ layer: "poller" })
+            .warn(
+              { err: error, issueKey: issue.key },
+              "skipping issue with corrupted plan metadata",
+            );
+          return null;
+        }
+        throw error;
+      }
     }),
   );
   return checked.filter((issue): issue is JiraIssue => issue !== null);

@@ -1,3 +1,5 @@
+import type { ExecutionResult } from "../agent/result.js";
+
 export type JobStatus =
   | "queued"
   | "claimed"
@@ -103,4 +105,3 @@ export function transitionJob(
     updatedAt: now.toISOString(),
   };
 }
-import type { ExecutionResult } from "../agent/result.js";

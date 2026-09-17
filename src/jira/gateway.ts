@@ -39,6 +39,8 @@ export interface JiraGateway {
   listProjects(): Promise<JiraProjectSummary[]>;
   getProject(key: string): Promise<JiraProject>;
   listProjectStatuses(projectKey: string): Promise<string[]>;
+  /** All fields visible to this account, for verifying a configured custom field ID actually exists. */
+  listFields(): Promise<Array<{ id: string; name: string }>>;
   /** Reads a Jira entity property on an issue; `null` when the property is absent (404). */
   getIssueProperty(key: string, propertyKey: string): Promise<unknown | null>;
   setIssueProperty(key: string, propertyKey: string, value: unknown): Promise<void>;

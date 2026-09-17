@@ -17,7 +17,7 @@ import {
   findAgentProfileById,
   findAgentProfiles,
 } from "../profile/profile.js";
-import type { AgentProfile, WorkspaceWorkflow } from "../profile/types.js";
+import type { AgentProfile, WorkspaceDistribution, WorkspaceWorkflow } from "../profile/types.js";
 import {
   createWorkspaceConfig,
   findWorkspaceConfig,
@@ -315,6 +315,7 @@ export async function runWorkflowSettingsFlow(ctx: FlowContext): Promise<SetupRe
     await updateWorkspaceConfig(jira, workspace, {
       ggjiraVersion: GGJIRA_VERSION,
       projectPolicy: workspace.projectPolicy,
+      ...(workspace.distribution ? { distribution: workspace.distribution } : {}),
       workflow: { ...workspace.workflow, ...statuses },
     });
     ctx.print(`Updated workflow statuses in ${workspace.issueKey}.`);
@@ -355,6 +356,18 @@ export async function runDistributionSettingsFlow(ctx: FlowContext): Promise<Set
   if (!enabled) {
     const updated = { ...raw, distribution: { ...previous, enabled: false } };
     writeConfigFile(ctx.configPath, updated);
+    const workspace = await findWorkspaceConfig(jira, projectKey);
+    if (workspace) {
+      await updateWorkspaceConfig(jira, workspace, {
+        ggjiraVersion: GGJIRA_VERSION,
+        projectPolicy: workspace.projectPolicy,
+        workflow: workspace.workflow,
+        distribution: workspace.distribution
+          ? { ...workspace.distribution, enabled: false }
+          : { enabled: false },
+      });
+      ctx.print(`Disabled human distribution in ${workspace.issueKey}.`);
+    }
     ctx.print(`Updated ${ctx.configPath} (human distribution disabled).`);
     return { startAgent: false };
   }
@@ -453,6 +466,32 @@ export async function runDistributionSettingsFlow(ctx: FlowContext): Promise<Set
     throw new SetupError(`Updated config failed validation: ${parsed.error.message}`);
   }
   writeConfigFile(ctx.configPath, updated);
+
+  // Statuses, the custom-field ID, and the workspace ID must agree across every machine (the
+  // same failure ADR 0015 fixed for the three base statuses); executionAgentOptionId names one
+  // specific implement machine, so it's never centralized here (README §Human-approved PM
+  // distribution) -- each machine still enters its own when it runs this flow or joins.
+  const workspace = await findWorkspaceConfig(jira, projectKey);
+  if (workspace) {
+    await updateWorkspaceConfig(jira, workspace, {
+      ggjiraVersion: GGJIRA_VERSION,
+      projectPolicy: workspace.projectPolicy,
+      workflow: {
+        ...workspace.workflow,
+        implementationStatus,
+        inProgressStatus,
+        reviewStatus,
+        planningStatus,
+        planningInProgressStatus,
+        planReviewStatus,
+        executionApprovedStatus,
+        taskWaitingStatus,
+      },
+      distribution: { enabled: true, executionAgentFieldId: fieldId, workspaceId },
+    });
+    ctx.print(`Updated distribution settings in ${workspace.issueKey}.`);
+  }
+
   ctx.print(`Updated ${ctx.configPath} (human distribution enabled).`);
   return { startAgent: false };
 }
@@ -499,6 +538,10 @@ interface BuildProfileConfigInput {
   role: AgentRole;
   machineId: string;
   workflow: WorkspaceWorkflow;
+  /** From the Workspace Configuration issue's Distribution section, if setup option 5 ran. */
+  distribution?: WorkspaceDistribution;
+  /** This machine's own option ID in the execution-agent field; never shared (see WorkspaceDistribution). */
+  executionAgentOptionId?: string;
   local: LocalSettings;
 }
 
@@ -529,6 +572,24 @@ function buildProfileConfig(input: BuildProfileConfigInput): Record<string, unkn
       ...(input.workflow.needsDecisionStatus
         ? { needsDecisionStatus: input.workflow.needsDecisionStatus }
         : {}),
+      // Human distribution (setup option 5) is likewise opt-in: these four only land here when
+      // the shared Workspace Configuration issue declares distribution enabled.
+      ...(input.distribution?.enabled
+        ? {
+            ...(input.workflow.planningInProgressStatus
+              ? { planningInProgressStatus: input.workflow.planningInProgressStatus }
+              : {}),
+            ...(input.workflow.planReviewStatus
+              ? { planReviewStatus: input.workflow.planReviewStatus }
+              : {}),
+            ...(input.workflow.executionApprovedStatus
+              ? { executionApprovedStatus: input.workflow.executionApprovedStatus }
+              : {}),
+            ...(input.workflow.taskWaitingStatus
+              ? { taskWaitingStatus: input.workflow.taskWaitingStatus }
+              : {}),
+          }
+        : {}),
     },
     workspace: { path: input.local.workspacePath, baseBranch: input.local.baseBranch },
     provider: {
@@ -538,6 +599,18 @@ function buildProfileConfig(input: BuildProfileConfigInput): Record<string, unkn
     },
     pm: { subtaskIssueType: input.workflow.subtaskIssueType },
     polling: { intervalMs: 60000 },
+    ...(input.distribution?.enabled
+      ? {
+          distribution: {
+            enabled: true,
+            executionAgentFieldId: input.distribution.executionAgentFieldId,
+            workspaceId: input.distribution.workspaceId,
+            ...(input.executionAgentOptionId
+              ? { executionAgentOptionId: input.executionAgentOptionId }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -594,6 +667,7 @@ export async function runCreateWorkspaceFlow(ctx: FlowContext): Promise<SetupRes
       workspace = await updateWorkspaceConfig(jira, workspace, {
         ggjiraVersion: GGJIRA_VERSION,
         projectPolicy: workspace.projectPolicy,
+        ...(workspace.distribution ? { distribution: workspace.distribution } : {}),
         workflow: { ...workspace.workflow, ...statuses },
       });
       print(`Updated ${workspace.issueKey}.`);
@@ -768,6 +842,22 @@ export async function runJoinAgentFlow(ctx: FlowContext): Promise<SetupResult> {
   const machineId = ctx.existingConfig?.agent.machineId ?? ctx.machineIdFactory();
   await claimProfileWithTakeoverPrompt(ctx, jira, profile, machineId);
 
+  // Statuses and the custom field come from the shared Workspace Configuration issue -- only
+  // this machine's own option ID in that field is asked here (README §Human-approved PM
+  // distribution: "Each implement machine stores its own option ID").
+  let executionAgentOptionId: string | undefined;
+  if (workspace.distribution?.enabled) {
+    print(
+      `Human distribution is enabled (execution agent field ${workspace.distribution.executionAgentFieldId}).`,
+    );
+    if (profile.role === "implement") {
+      executionAgentOptionId = await ask(
+        "This agent's option ID in the execution-agent field",
+        ctx.existingConfig?.distribution.executionAgentOptionId,
+      );
+    }
+  }
+
   const local = await askLocalSettings(ctx);
 
   const raw = buildProfileConfig({
@@ -779,6 +869,8 @@ export async function runJoinAgentFlow(ctx: FlowContext): Promise<SetupResult> {
     role: profile.role,
     machineId,
     workflow: workspace.workflow,
+    ...(workspace.distribution ? { distribution: workspace.distribution } : {}),
+    ...(executionAgentOptionId ? { executionAgentOptionId } : {}),
     local,
   });
   validateAndWrite(ctx, raw, { email, apiToken });

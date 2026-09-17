@@ -46,7 +46,7 @@ export async function runPollCycle(
 
   let candidates: JiraIssue[];
   try {
-    candidates = await findAssignedJobs(deps.jira, config, deps.store);
+    candidates = await findAssignedJobs(deps.jira, config, deps.store, deps.logger);
   } catch (error) {
     deps.logger
       ?.child({ layer: "poller" })

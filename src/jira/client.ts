@@ -356,6 +356,14 @@ export class JiraClient implements JiraGateway {
     ].sort();
   }
 
+  async listFields(): Promise<Array<{ id: string; name: string }>> {
+    const fields = await this.request<Array<{ id: string; name: string }>>(
+      "GET",
+      "/rest/api/2/field",
+    );
+    return fields.map((field) => ({ id: field.id, name: field.name }));
+  }
+
   async transitionIssue(key: string, transitionName: string): Promise<void> {
     const transitions = await this.getTransitions(key);
     const match = transitions.find((t) => t.name === transitionName);

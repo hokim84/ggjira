@@ -97,7 +97,7 @@ export function buildDecisionRequestComment(
   if (decision.impact) lines.push("", `Impact: ${decision.impact}`);
   lines.push(
     "",
-    `To respond: comment "Decision: <option id>${planVersion ? `\ndecisionId: ${planVersion}-decision` : ""}" on this issue and move it back to "${config.workflow.planningStatus ?? config.workflow.readyStatus}".`,
+    `To respond: comment "Decision: <option id>" on this issue and move it back to "${config.workflow.planningStatus ?? config.workflow.readyStatus}".`,
     "",
     `agent: ${config.agent.identity}@${config.agent.machine}`,
   );

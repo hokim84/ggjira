@@ -6,7 +6,12 @@ import type { CycleDeps } from "../job/cycle.js";
 import type { JobStore } from "../job/store.js";
 import type { Logger } from "../logger.js";
 import { createPmHandler } from "../pm/executor.js";
-import { PLAN_PROPERTY_KEY, PlanMetadataSchema, readPlanTaskMetadata } from "../pm/metadata.js";
+import {
+  PLAN_PROPERTY_KEY,
+  PlanMetadataError,
+  PlanMetadataSchema,
+  readPlanTaskMetadata,
+} from "../pm/metadata.js";
 import { buildPmSystemPrompt } from "../pm/prompt.js";
 import { findAgentProfiles } from "../profile/profile.js";
 import type { AgentProfile, WorkspaceConfig } from "../profile/types.js";
@@ -207,7 +212,19 @@ function createDispatchHandler(
               summary: "AI implementation assignment was withdrawn before execution.",
             };
           }
-          const taskMetadata = await readPlanTaskMetadata(deps.jira, params.issue.key);
+          let taskMetadata: Awaited<ReturnType<typeof readPlanTaskMetadata>>;
+          try {
+            taskMetadata = await readPlanTaskMetadata(deps.jira, params.issue.key);
+          } catch (error) {
+            if (error instanceof PlanMetadataError) {
+              return {
+                status: "failed",
+                summary: "This task's plan metadata is corrupted and could not be verified.",
+                failureReason: error.message,
+              };
+            }
+            throw error;
+          }
           if (taskMetadata) {
             if (taskMetadata.workspaceId !== deps.config.distribution.workspaceId) {
               return {
@@ -223,6 +240,10 @@ function createDispatchHandler(
                 summary: "The parent plan is not approved for execution.",
               };
             }
+            // Approval itself is the parent's Jira status (checked above) -- this only
+            // confirms the task still belongs to that exact plan revision. Nothing writes
+            // back to the parent's plan property here: multiple implement agents can reach
+            // this point for sibling tasks at the same time, and a shared write would race.
             const planMetadata = PlanMetadataSchema.safeParse(
               await deps.jira.getIssueProperty(parent.key, PLAN_PROPERTY_KEY),
             );
@@ -232,12 +253,6 @@ function createDispatchHandler(
                 summary: "The task no longer matches the current parent plan.",
                 failureReason: "Plan version mismatch or missing plan metadata.",
               };
-            }
-            if (planMetadata.data.status !== "approved") {
-              await deps.jira.setIssueProperty(parent.key, PLAN_PROPERTY_KEY, {
-                ...planMetadata.data,
-                status: "approved",
-              });
             }
           }
         }

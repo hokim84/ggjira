@@ -39,7 +39,12 @@ export function findHumanDecision(
       (ownerAccountId !== null && comment.authorAccountId === ownerAccountId);
     if (!isHuman) return false;
     if (!expectedDecisionId) return true;
-    return comment.body.match(/^decisionId:\s*(\S+)$/im)?.[1] === expectedDecisionId;
+    // A plain "Decision: A" reply with no decisionId line is still accepted -- it's already
+    // scoped to comments after the latest request, so nothing else could be answering. Only an
+    // explicit, *different* decisionId marks a reply as stale (answering an older request whose
+    // comments happen to sit in this same range).
+    const repliedDecisionId = comment.body.match(/^decisionId:\s*(\S+)$/im)?.[1];
+    return !repliedDecisionId || repliedDecisionId === expectedDecisionId;
   });
   if (!reply) return undefined;
 

@@ -205,8 +205,18 @@ async function runCheck(
           `distribution workflow statuses: ${missing.length === 0 ? "OK" : "FAILED"}${missing.length > 0 ? ` (missing: ${missing.join(", ")})` : ""}`,
         );
         if (missing.length > 0) process.exitCode = 1;
+        const fields = await jira.listFields();
+        const fieldExists = fields.some(
+          (field) => field.id === config.distribution.executionAgentFieldId,
+        );
         print(
-          `execution agent field: OK (${config.distribution.executionAgentFieldId}, option ${config.distribution.executionAgentOptionId ?? "not required on PM"})`,
+          `execution agent field: ${fieldExists ? "OK" : "FAILED"} (${config.distribution.executionAgentFieldId})`,
+        );
+        if (!fieldExists) process.exitCode = 1;
+        // The option-within-field API needs the field's context ID, which isn't worth adding
+        // just for this check -- so the option ID itself is only spot-checked, not verified.
+        print(
+          `execution agent option: not verified automatically (${config.distribution.executionAgentOptionId ?? "not required on PM"}) -- confirm it exists in Jira admin`,
         );
       }
     } catch (error) {
