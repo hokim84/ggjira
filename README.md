@@ -64,20 +64,26 @@ GGJIRA Setup
 
 ### Human-approved PM distribution (사람 승인 기반 배포)
 
-일반 Create/Join 설정이 끝난 뒤, 각 머신에서 5번을 선택해 이 기능을 켠다. PM은 먼저
-검토 가능한 하위 이슈를 만들고 부모를 설정된 plan-review 상태로 옮긴다. 그 다음 사람이
-계획을 검토해 Jira의 single-select 커스텀 필드에서 실행 Agent를 고르고, 선택한 각
-하위 이슈를 `workflow.implementationStatus`로, 부모를 `workflow.executionApprovedStatus`로
-옮긴다. Assignee는 그대로 사람 책임자로 남는다.
+일반 Create/Join 설정이 끝난 뒤, 각 머신에서 5번을 선택해 이 기능을 켠다. 물어보는 상태는
+4개뿐이다 — `implementationStatus`/`inProgressStatus`/`reviewStatus`(v4라면 배포 여부와
+무관하게 이미 필요한 3개)와 계획 전용 `planningStatus` 하나. 계획과 구현은 진행 중/리뷰
+상태를 공유한다 — 그 상태에 있는 동안은 어떤 코드도 "계획 중인지 구현 중인지"를 다시
+구분하지 않기 때문이다.
+
+PM은 먼저 검토 가능한 하위 이슈를 만들고 부모를 `reviewStatus`로 옮긴다. 그 다음 사람이
+계획을 검토해 Jira의 single-select 커스텀 필드에서 실행 Agent를 고르고, 원하는 각 하위
+이슈를 `workflow.implementationStatus`로 옮긴다 — 이 이동 자체가 그 하위 이슈의 승인이며,
+별도로 부모를 다시 옮기는 단계는 없다. Assignee는 그대로 사람 책임자로 남는다.
 
 커스텀 필드/옵션은 화면에 보이는 이름이 아니라 Jira의 실제 ID(`customfield_12345`와
 옵션의 `id`)를 쓴다. 이 옵션 ID는 머신마다 로컬에 따로 저장한다 — 공유
 `[GGJIRA] Workspace Configuration` 이슈에는 상태 이름·필드 ID·workspace ID만 함께
 기록되고, 이 값은 기록되지 않는다(Join 시 implement 역할에만 새로 물어본다). 생성된
 하위 이슈에는 버전이 붙은 `ggjira.plan-task` 메타데이터가 함께 저장되며, worker는
-다른 workspace의 작업이거나 부모가 아직 승인되지 않은 작업을 건너뛴다. 세부 규칙은
+다른 workspace의 작업이거나 오래된 계획 버전의 작업을 건너뛴다. 세부 규칙은
 [`docs/architecture.md`](./docs/architecture.md)의 "Human-approved PM 배포"와
-[ADR 0016](./docs/decisions/0016-human-approved-distribution-metadata.md)을 참고한다.
+[ADR 0016](./docs/decisions/0016-human-approved-distribution-metadata.md)/
+[ADR 0017](./docs/decisions/0017-shared-plan-implementation-lanes.md)을 참고한다.
 
 ### 첫 머신: Create GGJira Workspace
 

@@ -7,7 +7,7 @@ import { buildTestConfig, buildTestIssue } from "./helpers/fixtures.js";
 const config = buildTestConfig();
 
 describe("claimJob", () => {
-  it("claims planning work into the planning-specific in-progress status", async () => {
+  it("claims planning work into the same in-progress status implementation uses (ADR 0017)", async () => {
     const jira = new FakeJiraGateway();
     const issue = buildTestIssue({ key: "KAN-10", statusName: "AI Planning" });
     const planningConfig = buildTestConfig({
@@ -15,15 +15,12 @@ describe("claimJob", () => {
       workflow: {
         ...config.workflow,
         planningStatus: "AI Planning",
-        planningInProgressStatus: "Planning In Progress",
         implementationStatus: "AI Implementation",
         inProgressStatus: "In Progress",
         reviewStatus: "In Review",
       },
     });
-    jira.seedIssue(issue, [
-      { id: "31", name: "Start planning", toStatusName: "Planning In Progress" },
-    ]);
+    jira.seedIssue(issue, [{ id: "31", name: "Start planning", toStatusName: "In Progress" }]);
 
     await claimJob(jira, planningConfig, issue, "run-plan");
 

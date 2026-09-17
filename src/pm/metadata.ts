@@ -6,7 +6,6 @@ export const PLAN_TASK_PROPERTY_KEY = "ggjira.plan-task";
 
 export const PlanMetadataSchema = z.object({
   version: z.string().min(1),
-  status: z.enum(["review", "approved"]),
   taskIds: z.array(z.string().min(1)),
   decisionId: z.string().min(1).optional(),
 });

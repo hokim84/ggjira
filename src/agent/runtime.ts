@@ -233,19 +233,12 @@ function createDispatchHandler(
                 failureReason: `Expected workspace ${deps.config.distribution.workspaceId}, got ${taskMetadata.workspaceId}.`,
               };
             }
-            const parent = await deps.jira.getIssue(taskMetadata.parentKey);
-            if (parent.statusName !== deps.config.workflow.executionApprovedStatus) {
-              return {
-                status: "cancelled",
-                summary: "The parent plan is not approved for execution.",
-              };
-            }
-            // Approval itself is the parent's Jira status (checked above) -- this only
-            // confirms the task still belongs to that exact plan revision. Nothing writes
-            // back to the parent's plan property here: multiple implement agents can reach
-            // this point for sibling tasks at the same time, and a shared write would race.
+            // Approval is this task's own move to implementationStatus (ADR 0017) -- nothing
+            // separate to check on the parent. This only confirms the task still belongs to
+            // the parent's current plan revision, so a stale task from a superseded replan
+            // doesn't run under a plan that no longer exists.
             const planMetadata = PlanMetadataSchema.safeParse(
-              await deps.jira.getIssueProperty(parent.key, PLAN_PROPERTY_KEY),
+              await deps.jira.getIssueProperty(taskMetadata.parentKey, PLAN_PROPERTY_KEY),
             );
             if (!planMetadata.success || planMetadata.data.version !== taskMetadata.planVersion) {
               return {

@@ -125,10 +125,6 @@ describe("loadAppConfig", () => {
       inProgressStatus: "In Progress",
       reviewStatus: "Review",
       planningStatus: "Planning",
-      planningInProgressStatus: "Planning In Progress",
-      planReviewStatus: "Plan Review",
-      executionApprovedStatus: "Execution Approved",
-      taskWaitingStatus: "Waiting",
     };
     raw.distribution = {
       enabled: true,
@@ -147,6 +143,43 @@ describe("loadAppConfig", () => {
     expect(invalid.success).toBe(false);
     expect(invalid.success || invalid.error.issues).toHaveLength(1);
     expect(invalid.success || invalid.error.issues[0]?.message).toContain("numeric ID");
+  });
+
+  it("requires workflow.planningStatus when human distribution is enabled, and rejects it matching implementationStatus (ADR 0017)", () => {
+    const raw = JSON.parse(readFileSync("test/fixtures/valid-config-v3-profile.json", "utf-8"));
+    raw.configVersion = 4;
+    raw.agent.role = "implement";
+    raw.workflow = {
+      implementationStatus: "Implementation",
+      inProgressStatus: "In Progress",
+      reviewStatus: "Review",
+    };
+    raw.distribution = {
+      enabled: true,
+      executionAgentFieldId: "customfield_12345",
+      executionAgentOptionId: "agent-a",
+      workspaceId: "workspace-a",
+    };
+
+    const missing = AppConfigSchema.safeParse(raw);
+    expect(missing.success).toBe(false);
+    expect(
+      !missing.success &&
+        missing.error.issues.some((issue) => issue.path.join(".") === "workflow.planningStatus"),
+    ).toBe(true);
+
+    raw.workflow.planningStatus = "Implementation";
+    const sameAsImplementation = AppConfigSchema.safeParse(raw);
+    expect(sameAsImplementation.success).toBe(false);
+    expect(
+      !sameAsImplementation.success &&
+        sameAsImplementation.error.issues.some((issue) =>
+          issue.message.includes("must differ from"),
+        ),
+    ).toBe(true);
+
+    raw.workflow.planningStatus = "Planning";
+    expect(AppConfigSchema.safeParse(raw).success).toBe(true);
   });
 });
 

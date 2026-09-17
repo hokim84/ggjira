@@ -45,27 +45,20 @@ const WorkflowConfigSchema = z.object({
   claimTransitionName: z.string().min(1).default("In Progress").transform(nfc),
   doneTransitionName: z.string().min(1).default("In Review").transform(nfc),
   failureLabel: z.string().min(1).default("ggjira-failed"),
+  /**
+   * The planning lane's request status. Its in-progress/review points reuse
+   * inProgressStatus/reviewStatus below -- a claimed planning issue and a
+   * claimed implementation issue never need to be told apart by status once
+   * routing has already happened (ADR 0017), so a separate
+   * planningInProgressStatus/planReviewStatus pair would just be two more
+   * board columns a human has to create for no behavioral difference. Only
+   * the *request* status must stay distinct: a bare top-level issue with no
+   * plan behind it is a normal, common way to hand work straight to an
+   * implement agent, so "does this need a plan first" can't be inferred from
+   * anything else (not hierarchy, not issue type) -- it has to be its own
+   * status.
+   */
   planningStatus: z
-    .string()
-    .min(1)
-    .optional()
-    .transform((s) => (s ? nfc(s) : s)),
-  planningInProgressStatus: z
-    .string()
-    .min(1)
-    .optional()
-    .transform((s) => (s ? nfc(s) : s)),
-  planReviewStatus: z
-    .string()
-    .min(1)
-    .optional()
-    .transform((s) => (s ? nfc(s) : s)),
-  executionApprovedStatus: z
-    .string()
-    .min(1)
-    .optional()
-    .transform((s) => (s ? nfc(s) : s)),
-  taskWaitingStatus: z
     .string()
     .min(1)
     .optional()
@@ -219,32 +212,21 @@ export const AppConfigSchema = z
         });
       }
       if (config.distribution.enabled) {
-        const distributionStatusFields = [
-          "implementationStatus",
-          "inProgressStatus",
-          "reviewStatus",
-          "planningStatus",
-          "planningInProgressStatus",
-          "planReviewStatus",
-          "executionApprovedStatus",
-          "taskWaitingStatus",
-        ] as const;
-        for (const field of distributionStatusFields) {
-          if (config.workflow[field]) continue;
+        // Only the request status needs a planning-specific value (ADR 0017): a bare top-level
+        // issue with no plan behind it is a normal way to hand work straight to an implement
+        // agent, so "does this need a plan first" can't be inferred from anything but its own
+        // status. In-progress/review are shared with the implementation lane on purpose.
+        if (!config.workflow.planningStatus) {
           ctx.addIssue({
             code: "custom",
-            path: ["workflow", field],
-            message: `workflow.${field} is required when human distribution is enabled`,
+            path: ["workflow", "planningStatus"],
+            message: "workflow.planningStatus is required when human distribution is enabled",
           });
-        }
-        const configuredStatuses = distributionStatusFields
-          .map((field) => config.workflow[field])
-          .filter((status): status is string => Boolean(status));
-        if (new Set(configuredStatuses).size !== configuredStatuses.length) {
+        } else if (config.workflow.planningStatus === config.workflow.implementationStatus) {
           ctx.addIssue({
             code: "custom",
-            path: ["workflow"],
-            message: "human distribution workflow statuses must all be different",
+            path: ["workflow", "planningStatus"],
+            message: "workflow.planningStatus must differ from workflow.implementationStatus",
           });
         }
         for (const field of ["executionAgentFieldId", "workspaceId"] as const) {

@@ -193,13 +193,11 @@ async function runCheck(
       print(`implementation trigger status: ${found ? "OK" : "FAILED"} (${trigger})`);
       if (!found) process.exitCode = 1;
       if (config.distribution.enabled) {
-        const configured = [
-          config.workflow.planningStatus,
-          config.workflow.planningInProgressStatus,
-          config.workflow.planReviewStatus,
-          config.workflow.executionApprovedStatus,
-          config.workflow.taskWaitingStatus,
-        ].filter((status): status is string => Boolean(status));
+        // Only the planning request status is distribution-specific -- in-progress/review are
+        // shared with implementation and already checked above (ADR 0017).
+        const configured = [config.workflow.planningStatus].filter((status): status is string =>
+          Boolean(status),
+        );
         const missing = configured.filter((status) => !statuses.includes(status));
         print(
           `distribution workflow statuses: ${missing.length === 0 ? "OK" : "FAILED"}${missing.length > 0 ? ` (missing: ${missing.join(", ")})` : ""}`,

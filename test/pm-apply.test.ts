@@ -39,10 +39,6 @@ describe("applyPlan", () => {
       workflow: {
         ...buildTestConfig().workflow,
         planningStatus: "Planning",
-        planningInProgressStatus: "Planning In Progress",
-        planReviewStatus: "Plan Review",
-        executionApprovedStatus: "Execution Approved",
-        taskWaitingStatus: "To Do",
         implementationStatus: "AI Implementation",
         inProgressStatus: "In Progress",
         reviewStatus: "In Review",
@@ -78,7 +74,6 @@ describe("applyPlan", () => {
 
     expect(jira.getStoredProperty("KAN-1", PLAN_PROPERTY_KEY)).toEqual({
       version: "v1",
-      status: "review",
       taskIds: ["foundation", "feature"],
     });
     expect(jira.getStoredProperty(result.createdKeys[0] as string, PLAN_TASK_PROPERTY_KEY)).toEqual(
@@ -167,10 +162,6 @@ describe("applyPlan", () => {
       workflow: {
         ...buildTestConfig().workflow,
         planningStatus: "Planning",
-        planningInProgressStatus: "Planning In Progress",
-        planReviewStatus: "Plan Review",
-        executionApprovedStatus: "Execution Approved",
-        taskWaitingStatus: "Waiting",
         implementationStatus: "AI Implementation",
         inProgressStatus: "In Progress",
         reviewStatus: "In Review",
@@ -227,10 +218,6 @@ describe("applyPlan", () => {
       workflow: {
         ...buildTestConfig().workflow,
         planningStatus: "Planning",
-        planningInProgressStatus: "Planning In Progress",
-        planReviewStatus: "Plan Review",
-        executionApprovedStatus: "Execution Approved",
-        taskWaitingStatus: "Waiting for Assignment",
         implementationStatus: "AI Implementation",
         inProgressStatus: "In Progress",
         reviewStatus: "In Review",
@@ -243,12 +230,13 @@ describe("applyPlan", () => {
     });
   }
 
-  it("supersedes a dropped subtask sitting at taskWaitingStatus, even though it never reached workflow.readyStatus", async () => {
+  it("supersedes a dropped subtask sitting at Jira's default creation status, even though it never reached workflow.readyStatus", async () => {
     const jira = new FakeJiraGateway();
     const parent = buildTestIssue({ key: "KAN-1", projectKey: "KAN", statusName: "Planning" });
     jira.seedIssue(parent);
-    // Distribution mode parks a fresh task at taskWaitingStatus ("Waiting for Assignment"), never
-    // workflow.readyStatus ("To Do") -- a supersede check pinned to readyStatus would never fire.
+    // Distribution mode doesn't transition a fresh task anywhere (ADR 0017) -- it stays at
+    // whatever Jira creates it in, which need not be workflow.readyStatus ("To Do"); a supersede
+    // check pinned to readyStatus would never fire in that case.
     const waitingStale = buildTestIssue({
       key: "KAN-2",
       parentKey: "KAN-1",
@@ -286,11 +274,7 @@ describe("applyPlan", () => {
       workspaceId: "workspace-a",
       dependencies: [],
     });
-    // taskWaitingStatus matches FakeJiraGateway's default creation status ("To Do") so the newly
-    // created "feature" task doesn't need a seeded transition -- unrelated to what this test
-    // covers (the *kept* task's metadata, not the new task's post-creation transition).
     const config = buildDistributionConfig();
-    config.workflow.taskWaitingStatus = "To Do";
     const plan = basePlan({
       tasks: [
         {

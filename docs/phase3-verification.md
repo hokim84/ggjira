@@ -85,24 +85,29 @@
       `Key: value`) 확인 — 특히 한글 등 비-라틴 문자, 표/코드 블록처럼 예상 밖 서식을
       사람이 넣었을 때.
 
-### 9. Human-approved PM 배포 (ADR 0016)
+### 9. Human-approved PM 배포 (ADR 0016, ADR 0017)
 
 `feat: add human-approved PM planning and Jira agent distribution` 이후 발견해 고친
-버그들(ADR 0016)을 실제 Jira로 확인하는 체크리스트. 자동 테스트는 전부
-`FakeJiraGateway`로 통과했지만, 실제 Jira REST/Workflow 조합에서의 확인은 아직 없다.
+버그들(ADR 0016) 및 상태 개수를 8→4로 줄인 재설계(ADR 0017)를 실제 Jira로 확인하는
+체크리스트. 자동 테스트는 전부 `FakeJiraGateway`로 통과했지만, 실제 Jira REST/Workflow
+조합에서의 확인은 아직 없다.
 
-- [ ] `ggjira setup` 5번(`PM approval & distribution`)으로 8개 상태 + 커스텀 필드ID +
-      workspaceId를 설정 → `[GGJIRA] Workspace Configuration` 이슈에 "Distribution"
-      섹션이 실제로 추가되는지 확인.
-- [ ] 다른 머신에서 `2) Join as Agent`로 같은 프로젝트에 join → 8개 상태와 필드ID/
+- [ ] `ggjira setup` 5번(`PM approval & distribution`)으로 4개 상태
+      (`implementationStatus`/`inProgressStatus`/`reviewStatus`/`planningStatus`) +
+      커스텀 필드ID + workspaceId를 설정 → `[GGJIRA] Workspace Configuration` 이슈에
+      "Distribution" 섹션이 실제로 추가되는지 확인.
+- [ ] 다른 머신에서 `2) Join as Agent`로 같은 프로젝트에 join → 4개 상태와 필드ID/
       workspaceId가 그대로 복사되는지, `executionAgentOptionId`만 새로 물어보는지 확인.
-- [ ] PM이 계획을 만들고 사람이 승인(부모를 `executionApprovedStatus`로 이동 + 하위
-      이슈를 `implementationStatus`로 이동 + 실행-Agent 필드 선택) → Implement Agent가
-      실제로 집어가는지 확인.
+- [ ] PM이 계획을 만들고 사람이 승인(하위 이슈를 `implementationStatus`로 이동 + 실행-Agent
+      필드 선택 — 부모를 별도로 옮기는 단계는 없다) → Implement Agent가 실제로 집어가는지
+      확인.
+- [ ] PM이 계획 중일 때와 완료했을 때 부모 이슈가 실제로 `inProgressStatus`/`reviewStatus`로
+      이동하는지(구현 lane과 같은 상태) 확인 — 보드에서 부모(Story)와 하위(Subtask)가
+      같은 상태명이어도 아이콘/계층으로 헷갈리지 않는지 실제로 확인.
 - [ ] 승인된 계획을 **재계획**(PM이 같은 부모를 다시 처리) → `keepTaskKeys`로 유지된
-      하위 이슈가 여전히 실행 가능한지(버전 불일치로 실패하지 않는지), 새로
-      `taskWaitingStatus`로 만들어진 뒤 버려진 하위 이슈가 실제로 `ggjira-superseded`
-      라벨을 받는지 확인.
+      하위 이슈가 여전히 실행 가능한지(버전 불일치로 실패하지 않는지), 버려진 하위
+      이슈(Jira 기본 생성 상태에 그대로 있는 것)가 실제로 `ggjira-superseded` 라벨을
+      받는지 확인.
 - [ ] 결정 요청(`needsDecision`)에 사람이 `decisionId:` 줄 없이 그냥 "Decision: A"만
       답했을 때 PM이 정상적으로 다음 계획을 진행하는지 확인.
 - [ ] `ggjira setup --check` 출력에서 `execution agent field:`가 실제 Jira 커스텀

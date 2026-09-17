@@ -107,9 +107,10 @@ function validateTaskGraph(tasks: Array<z.infer<typeof PlanTaskSchema>>, taskIds
  * Whether an existing subtask is still untouched and safe to supersede on a replan. In v2/legacy
  * mode a fresh task always sits at `workflow.readyStatus`, so equality is exact. In v4 mode a
  * fresh task can land in any of several "not yet claimed" statuses depending on setup
- * (`implementationStatus`, `taskWaitingStatus`, or wherever `pm.taskReadyTransitionName` happens
- * to lead) -- so instead of matching one fixed "ready" status, treat anything that hasn't reached
- * in-progress/review/done/plan-review as still pending.
+ * (`implementationStatus`, or wherever `pm.taskReadyTransitionName` happens to lead) -- so
+ * instead of matching one fixed "ready" status, treat anything that hasn't reached
+ * in-progress/review/done as still pending. inProgressStatus/reviewStatus are shared between the
+ * planning and implementation lanes (ADR 0017), so this one check already covers both.
  */
 function isStillPending(config: AppConfig, task: JiraIssue): boolean {
   if (config.configVersion !== 4) return task.statusName === config.workflow.readyStatus;
@@ -118,8 +119,6 @@ function isStillPending(config: AppConfig, task: JiraIssue): boolean {
       config.workflow.inProgressStatus,
       config.workflow.reviewStatus,
       config.workflow.completionStatus,
-      config.workflow.planningInProgressStatus,
-      config.workflow.planReviewStatus,
     ].filter((status): status is string => Boolean(status)),
   );
   return !startedStatuses.has(task.statusName);
@@ -218,9 +217,11 @@ export async function applyPlan(
         : { assigneeAccountId: await resolveLegacyAssignee(jira, config, roster, task) }),
     });
     createdByTaskId.set(taskId, key);
-    if (config.distribution.enabled && config.workflow.taskWaitingStatus) {
-      await jira.transitionIssueToStatus(key, config.workflow.taskWaitingStatus);
-    } else if (config.pm.taskReadyTransitionName) {
+    // Distribution mode deliberately leaves a new task at Jira's default creation status rather
+    // than moving it anywhere: nothing auto-approves it for execution either way (a human must
+    // still move it to workflow.implementationStatus themselves), so there's no behavior a
+    // distinct "waiting" status would gate that leaving it alone doesn't already gate (ADR 0017).
+    if (!config.distribution.enabled && config.pm.taskReadyTransitionName) {
       await jira.transitionIssue(key, config.pm.taskReadyTransitionName);
     }
     createdKeys.push(key);
@@ -273,7 +274,6 @@ export async function applyPlan(
   if (config.distribution.enabled) {
     await jira.setIssueProperty(parent.key, PLAN_PROPERTY_KEY, {
       version: planVersion,
-      status: "review",
       taskIds: [...taskIds, ...keptTaskIds],
       ...(decisionId ? { decisionId } : {}),
     });

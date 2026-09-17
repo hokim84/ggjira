@@ -115,26 +115,15 @@ describe("runSetupWizard: Polling & statuses only", () => {
   });
 
   it("configures human approval statuses and canonical execution-agent IDs", async () => {
-    jira.seedProjectStatuses("KAN", [
-      "AI Request",
-      "Doing",
-      "Review",
-      "Planning",
-      "Planning In Progress",
-      "Plan Review",
-      "Execution Approved",
-      "Waiting",
-    ]);
+    jira.seedProjectStatuses("KAN", ["AI Request", "Doing", "Review", "Planning"]);
+    // Just 4 statuses now (ADR 0017): planning shares in-progress/review with implementation,
+    // so only its own request status needs asking.
     const ask = scriptedAsk([
       "", // enable
-      "1",
-      "2",
-      "3",
-      "4",
-      "5",
-      "6",
-      "7",
-      "8",
+      "1", // implementationStatus -> AI Request
+      "2", // inProgressStatus -> Doing
+      "3", // reviewStatus -> Review
+      "4", // planningStatus -> Planning
       "12345",
       "workspace-a",
       "option-agent-a",
@@ -151,11 +140,10 @@ describe("runSetupWizard: Polling & statuses only", () => {
 
     const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
     expect(config.workflow).toMatchObject({
+      implementationStatus: "AI Request",
+      inProgressStatus: "Doing",
+      reviewStatus: "Review",
       planningStatus: "Planning",
-      planningInProgressStatus: "Planning In Progress",
-      planReviewStatus: "Plan Review",
-      executionApprovedStatus: "Execution Approved",
-      taskWaitingStatus: "Waiting",
     });
     expect(config.distribution).toEqual({
       enabled: true,
@@ -170,9 +158,6 @@ describe("runSetupWizard: Polling & statuses only", () => {
     // executionAgentOptionId names this one machine, so it's deliberately absent here.
     const workspace = (await jira.searchIssues(`labels = "${WORKSPACE_LABEL}"`))[0];
     expect(workspace?.description).toContain("Planning Status: Planning");
-    expect(workspace?.description).toContain("Plan Review Status: Plan Review");
-    expect(workspace?.description).toContain("Execution Approved Status: Execution Approved");
-    expect(workspace?.description).toContain("Task Waiting Status: Waiting");
     expect(workspace?.description).toContain("Enabled: true");
     expect(workspace?.description).toContain("Execution Agent Field ID: customfield_12345");
     expect(workspace?.description).toContain("Workspace ID: workspace-a");
@@ -646,10 +631,6 @@ describe("runSetupWizard: Join as Agent", () => {
         "In Progress Status: In Progress",
         "Review Status: In Review",
         "Planning Status: AI Planning",
-        "Planning In Progress Status: AI Planning In Progress",
-        "Plan Review Status: Plan Review",
-        "Execution Approved Status: Execution Approved",
-        "Task Waiting Status: Waiting",
         "Subtask Issue Type: Subtask",
         "",
         "h2. Distribution",
@@ -697,8 +678,7 @@ describe("runSetupWizard: Join as Agent", () => {
 
     const config = JSON.parse(readFileSync(path.join(cwd, "ggjira.config.json"), "utf-8"));
     expect(config.agent.profileKey).toBe(profile.issueKey);
-    expect(config.workflow.executionApprovedStatus).toBe("Execution Approved");
-    expect(config.workflow.taskWaitingStatus).toBe("Waiting");
+    expect(config.workflow.planningStatus).toBe("AI Planning");
     expect(config.distribution).toEqual({
       enabled: true,
       executionAgentFieldId: "customfield_12345",

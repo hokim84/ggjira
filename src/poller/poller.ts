@@ -75,12 +75,12 @@ export async function findAssignedJobs(
       if (issue.statusName === config.workflow.planningStatus) return issue;
       try {
         const metadata = await readPlanTaskMetadata(jira, issue.key);
-        // Manually created implementation issues remain supported. Planned
-        // subtasks, however, are gated by their parent's explicit approval.
+        // Manually created implementation issues remain supported. Planned subtasks are
+        // gated only by workspace match here -- moving a task to implementationStatus at all
+        // is itself the approval (ADR 0017), and the exact plan-version match is checked at
+        // execution time in agent/runtime.ts, after claiming.
         if (!metadata) return issue;
-        if (metadata.workspaceId !== config.distribution.workspaceId) return null;
-        const parent = await jira.getIssue(metadata.parentKey);
-        return parent.statusName === config.workflow.executionApprovedStatus ? issue : null;
+        return metadata.workspaceId === config.distribution.workspaceId ? issue : null;
       } catch (error) {
         // Corrupted plan-task metadata excludes only this issue (fail closed)
         // rather than the whole cycle -- other candidates are unaffected.

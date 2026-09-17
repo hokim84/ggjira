@@ -505,10 +505,6 @@ describe("bootstrapAgent distribution gating", () => {
         inProgressStatus: "In Progress",
         reviewStatus: "In Review",
         planningStatus: "AI Planning",
-        planningInProgressStatus: "AI Planning In Progress",
-        planReviewStatus: "Plan Review",
-        executionApprovedStatus: "Execution Approved",
-        taskWaitingStatus: "Waiting for Assignment",
       },
       workspace: { path: targetRepoPath, baseBranch: "main", validateCommand: null },
       distribution: {
@@ -583,45 +579,13 @@ describe("bootstrapAgent distribution gating", () => {
     expect(job?.error).toContain("Expected workspace workspace-a");
   });
 
-  it("cancels when the parent plan is not (yet, or no longer) approved for execution", async () => {
-    const config = buildDistributionConfig();
-    const parent = buildTestIssue({ key: "KAN-1", statusName: "Plan Review" });
-    jira.seedIssue(parent);
-    const issue = buildTestIssue({
-      key: "KAN-42",
-      statusName: "AI Implementation",
-      assigneeAccountId: "human-account",
-      executionAgentOptionId: "agent-a",
-    });
-    jira.seedIssue(issue, [{ id: "1", name: "Start", toStatusName: "In Progress" }]);
-    await jira.setIssueProperty(issue.key, PLAN_TASK_PROPERTY_KEY, {
-      planVersion: "v1",
-      taskId: "task-1",
-      parentKey: "KAN-1",
-      workspaceId: "workspace-a",
-      dependencies: [],
-    });
-    const runtime = await bootstrapAgent({
-      config,
-      jira,
-      store,
-      provider: successProvider(),
-      worktreesRoot,
-    });
-
-    const job = await runJobForIssue(issue, config, runtime.cycleDeps);
-
-    expect(job?.status).toBe("cancelled");
-    expect(job?.summary).toContain("not approved for execution");
-  });
-
   it("fails when the task's plan version no longer matches the parent's current plan", async () => {
     const config = buildDistributionConfig();
-    const parent = buildTestIssue({ key: "KAN-1", statusName: "Execution Approved" });
-    jira.seedIssue(parent);
-    await jira.setIssueProperty(parent.key, PLAN_PROPERTY_KEY, {
+    // Moving this task to implementationStatus is itself the approval (ADR 0017) -- there is no
+    // separate parent-level status to also set here, and the parent issue doesn't even need to
+    // exist as a seeded issue: only its ggjira.plan property is ever read.
+    await jira.setIssueProperty("KAN-1", PLAN_PROPERTY_KEY, {
       version: "v2",
-      status: "review",
       taskIds: ["task-1"],
     });
     const issue = buildTestIssue({
@@ -677,13 +641,10 @@ describe("bootstrapAgent distribution gating", () => {
     expect(job?.error).toContain("doesn't match the expected shape");
   });
 
-  it("proceeds when the option, workspace, parent approval, and plan version all agree", async () => {
+  it("proceeds when the option, workspace, and plan version all agree", async () => {
     const config = buildDistributionConfig();
-    const parent = buildTestIssue({ key: "KAN-1", statusName: "Execution Approved" });
-    jira.seedIssue(parent);
-    await jira.setIssueProperty(parent.key, PLAN_PROPERTY_KEY, {
+    await jira.setIssueProperty("KAN-1", PLAN_PROPERTY_KEY, {
       version: "v1",
-      status: "review",
       taskIds: ["task-1"],
     });
     const issue = buildTestIssue({

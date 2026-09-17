@@ -255,15 +255,13 @@ PM 배포"). `job.json.error`의 문구로 원인을 좁힌다.
 - **"This task belongs to a different workspace" (failed)**: `ggjira.plan-task.workspaceId`가
   이 머신의 `distribution.workspaceId`와 다르다. 서로 다른 프로젝트/환경의 config를 같은
   Jira 프로젝트에 잘못 연결했을 가능성이 크다.
-- **"The parent plan is not approved for execution" (cancelled)**: 부모 이슈가 아직
-  `workflow.executionApprovedStatus`가 아니다 — 사람이 계획을 검토해 부모를 그 상태로
-  옮겨야 한다.
 - **"The task no longer matches the current parent plan" (failed)**: 부모의
   `ggjira.plan.version`과 이 하위 이슈의 `ggjira.plan-task.planVersion`이 다르다.
   보통 재계획이 일어났는데 이 하위 이슈가 `keepTaskKeys`에 없었거나(=의도적으로
   superseded 대상), 또는 재계획 자체가 옛 GGJIRA 버전(ADR 0016 이전)으로 실행돼
   `keepTaskKeys`의 재기록 로직이 없었던 경우다. 최신 버전으로 다시 재계획하거나, 이
-  하위 이슈를 사람이 직접 정리한다.
+  하위 이슈를 사람이 직접 정리한다. (부모 단위의 별도 "실행 승인" 상태는 없다 — ADR 0017
+  이후로는 이 하위 이슈를 `implementationStatus`로 옮기는 것 자체가 승인이다.)
 - **"This task's plan metadata is corrupted and could not be verified" (failed)**: 이
   이슈의 `ggjira.plan-task` issue property가 존재하지만 예상 스키마와 맞지 않는다(수동
   편집 등). `GET /rest/api/2/issue/{key}/properties/ggjira.plan-task`로 실제 값을 확인해

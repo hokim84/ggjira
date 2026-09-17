@@ -70,13 +70,7 @@ describe("createWorkspaceConfig / findWorkspaceConfig", () => {
 
     const parsed = parseWorkspaceConfig(issue);
 
-    expect(parsed.workflow).toEqual({
-      ...baseInput.workflow,
-      planningInProgressStatus: null,
-      planReviewStatus: null,
-      executionApprovedStatus: null,
-      taskWaitingStatus: null,
-    });
+    expect(parsed.workflow).toEqual(baseInput.workflow);
     expect(parsed.projectKey).toBe("KAN");
     expect(parsed.configVersion).toBe(3);
   });

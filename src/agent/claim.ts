@@ -59,14 +59,13 @@ export async function claimJob(
   // Moving the issue out of the request status is the claim: it is what stops
   // a second machine picking the same issue up, and what shows a human on the
   // board that the agent is working (ADR 0015). Status-based configs say where
-  // to move it; legacy configs still name the transition directly.
+  // to move it; legacy configs still name the transition directly. The
+  // planning and implementation lanes share the same in-progress status
+  // (ADR 0017) -- nothing downstream needs to tell a claimed plan apart from
+  // a claimed implementation once routing has already happened.
   try {
-    const targetStatus =
-      issue.statusName === config.workflow.planningStatus
-        ? (config.workflow.planningInProgressStatus ?? config.workflow.inProgressStatus)
-        : config.workflow.inProgressStatus;
-    if (targetStatus) {
-      await jira.transitionIssueToStatus(issue.key, targetStatus);
+    if (config.workflow.inProgressStatus) {
+      await jira.transitionIssueToStatus(issue.key, config.workflow.inProgressStatus);
     } else {
       await jira.transitionIssue(issue.key, config.workflow.claimTransitionName);
     }

@@ -261,10 +261,6 @@ describe("runSetupWizard", () => {
             inProgressStatus: "In Progress",
             reviewStatus: "In Review",
             planningStatus: "AI Planning",
-            planningInProgressStatus: "AI Planning In Progress",
-            planReviewStatus: "Plan Review",
-            executionApprovedStatus: "Execution Approved",
-            taskWaitingStatus: "Waiting",
           },
           workspace: { path: cwd, baseBranch: "main" },
           provider: { type: "claude-code", command: "claude" },
@@ -286,10 +282,6 @@ describe("runSetupWizard", () => {
         "In Progress",
         "In Review",
         "AI Planning",
-        "AI Planning In Progress",
-        "Plan Review",
-        "Execution Approved",
-        "Waiting",
       ]);
       jira.seedFields([{ id: "customfield_12345", name: "Execution Agent" }]);
 
@@ -313,10 +305,6 @@ describe("runSetupWizard", () => {
         "In Progress",
         "In Review",
         "AI Planning",
-        "AI Planning In Progress",
-        "Plan Review",
-        "Execution Approved",
-        "Waiting",
       ]);
       jira.seedFields([{ id: "customfield_12345", name: "Execution Agent" }]);
 

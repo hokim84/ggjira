@@ -56,14 +56,14 @@ export interface WorkspaceWorkflow {
   implementationStatus: string;
   inProgressStatus: string;
   reviewStatus: string;
-  /** PM only, opt-in: setup doesn't ask, so these are set by editing the Jira issue. */
+  /**
+   * PM only, opt-in: setup doesn't ask, so this is set by editing the Jira issue (or by setup
+   * option 5 once human distribution is enabled). Its in-progress/review points reuse
+   * inProgressStatus/reviewStatus above -- planning and implementation never need telling apart
+   * by status once routing has already happened (ADR 0017).
+   */
   planningStatus?: string | null;
   needsDecisionStatus?: string | null;
-  /** Human-approved PM distribution statuses (setup option 5); unset unless distribution is enabled. */
-  planningInProgressStatus?: string | null;
-  planReviewStatus?: string | null;
-  executionApprovedStatus?: string | null;
-  taskWaitingStatus?: string | null;
   subtaskIssueType: string;
 }
 

@@ -395,30 +395,13 @@ export async function runDistributionSettingsFlow(ctx: FlowContext): Promise<Set
     "reviewStatus",
     "In Review",
   );
+  // Planning reuses inProgressStatus/reviewStatus above -- a claimed plan and a claimed
+  // implementation never need telling apart by status once routing is done (ADR 0017), so
+  // there's nothing to ask beyond where a plan *request* starts.
   const planningStatus = await askConfiguredStatus(
     "4) Planning request status",
     "planningStatus",
     "AI Planning",
-  );
-  const planningInProgressStatus = await askConfiguredStatus(
-    "5) Planning in-progress status",
-    "planningInProgressStatus",
-    "AI Planning In Progress",
-  );
-  const planReviewStatus = await askConfiguredStatus(
-    "6) Human plan review status",
-    "planReviewStatus",
-    "Plan Review",
-  );
-  const executionApprovedStatus = await askConfiguredStatus(
-    "7) Parent plan approved status",
-    "executionApprovedStatus",
-    "Execution Approved",
-  );
-  const taskWaitingStatus = await askConfiguredStatus(
-    "8) Generated task waiting-for-distribution status",
-    "taskWaitingStatus",
-    "Waiting for Assignment",
   );
   const fieldIdInput = await ctx.ask(
     "Execution agent Jira single-select field ID (customfield_12345 or 12345; not the field name)",
@@ -449,10 +432,6 @@ export async function runDistributionSettingsFlow(ctx: FlowContext): Promise<Set
       inProgressStatus,
       reviewStatus,
       planningStatus,
-      planningInProgressStatus,
-      planReviewStatus,
-      executionApprovedStatus,
-      taskWaitingStatus,
     },
     distribution: {
       enabled: true,
@@ -482,10 +461,6 @@ export async function runDistributionSettingsFlow(ctx: FlowContext): Promise<Set
         inProgressStatus,
         reviewStatus,
         planningStatus,
-        planningInProgressStatus,
-        planReviewStatus,
-        executionApprovedStatus,
-        taskWaitingStatus,
       },
       distribution: { enabled: true, executionAgentFieldId: fieldId, workspaceId },
     });
@@ -571,24 +546,6 @@ function buildProfileConfig(input: BuildProfileConfigInput): Record<string, unkn
       ...(input.workflow.planningStatus ? { planningStatus: input.workflow.planningStatus } : {}),
       ...(input.workflow.needsDecisionStatus
         ? { needsDecisionStatus: input.workflow.needsDecisionStatus }
-        : {}),
-      // Human distribution (setup option 5) is likewise opt-in: these four only land here when
-      // the shared Workspace Configuration issue declares distribution enabled.
-      ...(input.distribution?.enabled
-        ? {
-            ...(input.workflow.planningInProgressStatus
-              ? { planningInProgressStatus: input.workflow.planningInProgressStatus }
-              : {}),
-            ...(input.workflow.planReviewStatus
-              ? { planReviewStatus: input.workflow.planReviewStatus }
-              : {}),
-            ...(input.workflow.executionApprovedStatus
-              ? { executionApprovedStatus: input.workflow.executionApprovedStatus }
-              : {}),
-            ...(input.workflow.taskWaitingStatus
-              ? { taskWaitingStatus: input.workflow.taskWaitingStatus }
-              : {}),
-          }
         : {}),
     },
     workspace: { path: input.local.workspacePath, baseBranch: input.local.baseBranch },

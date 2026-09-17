@@ -121,19 +121,18 @@ export async function reportForResult(
 
   if (job.status === "succeeded") {
     await addCommentOnce(jira, issue.key, job.runId, buildSuccessComment(job, config, result));
-    if (result.status === "planned") {
-      if (config.workflow.planReviewStatus) {
-        await jira.transitionIssueToStatus(issue.key, config.workflow.planReviewStatus);
-      } else if (config.workflow.plannedTransitionName) {
+    if (config.workflow.reviewStatus) {
+      // A finished plan and a finished implementation land in the same review status --
+      // human review is human review either way, and the issue's own hierarchy/type already
+      // tells a plan apart from an implementation on the board (ADR 0017). GGJIRA never
+      // transitions an issue to a completion status -- closing is the human's call (ADR 0015).
+      await jira.transitionIssueToStatus(issue.key, config.workflow.reviewStatus);
+    } else if (result.status === "planned") {
+      if (config.workflow.plannedTransitionName) {
         await jira.transitionIssue(issue.key, config.workflow.plannedTransitionName);
       } else {
         await jira.addLabel(issue.key, PLANNED_LABEL);
       }
-    } else if (config.workflow.reviewStatus) {
-      // Implementation is done; the issue moves to review and stops there.
-      // GGJIRA never transitions an issue to a completion status -- closing is
-      // the human's call (ADR 0015).
-      await jira.transitionIssueToStatus(issue.key, config.workflow.reviewStatus);
     } else {
       await jira.transitionIssue(issue.key, config.workflow.doneTransitionName);
     }

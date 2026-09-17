@@ -116,17 +116,13 @@ describe("findAssignedJobs", () => {
     expect(candidates.map((i) => i.key)).toEqual(["KAN-1"]);
   });
 
-  it("only returns a distributed planned task after parent approval and agent selection", async () => {
+  it("only returns a distributed task once its plan-task metadata names this workspace", async () => {
     const jira = new FakeJiraGateway();
     const distributed = buildTestConfig({
       configVersion: 4,
       workflow: {
         ...config.workflow,
         planningStatus: "AI Planning",
-        planningInProgressStatus: "Planning In Progress",
-        planReviewStatus: "Plan Review",
-        executionApprovedStatus: "Execution Approved",
-        taskWaitingStatus: "Waiting",
         implementationStatus: "AI Implementation",
         inProgressStatus: "In Progress",
         reviewStatus: "In Review",
@@ -138,7 +134,6 @@ describe("findAssignedJobs", () => {
         workspaceId: "workspace-a",
       },
     });
-    jira.seedIssue(buildTestIssue({ key: "KAN-10", statusName: "Plan Review" }));
     jira.seedIssue(
       buildTestIssue({
         key: "KAN-11",
@@ -147,6 +142,18 @@ describe("findAssignedJobs", () => {
         executionAgentOptionId: "agent-a",
       }),
     );
+    // Moving the task to implementationStatus (its statusName above) is itself the approval
+    // (ADR 0017) -- the only thing the poller still gates on is workspace identity.
+    await jira.setIssueProperty("KAN-11", PLAN_TASK_PROPERTY_KEY, {
+      planVersion: "v1",
+      taskId: "task-1",
+      parentKey: "KAN-10",
+      workspaceId: "some-other-workspace",
+      dependencies: [],
+    });
+
+    expect(await findAssignedJobs(jira, distributed, store)).toEqual([]);
+
     await jira.setIssueProperty("KAN-11", PLAN_TASK_PROPERTY_KEY, {
       planVersion: "v1",
       taskId: "task-1",
@@ -154,9 +161,6 @@ describe("findAssignedJobs", () => {
       workspaceId: "workspace-a",
       dependencies: [],
     });
-
-    expect(await findAssignedJobs(jira, distributed, store)).toEqual([]);
-    jira.seedIssue(buildTestIssue({ key: "KAN-10", statusName: "Execution Approved" }));
     expect((await findAssignedJobs(jira, distributed, store)).map((issue) => issue.key)).toEqual([
       "KAN-11",
     ]);
@@ -169,10 +173,6 @@ describe("findAssignedJobs", () => {
       workflow: {
         ...config.workflow,
         planningStatus: "AI Planning",
-        planningInProgressStatus: "Planning In Progress",
-        planReviewStatus: "Plan Review",
-        executionApprovedStatus: "Execution Approved",
-        taskWaitingStatus: "Waiting",
         implementationStatus: "AI Implementation",
         inProgressStatus: "In Progress",
         reviewStatus: "In Review",
@@ -184,7 +184,6 @@ describe("findAssignedJobs", () => {
         workspaceId: "workspace-a",
       },
     });
-    jira.seedIssue(buildTestIssue({ key: "KAN-10", statusName: "Execution Approved" }));
     jira.seedIssue(
       buildTestIssue({
         key: "KAN-11",
