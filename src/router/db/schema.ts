@@ -143,3 +143,52 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
     detail TEXT
   )`,
 ];
+
+/**
+ * Migration 2 (stage 3 — worker communication). Additive only: `SCHEMA_STATEMENTS` above is
+ * migration 1 and has shipped, so it is never edited.
+ */
+export const WORKER_PROTOCOL_STATEMENTS: readonly string[] = [
+  // A pairing code is minted for one workerId already declared in Router config's `workers[]`
+  // policy list (ADR 0020): the code, not the registering worker, decides the identity.
+  "ALTER TABLE pairing_codes ADD COLUMN worker_id TEXT",
+
+  // Availability as last reported by the worker itself. Only ever intersected with the admin's
+  // policy, never trusted alone (§2 "관리자가 허용한 capability·저장소와 워커가 보고한 가용성의
+  // 교집합만 사용한다").
+  "ALTER TABLE workers ADD COLUMN reported_capabilities TEXT NOT NULL DEFAULT '[]'",
+  "ALTER TABLE workers ADD COLUMN reported_repository_ids TEXT NOT NULL DEFAULT '[]'",
+  "ALTER TABLE workers ADD COLUMN last_heartbeat_at TEXT",
+  "ALTER TABLE workers ADD COLUMN last_assigned_at TEXT",
+  // Only the newest session may drive the worker's attempts; opening a session supersedes the
+  // previous one, so a stale duplicate worker process loses its authority.
+  "ALTER TABLE workers ADD COLUMN current_session_id TEXT",
+
+  `CREATE TABLE IF NOT EXISTS worker_sessions (
+    id TEXT PRIMARY KEY,
+    worker_id TEXT NOT NULL REFERENCES workers (id),
+    created_at TEXT NOT NULL,
+    superseded_at TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_worker_sessions_worker ON worker_sessions (worker_id)",
+
+  // Which session leased the attempt and which `jobs/next` requestId it was served to, so a
+  // resent `jobs/next` after a lost response returns the same reservation (§3 "requestId를
+  // 필수로 받아 응답 유실 후 동일 요청을 재전송하면 동일 예약을 반환한다").
+  "ALTER TABLE attempts ADD COLUMN session_id TEXT",
+  "ALTER TABLE attempts ADD COLUMN request_id TEXT",
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_attempts_request
+    ON attempts (worker_id, request_id)
+    WHERE request_id IS NOT NULL`,
+
+  // The input hash the job was dispatched with. `approvals.input_hash` is overwritten on every
+  // reconcile, so without this the scheduler couldn't tell that a description/capability/
+  // dependency/plan-version edit happened underneath an open job (§2 "실행 중 작업 설명·요구
+  // capability·의존성 변경도 취소하고 새 승인을 요구한다"). NULL only for pre-migration rows.
+  "ALTER TABLE jobs ADD COLUMN input_hash TEXT",
+
+  // 0 = kept only as an audit record (arrived after its attempt stopped being current), 1 = the
+  // result moved the job/attempt state.
+  "ALTER TABLE results ADD COLUMN applied INTEGER NOT NULL DEFAULT 1",
+  "CREATE INDEX IF NOT EXISTS idx_results_attempt ON results (attempt_id)",
+];

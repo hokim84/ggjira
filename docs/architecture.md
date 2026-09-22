@@ -8,6 +8,26 @@
 [`decisions/0018-router-centric-architecture.md`](./decisions/0018-router-centric-architecture.md)를
 본다. 이 절 아래의 내용(v2~v4)은 이 전환이 완료되기 전까지 유효한 현재 실행 경로다.
 
+현재 3단계까지 구현되었다. Router(`src/router/`)는 웹훅·후보 조회·승인 식별·규칙 기반 배정과
+`/api/v1/*` Worker API(pairing, 세션, `jobs/next` long polling, start, heartbeat, authorize,
+result)를 SQLite 위에서 제공한다. Worker(`src/worker-runtime/`)는 Router에만 연결해 envelope를
+받고 기존 `src/worker/` provider·worktree로 실행하며, 결과를 로컬 spool에 저장한 뒤 제출한다.
+Worker Runtime은 `src/jira/`를 import하지 않는다(`test/worker-runtime-no-jira.test.ts`).
+프로토콜 세부 판단은 [`decisions/0020-router-stage3-worker-protocol.md`](./decisions/0020-router-stage3-worker-protocol.md).
+
+```
+Worker                                   Router (SQLite)
+  workers/session ───────────────────▶   현재 세션 교체, 미확정 attempt 반환
+  workers/heartbeat (5s) ────────────▶   가용성 기록, 취소 지시
+  jobs/next (≤25s) ──────────────────▶   queued job 임대(30s) → envelope
+  jobs/{id}/start ───────────────────▶   승인 재확인 → running
+  jobs/{id}/heartbeat (5s) ──────────▶   임대 갱신, 승인 변경 시 cancel
+  jobs/{id}/authorize (커밋·검증 직전) ▶   실행 권한 재확인
+  spool → jobs/{id}/result ──────────▶   결과 저장, 현재 attempt일 때만 상태 반영
+```
+
+Jira 반영(결과 댓글·상태 전이·PM 계획 적용)과 실행 진입점 CLI는 아직 없다(4·5단계).
+
 ## Capability 기반 Runtime (configVersion 4)
 
 v4에서는 한 Runtime이 planning과 implementation 핸들러를 모두 보유하고 Jira 상태에 따라

@@ -38,7 +38,9 @@ const ALLOWED_JOB_TRANSITIONS: Readonly<Record<JobState, ReadonlySet<JobState>>>
   queued: new Set(["leased", "cancelled"]),
   leased: new Set(["running", "queued", "cancelled"]),
   running: new Set(["succeeded", "failed", "timed_out", "cancel_requested", "recovery_required"]),
-  cancel_requested: new Set(["cancelled"]),
+  // `recovery_required` when the lease runs out before the worker confirms it stopped: a
+  // cancel request doesn't prove the process is gone (ADR 0020).
+  cancel_requested: new Set(["cancelled", "recovery_required"]),
   recovery_required: new Set(["cancelled", "queued"]),
   failed: new Set(["queued"]),
   timed_out: new Set(["queued"]),

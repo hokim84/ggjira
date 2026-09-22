@@ -45,14 +45,14 @@ describe("Router SQLite store", () => {
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     });
 
-    it("applies migration 1 and records it in schema_migrations", () => {
-      expect(currentSchemaVersion(db)).toBe(1);
+    it("applies every migration and records it in schema_migrations", () => {
+      expect(currentSchemaVersion(db)).toBe(2);
     });
 
     it("is idempotent: reopening an existing database does not re-run migrations", () => {
       db.close();
       const reopened = openRouterDb(dbPath);
-      expect(currentSchemaVersion(reopened)).toBe(1);
+      expect(currentSchemaVersion(reopened)).toBe(2);
       reopened.close();
       // Reopen once more so the outer afterEach's db.close() has a live handle.
       db = openRouterDb(dbPath);

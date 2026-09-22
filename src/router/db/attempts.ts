@@ -18,6 +18,10 @@ export interface AttemptRow {
   endedAt: string | null;
   state: AttemptState;
   resultId: string | null;
+  /** Worker session the attempt was handed to (null until served through `jobs/next`). */
+  sessionId: string | null;
+  /** The `jobs/next` requestId that was served this attempt, for idempotent replays. */
+  requestId: string | null;
 }
 
 export interface LeaseAttemptInput {
@@ -28,6 +32,8 @@ export interface LeaseAttemptInput {
   leaseExpiresAt: string;
   /** ISO timestamp. Caller-supplied so tests can use a fake clock. */
   now: string;
+  sessionId?: string | null;
+  requestId?: string | null;
 }
 
 /** Thrown when a worker already holds an active attempt lease
@@ -52,6 +58,8 @@ function toAttemptRow(row: Record<string, unknown>): AttemptRow {
     endedAt: (row.ended_at as string | null) ?? null,
     state: row.state as AttemptState,
     resultId: (row.result_id as string | null) ?? null,
+    sessionId: (row.session_id as string | null) ?? null,
+    requestId: (row.request_id as string | null) ?? null,
   };
 }
 
@@ -68,8 +76,8 @@ export function leaseAttempt(db: Database.Database, input: LeaseAttemptInput): A
       db.prepare(
         `INSERT INTO attempts (
           id, job_id, worker_id, lease_token, leased_at, lease_expires_at,
-          started_at, ended_at, state, result_id
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'leased', NULL)`,
+          started_at, ended_at, state, result_id, session_id, request_id
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'leased', NULL, ?, ?)`,
       ).run(
         input.id,
         input.jobId,
@@ -77,6 +85,8 @@ export function leaseAttempt(db: Database.Database, input: LeaseAttemptInput): A
         input.leaseToken,
         input.now,
         input.leaseExpiresAt,
+        input.sessionId ?? null,
+        input.requestId ?? null,
       );
     } catch (error) {
       if (isUniqueConstraintViolation(error)) {
@@ -114,6 +124,63 @@ export function getActiveAttemptForWorker(
     .prepare(`SELECT * FROM attempts WHERE worker_id = ? AND state IN (${placeholders})`)
     .get(workerId, ...ACTIVE_ATTEMPT_STATES) as Record<string, unknown> | undefined;
   return row ? toAttemptRow(row) : undefined;
+}
+
+/** The attempt already served to this worker's `jobs/next` `requestId`, if any. */
+export function getAttemptByRequestId(
+  db: Database.Database,
+  workerId: string,
+  requestId: string,
+): AttemptRow | undefined {
+  const row = db
+    .prepare("SELECT * FROM attempts WHERE worker_id = ? AND request_id = ?")
+    .get(workerId, requestId) as Record<string, unknown> | undefined;
+  return row ? toAttemptRow(row) : undefined;
+}
+
+/** Records which session/request an attempt was handed to. An unstarted lease may be re-served
+ *  to a later requestId (e.g. the worker restarted and generated a fresh one), so this overwrites. */
+export function bindAttemptToRequest(
+  db: Database.Database,
+  attemptId: string,
+  sessionId: string,
+  requestId: string,
+): void {
+  db.prepare("UPDATE attempts SET session_id = ?, request_id = ? WHERE id = ?").run(
+    sessionId,
+    requestId,
+    attemptId,
+  );
+}
+
+export function renewAttemptLease(
+  db: Database.Database,
+  attemptId: string,
+  leaseExpiresAt: string,
+): void {
+  db.prepare("UPDATE attempts SET lease_expires_at = ? WHERE id = ?").run(
+    leaseExpiresAt,
+    attemptId,
+  );
+}
+
+/** Active attempts whose lease ran out at or before `now` (the lease-expiry sweep's input). */
+export function listExpiredActiveAttempts(db: Database.Database, now: string): AttemptRow[] {
+  const placeholders = [...ACTIVE_ATTEMPT_STATES].map(() => "?").join(", ");
+  const rows = db
+    .prepare(
+      `SELECT * FROM attempts WHERE state IN (${placeholders}) AND lease_expires_at <= ? ORDER BY leased_at ASC`,
+    )
+    .all(...ACTIVE_ATTEMPT_STATES, now) as Record<string, unknown>[];
+  return rows.map(toAttemptRow);
+}
+
+export function setAttemptResultId(
+  db: Database.Database,
+  attemptId: string,
+  resultId: string,
+): void {
+  db.prepare("UPDATE attempts SET result_id = ? WHERE id = ?").run(resultId, attemptId);
 }
 
 /**

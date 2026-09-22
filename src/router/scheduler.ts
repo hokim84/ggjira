@@ -5,8 +5,14 @@ import { readIssueRequirements } from "../agent/requirements.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PlanMetadataError, type PlanTaskMetadata, readPlanTaskMetadata } from "../pm/metadata.js";
-import { getActiveAttemptForWorker, leaseAttempt } from "./db/attempts.js";
+import {
+  getActiveAttemptForWorker,
+  getAttempt,
+  leaseAttempt,
+  transitionAttemptState,
+} from "./db/attempts.js";
 import { upsertApproval } from "./db/approvals.js";
+import { markWorkerAssigned } from "./db/workers.js";
 import {
   createJob,
   type JobRow,
@@ -18,13 +24,13 @@ import {
 import { computeApprovalId, computeInputHash } from "./approval.js";
 import { findWorkspaceCandidates } from "./candidates.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
-import { canTransitionJobState } from "../contracts/job-state.js";
+import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 
 /** How long a lease is valid before Router considers it expired
  *  (docs/router-service-implementation-plan.md §3 "임대: 30초"). Stage 3/4 own renewal. */
-const LEASE_DURATION_MS = 30_000;
+export const LEASE_DURATION_MS = 30_000;
 
 export interface WorkerAvailability {
   workerId: string;
@@ -112,17 +118,44 @@ function cancelStaleJob(
   now: string,
   report: SchedulerReport,
 ): boolean {
-  if (canTransitionJobState(job.state, "cancelled")) {
-    transitionJobState(db, job.id, "cancelled", now);
+  // An explicit state list, not `canTransitionJobState`: `cancel_requested` and
+  // `recovery_required` can also reach `cancelled`, but only on a confirmed stop (worker result
+  // or admin resolve) — never because a reconcile pass noticed the approval is gone.
+  if (job.state === "waiting" || job.state === "queued" || job.state === "leased") {
+    const run = db.transaction(() => {
+      transitionJobState(db, job.id, "cancelled", now);
+      // A leased job's attempt must go with it, or it keeps occupying the worker's
+      // one-active-attempt slot even though its job is closed.
+      transitionCurrentAttempt(db, job, "cancelled", now);
+    });
+    run();
     report.jobsCancelled.push(job.id);
     return true;
   }
-  if (canTransitionJobState(job.state, "cancel_requested")) {
-    transitionJobState(db, job.id, "cancel_requested", now);
+  if (job.state === "running") {
+    const run = db.transaction(() => {
+      transitionJobState(db, job.id, "cancel_requested", now);
+      // The worker learns about it through the attempt (job/worker heartbeat).
+      transitionCurrentAttempt(db, job, "cancel_requested", now);
+    });
+    run();
     report.jobsCancelRequested.push(job.id);
     return false;
   }
   return false;
+}
+
+function transitionCurrentAttempt(
+  db: Database.Database,
+  job: JobRow,
+  to: "cancelled" | "cancel_requested",
+  now: string,
+): void {
+  if (!job.currentAttemptId) return;
+  const attempt = getAttempt(db, job.currentAttemptId);
+  if (attempt && canTransitionAttemptState(attempt.state, to)) {
+    transitionAttemptState(db, attempt.id, to, now);
+  }
 }
 
 async function reconcileIssue(
@@ -164,7 +197,9 @@ async function reconcileIssue(
 
   const existingJob = getOpenJobForIssue(deps.db, issue.key);
   if (existingJob) {
-    const approvalCurrent = existingJob.approvalId === approvalId;
+    const approvalCurrent =
+      existingJob.approvalId === approvalId &&
+      (existingJob.inputHash === null || existingJob.inputHash === inputHash);
     if (approvalCurrent && existingJob.state !== "waiting") {
       // Unchanged, already dispatched/leased/running/etc — nothing for this pass to do.
       return;
@@ -197,6 +232,7 @@ async function reconcileIssue(
       repositoryId: decision.repositoryId,
       kind: decision.target,
       approvalId,
+      inputHash,
       state: "queued",
       pinnedWorkerId: decision.pinnedWorkerId ?? null,
       requiredCapabilities: decision.requiredCapabilities,
@@ -216,6 +252,7 @@ async function reconcileIssue(
       repositoryId: workspace.repositoryId,
       kind,
       approvalId,
+      inputHash,
       state: "waiting",
       requiredCapabilities: requirements.requiredCapabilities,
       now,
@@ -227,13 +264,30 @@ async function reconcileIssue(
   report.held.push({ issueKey: issue.key, target: decision.target, reason: decision.reason });
 }
 
-function assignQueuedJobs(
-  deps: SchedulerDeps,
+/** What the assignment pass needs — no Jira, so `jobs/next` can run it on demand for one worker
+ *  (src/router/worker-service.ts) without waiting for the next background reconcile. */
+export type AssignDeps = Pick<SchedulerDeps, "db" | "config" | "now" | "genId">;
+
+export interface Assignment {
+  jobId: string;
+  workerId: string;
+  attemptId: string;
+}
+
+/**
+ * Leases `queued` jobs (oldest first) to matching workers. Exported so `jobs/next` can call it
+ * with just the requesting worker's availability. Each lease also stamps that worker's
+ * `last_assigned_at` (a no-op for workers not registered in the `workers` table), which is what
+ * `buildWorkerAvailability` feeds back as `lastAssignedAt` for the next pass's fairness order.
+ */
+export function assignQueuedJobs(
+  deps: AssignDeps,
   availableWorkers: WorkerAvailability[],
-  report: SchedulerReport,
-): void {
+  report?: SchedulerReport,
+): Assignment[] {
   const genId = deps.genId ?? randomUUID;
   const claimedWorkerIds = new Set<string>();
+  const assignments: Assignment[] = [];
 
   for (const job of getQueuedJobs(deps.db)) {
     const candidates = availableWorkers
@@ -261,18 +315,25 @@ function assignQueuedJobs(
 
     const now = deps.now();
     const leaseExpiresAt = new Date(new Date(now).getTime() + LEASE_DURATION_MS).toISOString();
-    leaseAttempt(deps.db, {
-      id: genId(),
-      jobId: job.id,
-      workerId: chosen.workerId,
-      leaseToken: genId(),
-      leaseExpiresAt,
-      now,
+    const attemptId = genId();
+    const lease = deps.db.transaction(() => {
+      leaseAttempt(deps.db, {
+        id: attemptId,
+        jobId: job.id,
+        workerId: chosen.workerId,
+        leaseToken: randomUUID(),
+        leaseExpiresAt,
+        now,
+      });
+      transitionJobState(deps.db, job.id, "leased", now);
+      markWorkerAssigned(deps.db, chosen.workerId, now);
     });
-    transitionJobState(deps.db, job.id, "leased", now);
+    lease();
     claimedWorkerIds.add(chosen.workerId);
-    report.jobsAssigned.push({ jobId: job.id, workerId: chosen.workerId });
+    report?.jobsAssigned.push({ jobId: job.id, workerId: chosen.workerId });
+    assignments.push({ jobId: job.id, workerId: chosen.workerId, attemptId });
   }
+  return assignments;
 }
 
 /**

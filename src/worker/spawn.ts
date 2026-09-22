@@ -42,8 +42,39 @@ class LineSplitter {
 }
 
 /**
+ * Terminates `pid` and every process it spawned (docs/router-service-implementation-plan.md
+ * §3 "Windows와 Linux의 프로세스 트리 종료를 모두 구현·검증한다").
+ *
+ * - Windows has no process groups addressable by `process.kill(-pid)` (that throws), so this
+ *   uses `taskkill /T` — first politely, then with `/F` when `force` is set.
+ * - Elsewhere the child was spawned `detached`, which makes it a process-group leader, so
+ *   signalling `-pid` reaches the whole group.
+ *
+ * Best-effort by design: the tree may already be gone.
+ */
+export function killProcessTree(pid: number, force: boolean): void {
+  if (process.platform === "win32") {
+    const args = ["/pid", String(pid), "/T", ...(force ? ["/F"] : [])];
+    try {
+      const killer = spawn("taskkill", args, { stdio: "ignore", windowsHide: true });
+      killer.on("error", () => {
+        // taskkill missing or the tree already exited; nothing more to do.
+      });
+    } catch {
+      // spawn itself failed synchronously; same as above.
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, force ? "SIGKILL" : "SIGTERM");
+  } catch {
+    // process group may already be gone
+  }
+}
+
+/**
  * Runs a CLI worker process to completion with a hard timeout: on timeout,
- * SIGTERMs the whole process group, then SIGKILLs it after a grace period.
+ * asks the whole process tree to stop, then force-kills it after a grace period.
  * Shared by every WorkerProvider implementation (the process-control
  * behavior — timeout, group kill, line buffering — is provider-agnostic;
  * only argument-building and result-parsing differ per CLI).
@@ -55,7 +86,10 @@ export function runProcessWithTimeout(opts: SpawnRunOptions): Promise<SpawnRunRe
   return new Promise<SpawnRunResult>((resolve) => {
     const child = spawn(opts.command, opts.args, {
       cwd: opts.cwd,
-      detached: true,
+      // Process-group leader on POSIX so `killProcessTree` can signal `-pid`. On Windows,
+      // `detached` would only open a separate console; `taskkill /T` walks the tree instead.
+      detached: process.platform !== "win32",
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -64,25 +98,25 @@ export function runProcessWithTimeout(opts: SpawnRunOptions): Promise<SpawnRunRe
     const stdout = new LineSplitter();
     const stderrChunks: string[] = [];
 
-    const killGroup = (signal: NodeJS.Signals) => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, signal);
-      } catch {
-        // process group may already be gone
-      }
+    let exited = false;
+    let forceKillHandle: NodeJS.Timeout | undefined;
+    // Ask the tree to stop, then force it after the grace period (§3 "중단 시 자식 프로세스 종료를
+    // 요청하고 5초 후 강제 종료한다"). Only the first request schedules the force kill.
+    const stopTree = () => {
+      if (child.pid === undefined || exited || forceKillHandle) return;
+      const pid = child.pid;
+      killProcessTree(pid, false);
+      forceKillHandle = setTimeout(() => {
+        if (!exited) killProcessTree(pid, true);
+      }, killGraceMs);
     };
 
     const timeoutHandle = setTimeout(() => {
       timedOut = true;
-      killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), killGraceMs);
+      stopTree();
     }, opts.timeoutMs);
 
-    const handleAbort = () => {
-      killGroup("SIGTERM");
-      setTimeout(() => killGroup("SIGKILL"), killGraceMs);
-    };
+    const handleAbort = () => stopTree();
     opts.signal?.addEventListener("abort", handleAbort, { once: true });
     if (opts.signal?.aborted) handleAbort();
 
@@ -96,7 +130,9 @@ export function runProcessWithTimeout(opts: SpawnRunOptions): Promise<SpawnRunRe
     });
 
     child.on("close", (code) => {
+      exited = true;
       clearTimeout(timeoutHandle);
+      if (forceKillHandle) clearTimeout(forceKillHandle);
       opts.signal?.removeEventListener("abort", handleAbort);
       stdout.flush(handleLine);
       resolve({

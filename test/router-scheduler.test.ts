@@ -3,70 +3,27 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { renderSections } from "../src/profile/description.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
-import { getActiveAttemptForWorker } from "../src/router/db/attempts.js";
+import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
 import { openRouterDb } from "../src/router/db/connection.js";
-import { getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
+import { getJob, getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
 import { RuleDecisionProvider } from "../src/router/decision.js";
-import type { RouterConfig, WorkerPolicyConfig, WorkspaceConfig } from "../src/router/config.js";
+import type { RouterConfig } from "../src/router/config.js";
 import {
   reconcileCandidates,
   type SchedulerDeps,
   type WorkerAvailability,
 } from "../src/router/scheduler.js";
-
-const REQUEST_STATUS = "AI 작업 요청";
-const PLANNING_STATUS = "AI 계획 요청";
-const IN_PROGRESS_STATUS = "작업 중";
-const REVIEW_STATUS = "AI 작업 완료";
-
-const workspace: WorkspaceConfig = {
-  id: "ws1",
-  repositoryId: "repo1",
-  projectKeys: ["KAN"],
-  workflow: {
-    requestStatus: REQUEST_STATUS,
-    planningStatus: PLANNING_STATUS,
-    inProgressStatus: IN_PROGRESS_STATUS,
-    reviewStatus: REVIEW_STATUS,
-  },
-};
-
-function description(opts: { dependencies?: string[]; capabilities?: string[] } = {}): string {
-  return renderSections([
-    { heading: "Dependencies", items: opts.dependencies ?? [] },
-    { heading: "Required Capabilities", items: opts.capabilities ?? ["programming"] },
-  ]);
-}
-
-function buildConfig(overrides: Partial<RouterConfig> = {}): RouterConfig {
-  return {
-    configVersion: 5,
-    jira: { baseUrl: "https://example.atlassian.net" },
-    repositories: [{ id: "repo1" }],
-    workspaces: [workspace],
-    workers: [],
-    db: { path: "data/router.sqlite3" },
-    http: { host: "127.0.0.1", port: 8787 },
-    reconciliation: {
-      startupFullSyncOnBoot: true,
-      backgroundIntervalMs: 60_000,
-      activeJobPollIntervalMs: 5_000,
-    },
-    ...overrides,
-  };
-}
-
-function workerPolicy(overrides: Partial<WorkerPolicyConfig> = {}): WorkerPolicyConfig {
-  return {
-    workerId: "worker-1",
-    allowedCapabilities: ["programming"],
-    allowedRepositoryIds: ["repo1"],
-    enabled: true,
-    ...overrides,
-  };
-}
+import {
+  buildRouterConfig as buildConfig,
+  issueDescription as description,
+  makeClock,
+  makeIdGenerator,
+  PLANNING_STATUS,
+  REQUEST_STATUS,
+  REVIEW_STATUS,
+  workerPolicy,
+} from "./helpers/router-fixtures.js";
 
 function workerAvailability(overrides: Partial<WorkerAvailability> = {}): WorkerAvailability {
   return {
@@ -76,20 +33,6 @@ function workerAvailability(overrides: Partial<WorkerAvailability> = {}): Worker
     lastAssignedAt: null,
     ...overrides,
   };
-}
-
-function makeClock(startMs = Date.parse("2026-01-01T00:00:00.000Z")): () => string {
-  let ms = startMs;
-  return () => {
-    const value = new Date(ms).toISOString();
-    ms += 1000;
-    return value;
-  };
-}
-
-function makeIdGenerator(prefix: string): () => string {
-  let counter = 0;
-  return () => `${prefix}-${counter++}`;
 }
 
 describe("reconcileCandidates", () => {
@@ -392,5 +335,66 @@ describe("reconcileCandidates", () => {
     expect(report.jobsCancelled).toContain(queuedJobId);
     expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
     expect(getQueuedJobs(db)).toHaveLength(0);
+  });
+
+  it("cancels a leased job together with its attempt when the issue's inputs change, freeing the worker", async () => {
+    jira.seedIssue({
+      key: "KAN-1",
+      statusName: REQUEST_STATUS,
+      projectKey: "KAN",
+      assigneeAccountId: "user-1",
+      description: description(),
+    });
+    const config = buildConfig({ workers: [workerPolicy()] });
+    const deps = makeDeps(config);
+
+    await reconcileCandidates(deps, [workerAvailability()]);
+    const leased = getOpenJobForIssue(db, "KAN-1");
+    expect(leased?.state).toBe("leased");
+    const attemptId = leased?.currentAttemptId ?? "";
+
+    // Same approval (still in requestStatus), but the required capabilities changed.
+    jira.seedIssue({
+      key: "KAN-1",
+      statusName: REQUEST_STATUS,
+      projectKey: "KAN",
+      assigneeAccountId: "user-1",
+      description: description({ capabilities: ["programming", "testing"] }),
+    });
+    const report = await reconcileCandidates(deps, []);
+
+    expect(report.jobsCancelled).toContain(leased?.id);
+    expect(getAttempt(db, attemptId)?.state).toBe("cancelled");
+    expect(getActiveAttemptForWorker(db, "worker-1")).toBeUndefined();
+    expect(getOpenJobForIssue(db, "KAN-1")?.state).toBe("queued");
+  });
+
+  it("asks a running job to stop but never closes it on a later pass without a confirmed stop", async () => {
+    jira.seedIssue(
+      {
+        key: "KAN-1",
+        statusName: REQUEST_STATUS,
+        projectKey: "KAN",
+        assigneeAccountId: "user-1",
+        description: description(),
+      },
+      [{ id: "1", name: "Revoke", toStatusName: "To Do" }],
+    );
+    const config = buildConfig({ workers: [workerPolicy()] });
+    const deps = makeDeps(config);
+    await reconcileCandidates(deps, [workerAvailability()]);
+    const job = getOpenJobForIssue(db, "KAN-1");
+    // Simulate the worker's `start` (normally WorkerService.start).
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job?.id);
+    db.prepare("UPDATE attempts SET state = 'running' WHERE id = ?").run(job?.currentAttemptId);
+
+    await jira.transitionIssue("KAN-1", "Revoke");
+    const first = await reconcileCandidates(deps, []);
+    const second = await reconcileCandidates(deps, []);
+
+    expect(first.jobsCancelRequested).toEqual([job?.id]);
+    expect(second.jobsCancelled).toEqual([]);
+    expect(getJob(db, job?.id ?? "")?.state).toBe("cancel_requested");
+    expect(getAttempt(db, job?.currentAttemptId ?? "")?.state).toBe("cancel_requested");
   });
 });

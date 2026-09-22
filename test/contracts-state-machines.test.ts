@@ -32,6 +32,7 @@ describe("job state machine", () => {
       ["running", "cancel_requested"],
       ["running", "recovery_required"],
       ["cancel_requested", "cancelled"],
+      ["cancel_requested", "recovery_required"],
       ["recovery_required", "cancelled"],
       ["recovery_required", "queued"],
       ["failed", "queued"],
@@ -83,6 +84,7 @@ describe("attempt state machine", () => {
       ["running", "cancel_requested"],
       ["running", "recovery_required"],
       ["cancel_requested", "cancelled"],
+      ["cancel_requested", "recovery_required"],
       ["recovery_required", "cancelled"],
       ["recovery_required", "superseded"],
     ];

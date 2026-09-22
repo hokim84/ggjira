@@ -14,9 +14,72 @@
 |---|---|---|
 | 1. 계약·설정·저장소 | ✅ 완료 (2026-09-22) | 아래 상세 참고 |
 | 2. Router 입력·판단 | ✅ 완료 (2026-09-23) | 아래 상세 참고 |
-| 3. Worker 통신·실행 | ⬜ 미착수 | 다음 작업 시작점 |
-| 4. PM·보고·복구 | ⬜ 미착수 | |
+| 3. Worker 통신·실행 | ✅ 완료 (2026-09-23) | 아래 상세 참고 |
+| 4. PM·보고·복구 | ⬜ 미착수 | 다음 작업 시작점 |
 | 5. 운영 기능·기존 구조 제거 | ⬜ 미착수 | |
+
+### 3단계: Worker 통신·실행 — 완료
+
+`docs/decisions/0020-router-stage3-worker-protocol.md`에 계획만으로 정해지지 않았던 판단
+(pairing code가 identity를 정함, 최신 세션만 유효, `cancel_requested → recovery_required`,
+결과 적용 규칙, 재시작 시 재실행 금지, envelope에는 id만, planning 실행 보류, 프로세스 트리
+종료, migration 2)을 기록했다.
+
+구현 파일 (Router):
+
+- `src/router/db/schema.ts`·`migrate.ts` — migration 2(`WORKER_PROTOCOL_STATEMENTS`, 추가만):
+  pairing code의 `worker_id`, 워커 보고 가용성·heartbeat·현재 세션, `worker_sessions`,
+  attempt의 `session_id`/`request_id`(워커별 유니크), `jobs.input_hash`, `results.applied`.
+- `src/router/db/pairing.ts`·`workers.ts`·`results.ts` — pairing code 발급/소비(10분, 1회),
+  워커 등록(token SHA-256 hash만 저장)·세션·heartbeat, 결과 저장(동일 `resultId` 동일 내용은
+  `duplicate`, 다른 내용은 `ResultConflictError`).
+- `src/router/db/attempts.ts`·`jobs.ts` — requestId 바인딩, 임대 갱신, 만료 조회, 결과 id 기록.
+- `src/router/availability.ts` — `buildWorkerAvailability`: ADR 0019 §3이 남겨둔 어댑터.
+  heartbeat가 15초 이내이고 활성 세션·설정상 enabled인 워커만 배정 대상이다.
+- `src/router/leases.ts` — `expireLeases`: `leased` 만료는 취소 후 job 재대기, `running`/
+  `cancel_requested` 만료는 `recovery_required`.
+- `src/router/envelope.ts` — job/attempt → `JobEnvelope`(`providerId`·`timeoutMs`는 설정에서).
+- `src/router/worker-service.ts` — `/api/v1/*`의 SQLite 측 로직. 모든 변경 요청이
+  identity → session → attempt 소유권 → lease token → 임대 신선도를 한 트랜잭션에서 검증한다.
+  `jobs/next`는 25초 long polling, 같은 `requestId` 재전송은 같은 예약을 반환한다.
+- `src/router/server.ts` — 워커 라우트 8개와 `POST /api/v1/admin/pairing-codes`,
+  `WorkerApiError` → HTTP 상태(400/401/403/404/409/426) 매핑.
+- `src/router/scheduler.ts` — 배정 시 `input_hash` 고정, 배정 로직을 `assignQueuedJobs`로
+  분리해 `jobs/next`가 재사용.
+- `src/router/config.ts` — `workers[].providerId`, `execution.timeoutMs` 추가.
+
+구현 파일 (Worker):
+
+- `src/worker-runtime/client.ts` — Router HTTP 클라이언트(`RouterApiError`).
+- `src/worker-runtime/spool.ts` — 결과를 임시 파일 → fsync → rename으로 원자 저장, ack 시 삭제.
+- `src/worker-runtime/executor.ts` — implementation envelope 실행: worktree → provider →
+  (`authorize`) 커밋 → (`authorize`) 검증. 기존 `src/worker/`·`src/implement/validate.ts`를
+  재사용하고 Jira를 import하지 않는다.
+- `src/worker-runtime/runner.ts` — 세션 → spool 재전송 → 고아 attempt 보고 → 루프 { heartbeat →
+  `jobs/next` → start → 실행(5초 job heartbeat, 20초 임대 상실 watchdog) → spool → 제출 → ack }.
+- `src/worker/spawn.ts` — `killProcessTree`(Windows `taskkill /T`, POSIX 프로세스 그룹).
+  `src/worker/factory.ts` — `createProviderFromConfig`(v5 provider 설정용).
+
+**의도적으로 아직 없는 것**: planning job 실행과 PM 계획 적용, 결과의 Jira 반영 저널과
+재시도, `recovery_required` 관리자 해제(4단계). `router serve`/`worker run` 등 CLI 진입점,
+주기적 `expireLeases`·`reconcileCandidates` 타이머, Docker Compose(5단계). 현재 Router와
+워커는 코드(테스트 하네스)로만 조립된다.
+
+테스트: `test/router-worker-api.test.ts`(Fastify `inject`로 pairing·세션·long polling·
+requestId 재전송·403/409·결과 중복/충돌·늦은 결과), `test/router-leases.test.ts`,
+`test/router-availability.test.ts`, `test/worker-runtime-{client,spool,runner,no-jira}.test.ts`
+(runner는 실제 Router 서비스와 인메모리 SQLite를 붙인 `test/helpers/router-harness.ts`로
+검증), `test/worker-spawn-tree-kill.test.ts`(손자 프로세스까지 종료되는지 실제 확인).
+
+검증: `npm run check` — typecheck·lint·format 통과, 테스트 461건 중 453 passed / 8 failed.
+실패 8건은 1·2단계와 같은 기존 `spawn EFTYPE`(`.sh` fixture, runbook §13)이며, HEAD의
+`src/worker/spawn.ts`로 되돌려 돌려도 같은 8건이 실패함을 확인했다.
+
+**4단계를 시작하는 세션/모델에게**: 결과는 `WorkerService.submitResult`에서 `results`에
+저장된다. Jira 반영 작업 생성은 같은 트랜잭션 안(`applyResult` 옆)에 추가한다. planning 실행은
+`src/worker-runtime/executor.ts`의 `kind !== "implementation"` 분기를 채우면 되고, envelope의
+`planningContext`는 `src/router/envelope.ts`에서 채운다. ADR 0019 Consequences의 "승인 철회
+감지가 Router 자신의 Jira 전이에 오작동" 문제도 4단계에서 해결해야 한다.
 
 ### 2단계: Router 입력·판단 — 완료
 

@@ -40,7 +40,8 @@ const ALLOWED_ATTEMPT_TRANSITIONS: Readonly<Record<AttemptState, ReadonlySet<Att
   // job itself goes back to `queued` for a fresh lease (job-state.ts).
   leased: new Set(["running", "cancelled", "recovery_required"]),
   running: new Set(["succeeded", "failed", "timed_out", "cancel_requested", "recovery_required"]),
-  cancel_requested: new Set(["cancelled"]),
+  // Lease expiry while a cancel is pending: the stop was never confirmed (ADR 0020).
+  cancel_requested: new Set(["cancelled", "recovery_required"]),
   // Resolved only by a confirmed abort (worker or admin) per §3; cancelled if
   // the job is abandoned, superseded once a retry's new attempt takes over.
   recovery_required: new Set(["cancelled", "superseded"]),

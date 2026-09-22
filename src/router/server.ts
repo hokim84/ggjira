@@ -1,6 +1,22 @@
+import { timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import type { z } from "zod";
+import {
+  AdminCreatePairingCodeRequestSchema,
+  type ApiErrorResponse,
+  JobAuthorizeRequestSchema,
+  JobHeartbeatRequestSchema,
+  JobResultRequestSchema,
+  JobStartRequestSchema,
+  JobsNextRequestSchema,
+  WorkerHeartbeatRequestSchema,
+  WorkerRegisterRequestSchema,
+  WorkerSessionRequestSchema,
+} from "../contracts/api.js";
+import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import { ingestJiraWebhookEvent, verifyJiraWebhookSignature } from "./webhook.js";
+import { WorkerApiError, type WorkerService } from "./worker-service.js";
 
 const SIGNATURE_HEADER = "x-hub-signature";
 const DELIVERY_ID_HEADER = "x-atlassian-webhook-identifier";
@@ -13,12 +29,60 @@ export interface RouterServerDeps {
    *  paired with the delivery id for dedup rather than trusted from the webhook payload. */
   siteId: string;
   now?: () => string;
+  /** Enables the `/api/v1/*` worker routes. */
+  workerService?: WorkerService;
+  /** Bearer token for `/api/v1/admin/*`. Admin routes are not registered without it. */
+  adminToken?: string;
+}
+
+interface ParsedBody {
+  raw: Buffer;
+  parsed: unknown;
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function bearerToken(request: FastifyRequest): string | undefined {
+  const header = headerValue(request.headers.authorization);
+  const match = header?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim();
+}
+
+function tokensEqual(presented: string | undefined, expected: string): boolean {
+  if (!presented) return false;
+  const a = Buffer.from(presented, "utf-8");
+  const b = Buffer.from(expected, "utf-8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function sendError(reply: FastifyReply, status: number, body: ApiErrorResponse): FastifyReply {
+  return reply.code(status).send(body);
+}
+
+/** Parses the body with `schema`, answering 426 for a protocol version mismatch (checked first,
+ *  so an incompatible worker gets an explicit compatibility error rather than a schema error —
+ *  §3 "버전 불일치는 실행 전에 명시적인 호환 오류로 처리한다") and 400 for anything else. */
+function parseBody<S extends z.ZodTypeAny>(schema: S, body: unknown): z.infer<S> {
+  const parsed = (body as ParsedBody | undefined)?.parsed;
+  const version = (parsed as { protocolVersion?: unknown } | null | undefined)?.protocolVersion;
+  if (version !== undefined && version !== PROTOCOL_VERSION) {
+    throw new WorkerApiError(
+      426,
+      "protocol_mismatch",
+      `protocol version ${String(version)} is not supported`,
+    );
+  }
+  const result = schema.safeParse(parsed);
+  if (!result.success) throw new WorkerApiError(400, "invalid_request", result.error.message);
+  return result.data;
 }
 
 /**
- * Minimal Fastify app for stage 2: signature-verified webhook ingestion and a
- * liveness probe. Stage 3 adds `/api/v1/*` worker routes to this same instance
- * (docs/router-service-implementation-plan.md §4 "구현 단계").
+ * Router's Fastify app: signature-verified webhook ingestion and a liveness probe (stage 2), plus
+ * the worker-facing `/api/v1/*` routes and the one admin route stage 3 needs (pairing codes).
+ * The routes are thin: every decision lives in `WorkerService`.
  */
 export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
   const now = deps.now ?? (() => new Date().toISOString());
@@ -37,17 +101,13 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
   app.get("/health", async () => ({ status: "ok" }));
 
   app.post("/webhooks/jira", async (request, reply) => {
-    const { raw, parsed } = request.body as { raw: Buffer; parsed: unknown };
-    const signatureHeader = request.headers[SIGNATURE_HEADER];
-    const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+    const { raw, parsed } = request.body as ParsedBody;
+    const signature = headerValue(request.headers[SIGNATURE_HEADER]);
     if (!verifyJiraWebhookSignature(raw, signature, deps.webhookSecret)) {
       return reply.code(401).send({ error: "invalid signature" });
     }
 
-    const deliveryIdHeader = request.headers[DELIVERY_ID_HEADER];
-    const webhookDeliveryId = Array.isArray(deliveryIdHeader)
-      ? deliveryIdHeader[0]
-      : deliveryIdHeader;
+    const webhookDeliveryId = headerValue(request.headers[DELIVERY_ID_HEADER]);
     if (!webhookDeliveryId) {
       return reply.code(400).send({ error: `missing ${DELIVERY_ID_HEADER} header` });
     }
@@ -61,5 +121,98 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
     return reply.code(202).send({ status: result });
   });
 
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof WorkerApiError) {
+      return sendError(reply, error.status, {
+        error: error.code,
+        message: error.message,
+        ...(error.status === 426 ? { supportedProtocolVersion: PROTOCOL_VERSION } : {}),
+      });
+    }
+    const { statusCode: status, message } = error as { statusCode?: number; message?: string };
+    if (status && status >= 400 && status < 500) {
+      return sendError(reply, status, {
+        error: "invalid_request",
+        ...(message ? { message } : {}),
+      });
+    }
+    return sendError(reply, 500, { error: "internal_error" });
+  });
+
+  const service = deps.workerService;
+  if (service) registerWorkerRoutes(app, service);
+  if (service && deps.adminToken) registerAdminRoutes(app, service, deps.adminToken);
+
   return app;
+}
+
+function registerWorkerRoutes(app: FastifyInstance, service: WorkerService): void {
+  const worker = (request: FastifyRequest) => service.authenticate(bearerToken(request));
+
+  app.post("/api/v1/workers/register", async (request) =>
+    service.register(parseBody(WorkerRegisterRequestSchema, request.body)),
+  );
+
+  app.post("/api/v1/workers/session", async (request) =>
+    service.openSession(worker(request), parseBody(WorkerSessionRequestSchema, request.body)),
+  );
+
+  app.post("/api/v1/workers/heartbeat", async (request) =>
+    service.heartbeat(worker(request), parseBody(WorkerHeartbeatRequestSchema, request.body)),
+  );
+
+  app.post("/api/v1/jobs/next", async (request, reply) => {
+    const envelope = await service.nextJob(
+      worker(request),
+      parseBody(JobsNextRequestSchema, request.body),
+    );
+    if (!envelope) return reply.code(204).send();
+    return envelope;
+  });
+
+  app.post<{ Params: { id: string } }>("/api/v1/jobs/:id/start", async (request) =>
+    service.start(
+      worker(request),
+      request.params.id,
+      parseBody(JobStartRequestSchema, request.body),
+    ),
+  );
+
+  app.post<{ Params: { id: string } }>("/api/v1/jobs/:id/heartbeat", async (request) =>
+    service.jobHeartbeat(
+      worker(request),
+      request.params.id,
+      parseBody(JobHeartbeatRequestSchema, request.body),
+    ),
+  );
+
+  app.post<{ Params: { id: string } }>("/api/v1/jobs/:id/authorize", async (request) =>
+    service.authorize(
+      worker(request),
+      request.params.id,
+      parseBody(JobAuthorizeRequestSchema, request.body),
+    ),
+  );
+
+  app.post<{ Params: { id: string } }>("/api/v1/jobs/:id/result", async (request) =>
+    service.submitResult(
+      worker(request),
+      request.params.id,
+      parseBody(JobResultRequestSchema, request.body),
+    ),
+  );
+}
+
+function registerAdminRoutes(
+  app: FastifyInstance,
+  service: WorkerService,
+  adminToken: string,
+): void {
+  app.post("/api/v1/admin/pairing-codes", async (request, reply) => {
+    if (!tokensEqual(bearerToken(request), adminToken)) {
+      return sendError(reply, 401, { error: "unauthenticated", message: "admin token required" });
+    }
+    const body = parseBody(AdminCreatePairingCodeRequestSchema, request.body);
+    return reply.code(201).send(service.createPairingCode(body.workerId));
+  });
 }

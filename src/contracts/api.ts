@@ -4,16 +4,23 @@ import { PROTOCOL_VERSION } from "./protocol.js";
 
 /**
  * Request/response shapes for the worker-facing `/api/v1/*` HTTP contract
- * (docs/router-service-implementation-plan.md §3 "공개 HTTP 인터페이스"). These are the
- * wire types only — the Fastify routes and the SQLite-backed handlers that
- * implement them are a later phase.
+ * (docs/router-service-implementation-plan.md §3 "공개 HTTP 인터페이스"). Implemented by
+ * `src/router/server.ts` + `src/router/worker-service.ts` and consumed by
+ * `src/worker-runtime/client.ts`.
+ *
+ * Every request except `workers/register` carries `Authorization: Bearer <workerToken>`;
+ * that header — not any body field — is what identifies the worker. Body `workerId` /
+ * `sessionId` fields must agree with it (§3 "모든 변경 요청은 워커 identity·session·
+ * attempt·lease를 함께 검증한다").
  */
+
+/** Header a worker sends its token in. */
+export const WORKER_AUTH_HEADER = "authorization";
 
 export const WorkerRegisterRequestSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),
   pairingCode: z.string().min(1),
   workerName: z.string().min(1),
-  capabilities: z.array(z.string().min(1)).default([]),
 });
 export type WorkerRegisterRequest = z.infer<typeof WorkerRegisterRequestSchema>;
 
@@ -26,7 +33,6 @@ export type WorkerRegisterResponse = z.infer<typeof WorkerRegisterResponseSchema
 export const WorkerSessionRequestSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),
   workerId: z.string().min(1),
-  workerToken: z.string().min(1),
 });
 export type WorkerSessionRequest = z.infer<typeof WorkerSessionRequestSchema>;
 
@@ -75,10 +81,15 @@ export type JobsNextRequest = z.infer<typeof JobsNextRequestSchema>;
 export const JobsNextResponseSchema = JobEnvelopeSchema;
 export type JobsNextResponse = z.infer<typeof JobsNextResponseSchema>;
 
-export const JobStartRequestSchema = z.object({
+/** Common body of every `jobs/{id}/*` call: the attempt + lease being acted on, and the session
+ *  it's being acted on from (a superseded session can no longer drive the attempt). */
+const AttemptLeaseFields = {
+  sessionId: z.string().min(1),
   attemptId: z.string().min(1),
   leaseToken: z.string().min(1),
-});
+};
+
+export const JobStartRequestSchema = z.object(AttemptLeaseFields);
 export type JobStartRequest = z.infer<typeof JobStartRequestSchema>;
 
 export const JobStartResponseSchema = z.object({
@@ -87,10 +98,7 @@ export const JobStartResponseSchema = z.object({
 });
 export type JobStartResponse = z.infer<typeof JobStartResponseSchema>;
 
-export const JobHeartbeatRequestSchema = z.object({
-  attemptId: z.string().min(1),
-  leaseToken: z.string().min(1),
-});
+export const JobHeartbeatRequestSchema = z.object(AttemptLeaseFields);
 export type JobHeartbeatRequest = z.infer<typeof JobHeartbeatRequestSchema>;
 
 export const JobHeartbeatResponseSchema = z.object({
@@ -100,8 +108,7 @@ export const JobHeartbeatResponseSchema = z.object({
 export type JobHeartbeatResponse = z.infer<typeof JobHeartbeatResponseSchema>;
 
 export const JobAuthorizeRequestSchema = z.object({
-  attemptId: z.string().min(1),
-  leaseToken: z.string().min(1),
+  ...AttemptLeaseFields,
   /** What the worker is about to do — Router re-checks approval right before either
    *  (§3 "커밋·검증 직전 실행 권한 재확인"). */
   stage: z.enum(["commit", "validate"]),
@@ -119,5 +126,32 @@ export type JobResultRequest = z.infer<typeof JobResultRequestSchema>;
 
 export const JobResultResponseSchema = z.object({
   accepted: z.boolean(),
+  /** `false` when the result was kept only as an audit record — it arrived after its attempt
+   *  was no longer current (lease expired, recovery_required, superseded) and so did not move
+   *  the job (§3 "늦게 도착한 결과는 감사 자료로 보존할 수 있지만 완료 처리... 에 적용하지 않는다"). */
+  applied: z.boolean(),
 });
 export type JobResultResponse = z.infer<typeof JobResultResponseSchema>;
+
+/** Body of every non-2xx `/api/v1/*` response. */
+export const ApiErrorResponseSchema = z.object({
+  error: z.string().min(1),
+  message: z.string().optional(),
+  /** Set on `426` protocol mismatches so the worker can report what Router speaks. */
+  supportedProtocolVersion: z.number().int().optional(),
+});
+export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
+
+/** `POST /api/v1/admin/pairing-codes` — admin-token authenticated. The code is bound to a
+ *  `workerId` already declared in Router config's `workers[]` policy list. */
+export const AdminCreatePairingCodeRequestSchema = z.object({
+  workerId: z.string().min(1),
+});
+export type AdminCreatePairingCodeRequest = z.infer<typeof AdminCreatePairingCodeRequestSchema>;
+
+export const AdminCreatePairingCodeResponseSchema = z.object({
+  pairingCode: z.string().min(1),
+  workerId: z.string().min(1),
+  expiresAt: z.string(),
+});
+export type AdminCreatePairingCodeResponse = z.infer<typeof AdminCreatePairingCodeResponseSchema>;

@@ -298,3 +298,25 @@ npx vitest run --pool=forks --poolOptions.forks.singleFork
 실행된다. `test/worker-claude-code-cli.test.ts`, `test/worker-codex-cli.test.ts`의
 `spawn EFTYPE` 실패 8건은 이 워크어라운드와 무관한, 이 환경에서 `.sh` fixture를 직접
 spawn하지 못하는 별개의 기존 문제다(§9에 없는 새 항목이며 아직 원인 조사 전이다).
+
+## 14. Router Worker API(v5, 구현 중) 진단
+
+Router·Worker 진입점 CLI는 5단계 전까지 없다. 아래는 테스트 하네스나 직접 조립한 Router에서
+문제를 볼 때의 기준이다(ADR 0020).
+
+- **워커 등록이 `401 invalid_pairing_code`** — code가 없음·만료(10분)·이미 사용됨 중 하나다.
+  응답은 일부러 구분하지 않으므로 `pairing_codes` 테이블의 `expires_at`·`used_at`을 본다.
+  `403 unknown_worker`면 code 발급 뒤 Router 설정 `workers[]`에서 그 `workerId`가 빠졌다.
+- **워커가 작업을 받지 못함(`jobs/next`가 계속 204)** — `workers` 행에서 `current_session_id`,
+  `last_heartbeat_at`(15초 이내여야 함), `revoked_at`, 설정의 `workers[].enabled`를 확인한다.
+  배정은 설정의 허용 capability·저장소와 워커가 보고한 값(`reported_*`)의 교집합으로만 한다.
+- **`409 stale_session`** — 같은 워커 credential로 다른 프로세스가 세션을 새로 열었다.
+  최신 세션만 유효하다. 워커 runner는 이 응답을 받으면 세션을 다시 연다.
+- **`409 stale_lease`/`lease_expired`** — 임대(30초)가 갱신되지 않았다. 시작 전이면 job이
+  `queued`로 돌아가고, 시작 후면 attempt·job이 `recovery_required`로 멈춘다.
+- **`recovery_required`에서 멈춘 job** — 자동 재배정하지 않는다. 워커가 결과(중단 확인)를
+  제출하면 그 결과는 `applied = 0` 감사 기록으로 남는다. 관리자 해제 명령(`jobs resolve`)은
+  5단계에서 추가된다. 그 전까지 작업 폴더·프로세스가 실제로 멈췄는지 워커 머신에서 확인한다.
+- **결과가 반영되지 않음** — `results.applied = 0`이면 늦게 도착한 결과다(대체된 attempt,
+  이미 닫힌 job). 워커 쪽에 결과가 남아 있으면 spool 디렉터리의 `<resultId>.json`이며, 다음
+  시작 때 재전송된다. `409 result_conflict`는 같은 `resultId`에 다른 내용을 보낸 것이다.

@@ -67,6 +67,10 @@ const WorkerPolicySchema = z.object({
   allowedCapabilities: z.array(z.string().min(1)).default([]),
   allowedRepositoryIds: z.array(z.string().min(1)).min(1),
   enabled: z.boolean().default(true),
+  /** The worker-local provider (`WorkerConfig.providers[].id`) Router names in this worker's
+   *  job envelopes. Router only picks the id; the worker resolves it to a CLI invocation and
+   *  refuses ids it doesn't have (§2 "Router는 repositoryId와 providerId를 지정하고..."). */
+  providerId: z.string().min(1).default("default"),
 });
 export type WorkerPolicyConfig = z.infer<typeof WorkerPolicySchema>;
 
@@ -103,6 +107,16 @@ const ReconciliationConfigSchema = z.object({
   activeJobPollIntervalMs: z.number().int().positive().default(5_000),
 });
 
+const ExecutionConfigSchema = z.object({
+  /** `timeoutMs` stamped on every job envelope; the worker enforces it as a hard provider
+   *  timeout. */
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .default(30 * 60 * 1000),
+});
+
 export const RouterConfigSchema = z
   .object({
     configVersion: z.literal(5),
@@ -114,6 +128,7 @@ export const RouterConfigSchema = z
     db: DatabaseConfigSchema.default({}),
     http: HttpConfigSchema.default({}),
     reconciliation: ReconciliationConfigSchema.default({}),
+    execution: ExecutionConfigSchema.default({}),
   })
   .superRefine((config, ctx) => {
     const repositoryIds = new Set(config.repositories.map((repo) => repo.id));

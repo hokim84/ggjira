@@ -14,6 +14,8 @@ export interface JobRow {
   repositoryId: string;
   kind: JobKind;
   approvalId: string;
+  /** Input hash the job was dispatched with (null for rows created before migration 2). */
+  inputHash: string | null;
   state: JobState;
   pinnedWorkerId: string | null;
   requiredCapabilities: string[];
@@ -31,6 +33,7 @@ export interface CreateJobInput {
   repositoryId: string;
   kind: JobKind;
   approvalId: string;
+  inputHash?: string | null;
   /** Defaults to "queued". A caller may pass "waiting" for a job that's blocked
    *  on an unmet dependency (scheduler decision, not a storage-layer one). */
   state?: JobState;
@@ -58,6 +61,7 @@ function toJobRow(row: Record<string, unknown>): JobRow {
     repositoryId: row.repository_id as string,
     kind: row.kind as JobKind,
     approvalId: row.approval_id as string,
+    inputHash: (row.input_hash as string | null) ?? null,
     state: row.state as JobState,
     pinnedWorkerId: (row.pinned_worker_id as string | null) ?? null,
     requiredCapabilities: JSON.parse(row.required_capabilities as string) as string[],
@@ -74,10 +78,10 @@ export function createJob(db: Database.Database, input: CreateJobInput): JobRow 
   try {
     db.prepare(
       `INSERT INTO jobs (
-        id, issue_key, workspace_id, repository_id, kind, approval_id, state,
+        id, issue_key, workspace_id, repository_id, kind, approval_id, input_hash, state,
         pinned_worker_id, required_capabilities, attempt_count, current_attempt_id,
         created_at, updated_at, closed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL)`,
     ).run(
       input.id,
       input.issueKey,
@@ -85,6 +89,7 @@ export function createJob(db: Database.Database, input: CreateJobInput): JobRow 
       input.repositoryId,
       input.kind,
       input.approvalId,
+      input.inputHash ?? null,
       state,
       input.pinnedWorkerId ?? null,
       JSON.stringify(input.requiredCapabilities ?? []),
