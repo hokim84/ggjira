@@ -4,6 +4,7 @@ import type { JiraGateway } from "./gateway.js";
 import { withRetry } from "./retry.js";
 import type {
   CreateIssueInput,
+  JiraChangelogEntry,
   JiraComment,
   JiraIssue,
   JiraProject,
@@ -102,6 +103,19 @@ interface RawSearchResponse {
 
 interface RawTransitionsResponse {
   transitions: Array<{ id: string; name: string; to?: { name?: string } }>;
+}
+
+interface RawChangelogEntry {
+  id: string;
+  created: string;
+  items: Array<{ field?: string; fromString?: string | null; toString?: string | null }>;
+}
+
+interface RawChangelogResponse {
+  values: RawChangelogEntry[];
+  startAt: number;
+  maxResults: number;
+  total: number;
 }
 
 interface RawUser {
@@ -337,6 +351,36 @@ export class JiraClient implements JiraGateway {
       name: t.name,
       toStatusName: t.to?.name ?? "",
     }));
+  }
+
+  async getIssueChangelog(key: string): Promise<JiraChangelogEntry[]> {
+    const entries: JiraChangelogEntry[] = [];
+    let startAt = 0;
+    const maxResults = 100;
+    for (;;) {
+      const response = await withRetry(
+        () =>
+          this.request<RawChangelogResponse>(
+            "GET",
+            `/rest/api/2/issue/${encodeURIComponent(key)}/changelog?startAt=${startAt}&maxResults=${maxResults}`,
+          ),
+        { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+      );
+      entries.push(
+        ...response.values.map((entry) => ({
+          id: entry.id,
+          created: entry.created,
+          items: entry.items.map((item) => ({
+            field: item.field ?? "",
+            fromString: item.fromString ?? null,
+            toString: item.toString ?? null,
+          })),
+        })),
+      );
+      startAt += response.values.length;
+      if (response.values.length === 0 || startAt >= response.total) break;
+    }
+    return entries;
   }
 
   async listProjectStatuses(projectKey: string): Promise<string[]> {

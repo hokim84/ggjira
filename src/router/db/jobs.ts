@@ -117,6 +117,22 @@ export function getOpenJobForIssue(db: Database.Database, issueKey: string): Job
   return row ? toJobRow(row) : undefined;
 }
 
+/** Jobs ready to be leased to a worker, oldest first (scheduler's assignment pass). */
+export function getQueuedJobs(db: Database.Database): JobRow[] {
+  const rows = db
+    .prepare("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at ASC")
+    .all() as Record<string, unknown>[];
+  return rows.map(toJobRow);
+}
+
+/** Every job still occupying the one-non-terminal-job-per-issue slot, regardless of state. */
+export function getOpenJobs(db: Database.Database): JobRow[] {
+  const rows = db
+    .prepare("SELECT * FROM jobs WHERE state NOT IN ('succeeded', 'cancelled')")
+    .all() as Record<string, unknown>[];
+  return rows.map(toJobRow);
+}
+
 /**
  * Moves a job along the state machine in `contracts/job-state.ts`, throwing
  * `InvalidJobStateTransitionError` for any arrow not in that diagram. Does

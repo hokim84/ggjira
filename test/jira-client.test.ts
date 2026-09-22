@@ -189,6 +189,58 @@ describe("JiraClient", () => {
     ]);
   });
 
+  it("getIssueChangelog maps entries and paginates by startAt until total is reached", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          values: [
+            {
+              id: "100",
+              created: "2026-01-01T00:00:00.000Z",
+              items: [{ field: "status", fromString: "To Do", toString: "AI 작업 요청" }],
+            },
+          ],
+          startAt: 0,
+          maxResults: 1,
+          total: 2,
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          values: [
+            {
+              id: "101",
+              created: "2026-01-02T00:00:00.000Z",
+              items: [{ field: "assignee", fromString: null, toString: "user-1" }],
+            },
+          ],
+          startAt: 1,
+          maxResults: 1,
+          total: 2,
+        }),
+      );
+    const client = new JiraClient(secrets);
+
+    const changelog = await client.getIssueChangelog("KAN-1");
+
+    expect(changelog).toEqual([
+      {
+        id: "100",
+        created: "2026-01-01T00:00:00.000Z",
+        items: [{ field: "status", fromString: "To Do", toString: "AI 작업 요청" }],
+      },
+      {
+        id: "101",
+        created: "2026-01-02T00:00:00.000Z",
+        items: [{ field: "assignee", fromString: null, toString: "user-1" }],
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://example.atlassian.net/rest/api/2/issue/KAN-1/changelog?startAt=1&maxResults=100",
+    );
+  });
+
   it("transitionIssue resolves the transition id by name and executes it", async () => {
     fetchMock
       .mockResolvedValueOnce(

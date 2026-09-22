@@ -19,6 +19,18 @@ export interface JiraTransition {
   toStatusName: string;
 }
 
+export interface JiraChangelogItem {
+  field: string;
+  fromString: string | null;
+  toString: string | null;
+}
+
+export interface JiraChangelogEntry {
+  id: string;
+  created: string;
+  items: JiraChangelogItem[];
+}
+
 export interface SearchIssuesOptions {
   maxResults?: number;
   fields?: string[];

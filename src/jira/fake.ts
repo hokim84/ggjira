@@ -2,6 +2,7 @@ import { StatusNotReachableError } from "./client.js";
 import type { JiraGateway } from "./gateway.js";
 import type {
   CreateIssueInput,
+  JiraChangelogEntry,
   JiraComment,
   JiraIssue,
   JiraProject,
@@ -69,12 +70,14 @@ export class FakeJiraGateway implements JiraGateway {
   private readonly projectStatuses = new Map<string, string[]>();
   private fields: Array<{ id: string; name: string }> = [];
   private readonly properties = new Map<string, Map<string, unknown>>();
+  private readonly changelogByKey = new Map<string, JiraChangelogEntry[]>();
   private self: JiraUser = {
     accountId: "self-account-id",
     displayName: "GGJIRA Test Agent",
     emailAddress: null,
   };
   private issueCounter = 0;
+  private changelogCounter = 0;
 
   seedIssue(
     issue: Partial<JiraIssue> & Pick<JiraIssue, "key">,
@@ -133,6 +136,25 @@ export class FakeJiraGateway implements JiraGateway {
     this.seedUser(user);
   }
 
+  /** Directly injects a changelog entry, for cases production code can't construct via
+   *  `transitionIssue`/`transitionIssueToStatus` (e.g. an issue created straight into a status). */
+  seedChangelogEntry(key: string, entry: Partial<JiraChangelogEntry> = {}): void {
+    const existing = this.changelogByKey.get(key) ?? [];
+    this.changelogCounter += 1;
+    existing.push({
+      id: entry.id ?? `${key}-cl${this.changelogCounter}`,
+      created: entry.created ?? new Date().toISOString(),
+      items: entry.items ?? [],
+    });
+    this.changelogByKey.set(key, existing);
+  }
+
+  private recordStatusChange(key: string, fromStatus: string, toStatus: string): void {
+    this.seedChangelogEntry(key, {
+      items: [{ field: "status", fromString: fromStatus, toString: toStatus }],
+    });
+  }
+
   seedComment(key: string, comment: Partial<JiraComment> & Pick<JiraComment, "body">): void {
     const existing = this.commentsByKey.get(key) ?? [];
     existing.push({
@@ -176,6 +198,14 @@ export class FakeJiraGateway implements JiraGateway {
     const parentMatch = clause.match(/^parent\s*=\s*(.+)$/i);
     if (parentMatch) {
       return issue.parentKey === unquote(parentMatch[1] ?? "");
+    }
+
+    const projectInMatch = clause.match(/^project\s+in\s*\((.+)\)$/i);
+    if (projectInMatch?.[1]) {
+      return projectInMatch[1]
+        .split(",")
+        .map(unquote)
+        .includes(issue.projectKey ?? "");
     }
 
     const projectMatch = clause.match(/^project\s*=\s*(.+)$/i);
@@ -238,7 +268,10 @@ export class FakeJiraGateway implements JiraGateway {
     if (issue) {
       const transitions = this.transitionsByKey.get(key) ?? [];
       const match = transitions.find((t) => t.name === transitionName);
-      this.issues.set(key, { ...issue, statusName: match?.toStatusName ?? issue.statusName });
+      const toStatusName = match?.toStatusName ?? issue.statusName;
+      if (toStatusName !== issue.statusName)
+        this.recordStatusChange(key, issue.statusName, toStatusName);
+      this.issues.set(key, { ...issue, statusName: toStatusName });
     }
   }
 
@@ -261,7 +294,14 @@ export class FakeJiraGateway implements JiraGateway {
       );
     }
     this.transitions.push({ key, transitionName: match.name });
-    if (issue) this.issues.set(key, { ...issue, statusName: match.toStatusName });
+    if (issue) {
+      this.recordStatusChange(key, issue.statusName, match.toStatusName);
+      this.issues.set(key, { ...issue, statusName: match.toStatusName });
+    }
+  }
+
+  async getIssueChangelog(key: string): Promise<JiraChangelogEntry[]> {
+    return this.changelogByKey.get(key) ?? [];
   }
 
   async addLabel(key: string, label: string): Promise<void> {

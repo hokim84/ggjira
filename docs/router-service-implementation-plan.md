@@ -13,10 +13,71 @@
 | 단계 | 상태 | 비고 |
 |---|---|---|
 | 1. 계약·설정·저장소 | ✅ 완료 (2026-09-22) | 아래 상세 참고 |
-| 2. Router 입력·판단 | ⬜ 미착수 | 다음 작업 시작점 |
-| 3. Worker 통신·실행 | ⬜ 미착수 | |
+| 2. Router 입력·판단 | ✅ 완료 (2026-09-23) | 아래 상세 참고 |
+| 3. Worker 통신·실행 | ⬜ 미착수 | 다음 작업 시작점 |
 | 4. PM·보고·복구 | ⬜ 미착수 | |
 | 5. 운영 기능·기존 구조 제거 | ⬜ 미착수 | |
+
+### 2단계: Router 입력·판단 — 완료
+
+`docs/decisions/0019-router-stage2-decisions.md`에 이번에 확정한 세 가지 설계 판단(의존성
+완료 기준, 웹훅 서버 도입 시점, 가용 워커 입력 방식)을 기록했다.
+
+구현 파일:
+
+- `src/jira/types.ts`·`gateway.ts`·`client.ts`·`fake.ts` — `getIssueChangelog`(페이지네이션
+  전체 취합) 추가. `FakeJiraGateway`는 `transitionIssue`/`transitionIssueToStatus`가 상태를
+  바꿀 때 changelog 항목을 자동 기록하고, `seedChangelogEntry`로 직접 주입도 가능. `project in
+  (...)` JQL 절도 추가(기존엔 `project = ...`만 지원).
+- `src/router/db/events.ts` — 웹훅 이벤트 repository. `(site_id, webhook_delivery_id)` 유니크
+  위반을 `DuplicateEventError`로 표면화.
+- `src/router/webhook.ts` — `verifyJiraWebhookSignature`(HMAC-SHA256, 상수 시간 비교),
+  `ingestJiraWebhookEvent`(중복 제거, `"accepted" | "duplicate"` 반환).
+- `src/router/server.ts` — 최소 Fastify 앱. `POST /webhooks/jira`, `GET /health`만 있음.
+  3단계가 `/api/v1/*` 워커 라우트를 같은 인스턴스에 추가한다. `package.json`에 `fastify`
+  의존성 추가.
+- `src/router/db/approvals.ts` — `approvals` 테이블 repository(issue당 1행, upsert).
+- `src/router/approval.ts` — `computeApprovalId`(changelog에서 `requestStatus`로 진입한
+  가장 최근 항목의 id, 없으면 `created:{key}` 센티널), `computeInputHash`(설명·capability·
+  의존성·planVersion을 SHA-256).
+- `src/router/candidates.ts` — workspace별 JQL(`project in (...) AND status in (...)`)과
+  GGJIRA meta 라벨 제외 필터.
+- `src/router/decision.ts` — `RouteContext`, `DecisionProvider` 인터페이스,
+  `RuleDecisionProvider`(§2 "배정 규칙" 1-5를 순서대로 적용하는 유일한 구현체). 스케줄러가
+  의존성 해소 여부를 미리 계산해 넘겨주므로 Jira/DB 접근이 없는 순수 함수다.
+- `src/router/db/jobs.ts` — `getQueuedJobs`, `getOpenJobs` 추가(기존 `createJob`/
+  `getOpenJobForIssue`/`transitionJobState`는 1단계 그대로 재사용).
+- `src/router/scheduler.ts` — `reconcileCandidates(deps, availableWorkers)`: workspace별
+  후보 조회 → 승인 식별자/입력 해시 계산·기록 → 열린 job이 없으면 `decisionProvider.decide`로
+  새 job 생성(dispatch → `queued`, wait → `waiting`, human/ignore → job 없음) → 이번 패스에서
+  후보로 보이지 않은 열린 job은 승인 철회로 간주해 취소(`waiting`/`queued`/`leased`는
+  `cancelled`, `running`은 `cancel_requested`, 그 외는 사람의 수동 재시도로 남김) → `queued`
+  job을 `WorkerAvailability[]`(호출자가 넘기는 순수 입력)와 매칭해 임대. Router는 이 단계에서
+  Jira에 아무것도 쓰지 않는다(읽기만) — 그래서 "이슈가 이번 패스의 후보 목록에 없다"는 것만으로
+  승인 철회를 판단할 수 있다(4단계에서 Router가 Jira 상태를 직접 전이시키면 이 가정이
+  깨지므로, 그때 재검토 필요).
+
+**의도적으로 아직 없는 것** (3단계 이후 책임): pairing/session/long-polling과 `jobs/next`
+등 `/api/v1/*` 워커 라우트(3단계), Jira에 대한 실제 쓰기(진행 상태 전이, 결과 댓글, PM 계획
+적용)와 그 저널/재시도(4단계), 관리 CLI·Docker Compose·구형 코드 제거(5단계).
+
+테스트: `test/jira-client.test.ts`·`test/jira-fake.test.ts`(changelog),
+`test/router-webhook.test.ts`·`test/router-server.test.ts`(웹훅 서명·중복 제거, 정방향/역방향
+재전송), `test/router-approval.test.ts`, `test/router-candidates.test.ts`,
+`test/router-decision.test.ts`, `test/router-scheduler.test.ts`(중복 생성 방지, capability·
+repository·pinned worker 필터링, 워커당 활성 attempt 하나, 의존성 재평가, 잘못된 메타데이터·
+assignee 없음의 부분 실패, 승인 철회 시 취소).
+
+검증: `npm run check` 통과(`npx vitest run --pool=forks --poolOptions.forks.singleFork`로 실행,
+§13 참고). 388 passed / 8 failed — 실패 8건은 1단계 때와 동일한 기존 `spawn EFTYPE` 문제로,
+이번 2단계 작업과 무관함을 재확인했다(원인 조사는 여전히 하지 않음).
+
+**3단계를 시작하는 세션/모델에게**: `src/router/scheduler.ts`의 `WorkerAvailability[]`는
+현재 호출자가 직접 구성해서 넘기는 순수 입력이다. 3단계에서 워커 등록(`workers` 테이블)과
+heartbeat가 생기면, 그 값들로부터 `WorkerAvailability[]`를 만들어 `reconcileCandidates`에
+넘기는 어댑터를 추가하면 된다 — 스케줄러 내부는 손댈 필요 없다. 마찬가지로 `RuleDecisionProvider`
+생성자는 `RouterConfig` 전체가 아니라 `executionAgent` 설정만 받으므로, Router 부트스트랩
+코드에서 `new RuleDecisionProvider(config.executionAgent)`로 생성해 스케줄러에 주입하면 된다.
 
 ### 1단계: 계약·설정·저장소 — 완료
 

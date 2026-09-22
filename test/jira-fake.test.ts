@@ -70,4 +70,52 @@ describe("FakeJiraGateway", () => {
 
     expect(await jira.getIssueProperty("KAN-2", "ggjira.registration")).toBeNull();
   });
+
+  it("getIssueChangelog is empty until a transition or seeded entry adds one", async () => {
+    const jira = new FakeJiraGateway();
+    jira.seedIssue({ key: "KAN-1", statusName: "To Do" }, [
+      { id: "1", name: "Start", toStatusName: "In Progress" },
+    ]);
+
+    expect(await jira.getIssueChangelog("KAN-1")).toEqual([]);
+
+    await jira.transitionIssue("KAN-1", "Start");
+
+    const changelog = await jira.getIssueChangelog("KAN-1");
+    expect(changelog).toHaveLength(1);
+    expect(changelog[0]?.items).toEqual([
+      { field: "status", fromString: "To Do", toString: "In Progress" },
+    ]);
+  });
+
+  it("transitionIssueToStatus records a status changelog entry, but a no-op transition does not", async () => {
+    const jira = new FakeJiraGateway();
+    jira.seedIssue({ key: "KAN-1", statusName: "To Do" }, [
+      { id: "1", name: "Start", toStatusName: "In Progress" },
+    ]);
+
+    await jira.transitionIssueToStatus("KAN-1", "In Progress");
+    expect(await jira.getIssueChangelog("KAN-1")).toHaveLength(1);
+
+    await jira.transitionIssueToStatus("KAN-1", "In Progress");
+    expect(await jira.getIssueChangelog("KAN-1")).toHaveLength(1);
+  });
+
+  it("seedChangelogEntry lets a test inject history directly", async () => {
+    const jira = new FakeJiraGateway();
+
+    jira.seedChangelogEntry("KAN-1", {
+      created: "2026-01-01T00:00:00.000Z",
+      items: [{ field: "status", fromString: null, toString: "AI 작업 요청" }],
+    });
+
+    const changelog = await jira.getIssueChangelog("KAN-1");
+    expect(changelog).toEqual([
+      {
+        id: expect.any(String),
+        created: "2026-01-01T00:00:00.000Z",
+        items: [{ field: "status", fromString: null, toString: "AI 작업 요청" }],
+      },
+    ]);
+  });
 });

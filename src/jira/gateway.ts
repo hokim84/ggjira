@@ -1,5 +1,6 @@
 import type {
   CreateIssueInput,
+  JiraChangelogEntry,
   JiraComment,
   JiraIssue,
   JiraProject,
@@ -20,6 +21,9 @@ export interface JiraGateway {
   updateIssueDescription(key: string, description: string): Promise<void>;
   getComments(key: string): Promise<JiraComment[]>;
   getTransitions(key: string): Promise<JiraTransition[]>;
+  /** Full changelog history (all pages), oldest first. Used to identify when an issue entered a
+   *  given status (Router's approval identifier), not for display. */
+  getIssueChangelog(key: string): Promise<JiraChangelogEntry[]>;
   transitionIssue(key: string, transitionName: string): Promise<void>;
   /**
    * Moves an issue to `targetStatusName` by finding the transition that leads
