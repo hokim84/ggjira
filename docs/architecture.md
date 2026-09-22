@@ -1,5 +1,13 @@
 # 아키텍처
 
+## Router 중심 아키텍처로 전환 중 (진행 중, ADR 0018)
+
+`src/contracts/`, `src/router/`, `src/worker-runtime/`에서 Router가 Jira 접근과 배정
+판단을 독점하고 워커는 Router에만 연결하는 구조로 전환 중이다. 배경·계약·단계별 계획은
+`docs/router-service-implementation-plan.md`(구현 상태 포함)와
+[`decisions/0018-router-centric-architecture.md`](./decisions/0018-router-centric-architecture.md)를
+본다. 이 절 아래의 내용(v2~v4)은 이 전환이 완료되기 전까지 유효한 현재 실행 경로다.
+
 ## Capability 기반 Runtime (configVersion 4)
 
 v4에서는 한 Runtime이 planning과 implementation 핸들러를 모두 보유하고 Jira 상태에 따라

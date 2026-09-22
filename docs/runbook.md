@@ -279,3 +279,22 @@ Jira workflow나 연결 문제를 고친 뒤 `ggjira report:retry <RUN-ID>`를 �
 저장된 Jira 보고(댓글/전이)만 다시 시도하며, worker를 재실행하지 않는다. 보고 댓글에는
 멱등성 마커가 붙어 있어 전이만 재시도해도 이미 남긴 댓글이 중복되지 않는다. `reportingResult`가
 없는 옛 버전의 job은 수동으로 복구해야 한다.
+
+## 13. Windows에서 `npm run test`/`npm run check`가 멈출 때
+
+일부 Windows 개발 환경(특히 백신 실시간 검사가 활성화된 경우)에서는 vitest의 기본
+`threads` pool이 `better-sqlite3` 네이티브 애드온을 여러 worker thread에서 동시에 로드하며
+멈춘다 — CPU 사용량이 0으로 고정된 채 아무 진행도 없는 것이 특징이다(프로세스가 죽지도,
+진행하지도 않는다). CI(`ubuntu-latest`, `.github/workflows/ci.yml`)에서는 재현되지 않으므로
+`vitest.config.ts`는 건드리지 않는다.
+
+이 증상을 보이면 로컬에서만 다음처럼 실행한다:
+
+```bash
+npx vitest run --pool=forks --poolOptions.forks.singleFork
+```
+
+병렬성이 없어 전체 스위트가 조금 느려지지만(로컬 기준 약 20-30초), 안정적으로 끝까지
+실행된다. `test/worker-claude-code-cli.test.ts`, `test/worker-codex-cli.test.ts`의
+`spawn EFTYPE` 실패 8건은 이 워크어라운드와 무관한, 이 환경에서 `.sh` fixture를 직접
+spawn하지 못하는 별개의 기존 문제다(§9에 없는 새 항목이며 아직 원인 조사 전이다).
