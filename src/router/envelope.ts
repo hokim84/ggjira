@@ -3,8 +3,11 @@ import {
   type IssueSnapshot,
   IssueSnapshotSchema,
   type JobEnvelope,
+  type PlanningContext,
+  PlanningContextSchema,
 } from "../contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
+import { buildPmSystemPrompt } from "../pm/prompt.js";
 import { buildImplementSystemPrompt } from "../worker/prompt.js";
 import type { RouterConfig } from "./config.js";
 import type { AttemptRow } from "./db/attempts.js";
@@ -21,10 +24,12 @@ export class EnvelopeUnavailableError extends Error {
   }
 }
 
-/** The approval snapshot `reconcileIssue` stores (src/router/scheduler.ts). Only `issue` is
- *  read here; it is re-validated rather than trusted, since it round-trips through JSON. */
+/** The approval snapshot `storeApproval` writes (src/router/issue-check.ts). Only `issue` and
+ *  `planning` are read here; both are re-validated rather than trusted, since they round-trip
+ *  through JSON. */
 interface StoredApprovalSnapshot {
   issue?: unknown;
+  planning?: unknown;
 }
 
 function toIssueSnapshot(jobId: string, snapshot: unknown): IssueSnapshot {
@@ -39,10 +44,25 @@ function toIssueSnapshot(jobId: string, snapshot: unknown): IssueSnapshot {
   return parsed.data;
 }
 
+function toPlanningContext(jobId: string, snapshot: unknown): PlanningContext {
+  const planning = (snapshot as StoredApprovalSnapshot | null)?.planning;
+  // A planning job whose issue was never scanned with planning context (it cannot normally
+  // happen: reconcile collects it before creating the job) still gets the issue itself.
+  const parsed = PlanningContextSchema.safeParse(planning ?? {});
+  if (!parsed.success) {
+    throw new EnvelopeUnavailableError(
+      jobId,
+      `stored planning context is invalid: ${parsed.error.message}`,
+    );
+  }
+  return parsed.data;
+}
+
 /**
  * Assembles what a worker receives for a leased attempt entirely from Router's own DB — the
  * issue snapshot and input hash captured by the last reconcile — so `jobs/next` never waits on
- * Jira (§3 "네트워크 호출을 DB 트랜잭션 안에서 기다리지 않는다"). Planning context is stage 4.
+ * Jira (§3 "네트워크 호출을 DB 트랜잭션 안에서 기다리지 않는다"). A planning job also gets the
+ * comments/subtasks/decision reply reconcile collected, and the PM system prompt.
  */
 export function buildJobEnvelope(
   db: Database.Database,
@@ -69,7 +89,10 @@ export function buildJobEnvelope(
     approvalId: job.approvalId,
     inputHash: job.inputHash ?? approval.inputHash,
     issueSnapshot: toIssueSnapshot(job.id, approval.inputSnapshot),
-    systemPrompt: buildImplementSystemPrompt(),
+    ...(job.kind === "planning"
+      ? { planningContext: toPlanningContext(job.id, approval.inputSnapshot) }
+      : {}),
+    systemPrompt: job.kind === "planning" ? buildPmSystemPrompt() : buildImplementSystemPrompt(),
     timeoutMs: config.execution.timeoutMs,
   };
 }

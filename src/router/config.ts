@@ -117,6 +117,18 @@ const ExecutionConfigSchema = z.object({
     .default(30 * 60 * 1000),
 });
 
+/** How Router applies a PM plan to Jira (the v5 counterpart of v4's `pm.*` settings). */
+const PlanningConfigSchema = z.object({
+  subtaskIssueType: nfcString.default("Sub-task"),
+  maxTasksPerPlan: z.number().int().positive().default(10),
+});
+
+const ReportingConfigSchema = z.object({
+  /** Added to an issue whose execution failed or timed out; the issue itself stays in
+   *  `inProgressStatus` until a human re-approves it (ADR 0021). */
+  failureLabel: z.string().min(1).default("ggjira-failed"),
+});
+
 export const RouterConfigSchema = z
   .object({
     configVersion: z.literal(5),
@@ -129,6 +141,8 @@ export const RouterConfigSchema = z
     http: HttpConfigSchema.default({}),
     reconciliation: ReconciliationConfigSchema.default({}),
     execution: ExecutionConfigSchema.default({}),
+    planning: PlanningConfigSchema.default({}),
+    reporting: ReportingConfigSchema.default({}),
   })
   .superRefine((config, ctx) => {
     const repositoryIds = new Set(config.repositories.map((repo) => repo.id));

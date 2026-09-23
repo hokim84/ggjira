@@ -42,8 +42,11 @@ const ALLOWED_JOB_TRANSITIONS: Readonly<Record<JobState, ReadonlySet<JobState>>>
   // cancel request doesn't prove the process is gone (ADR 0020).
   cancel_requested: new Set(["cancelled", "recovery_required"]),
   recovery_required: new Set(["cancelled", "queued"]),
-  failed: new Set(["queued"]),
-  timed_out: new Set(["queued"]),
+  // `cancelled` when a human re-approves the issue (a new changelog entry into the request
+  // status): the failed job is closed and a fresh one decided from current Jira state, since the
+  // kind or target may have changed (ADR 0021).
+  failed: new Set(["queued", "cancelled"]),
+  timed_out: new Set(["queued", "cancelled"]),
   succeeded: new Set(),
   cancelled: new Set(),
 };

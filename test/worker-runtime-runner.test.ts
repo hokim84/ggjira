@@ -173,7 +173,7 @@ describe("WorkerRunner against a live Router", () => {
     });
   });
 
-  it("refuses a planning envelope without running the provider", async () => {
+  it("runs a planning envelope read-only and returns the plan as structured data", async () => {
     router.jira.seedIssue({
       key: "KAN-7",
       summary: "Plan it",
@@ -183,7 +183,26 @@ describe("WorkerRunner against a live Router", () => {
       description: issueDescription(),
     });
     await router.reconcile();
-    const provider = new BlockingProvider();
+    const plan = {
+      needsDecision: false,
+      summary: "Two steps",
+      tasks: [
+        {
+          taskId: "api",
+          title: "Build the API",
+          description: "Endpoints",
+          acceptance: [],
+          requiredCapabilities: ["programming"],
+        },
+      ],
+    };
+    const requests: WorkerRequest[] = [];
+    const provider: WorkerProvider = {
+      async run(request) {
+        requests.push(request);
+        return fakeSuccessResult({ summary: "planned", structuredOutput: plan });
+      },
+    };
     const { runner } = await makeRunner(provider);
     await runner.connect();
 
@@ -192,11 +211,20 @@ describe("WorkerRunner against a live Router", () => {
     const job = router.db.prepare("SELECT state FROM jobs WHERE issue_key = 'KAN-7'").get() as {
       state: string;
     };
-    expect(job.state).toBe("failed");
+    expect(job.state).toBe("succeeded");
+    expect(requests[0]?.readOnly).toBe(true);
+    expect(requests[0]?.prompt).toContain("KAN-7");
     const result = router.db.prepare("SELECT payload FROM results").get() as { payload: string };
     expect(JSON.parse(result.payload)).toMatchObject({
-      failureReason: 'unsupported job kind "planning"',
+      status: "planned",
+      plan: { summary: "Two steps", tasks: [{ taskId: "api" }] },
     });
+    // Nothing reached Jira from the worker; Router journaled the plan instead.
+    expect(router.jira.createdIssues).toEqual([]);
+    const kinds = router.db
+      .prepare("SELECT kind FROM report_steps WHERE result_id IS NOT NULL ORDER BY rowid")
+      .all() as Array<{ kind: string }>;
+    expect(kinds.map((row) => row.kind)).toContain("create-subtask");
   });
 
   it("refuses a providerId the worker does not have", async () => {

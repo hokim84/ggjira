@@ -192,3 +192,52 @@ export const WORKER_PROTOCOL_STATEMENTS: readonly string[] = [
   "ALTER TABLE results ADD COLUMN applied INTEGER NOT NULL DEFAULT 1",
   "CREATE INDEX IF NOT EXISTS idx_results_attempt ON results (attempt_id)",
 ];
+
+export const REPORT_STEP_STATUSES = [
+  "pending",
+  "applied",
+  "skipped",
+  "failed",
+  "uncertain",
+  "recovery_required",
+] as const;
+const reportStepStatusList = REPORT_STEP_STATUSES.map((status) => `'${status}'`).join(", ");
+
+/**
+ * Migration 3 (stage 4 — Jira reporting journal). Migration 1's `jira_writes` table was a
+ * placeholder nothing ever wrote to; its `status` CHECK cannot express the "uncertain /
+ * recovery_required" states the plan requires (§3 "확인할 수 없는 생성·전이 요청은 무작정
+ * 재전송하지 않고 recovery_required로 보류한다"), and SQLite cannot alter a CHECK in place, so it
+ * is dropped and replaced (ADR 0021).
+ */
+export const REPORT_JOURNAL_STATEMENTS: readonly string[] = [
+  "DROP INDEX IF EXISTS idx_jira_writes_status",
+  "DROP TABLE IF EXISTS jira_writes",
+
+  // One row per Jira side effect Router owes an issue, grouped into batches: the `start` batch
+  // (move the issue to `inProgressStatus` when execution is granted) and one batch per applied
+  // result (`result_id` set). Steps run strictly in insertion order per job. Every step is
+  // idempotent against Jira (marker lookup or re-read before writing), so a crash or a retry
+  // resumes at the first unfinished step without redoing — or re-running the worker for —
+  // anything already applied (§3 "Jira 보고 재시도는 AI 워커를 다시 실행하지 않는다").
+  `CREATE TABLE IF NOT EXISTS report_steps (
+    id TEXT PRIMARY KEY,
+    batch_id TEXT NOT NULL,
+    result_id TEXT REFERENCES results (id),
+    job_id TEXT NOT NULL REFERENCES jobs (id),
+    attempt_id TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    params TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN (${reportStepStatusList})),
+    outcome TEXT,
+    tries INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (batch_id, seq)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_report_steps_status ON report_steps (status)",
+  "CREATE INDEX IF NOT EXISTS idx_report_steps_job ON report_steps (job_id)",
+];

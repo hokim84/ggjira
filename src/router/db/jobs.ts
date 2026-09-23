@@ -161,3 +161,44 @@ export function transitionJobState(
   );
   return { ...job, state: to, updatedAt: now, closedAt };
 }
+
+/**
+ * Re-stamps a job with the issue's current approval before a manual retry requeues it
+ * (§3 "새 실행 전 Jira 요청 상태의 승인을 다시 확인한다"), so the new attempt's envelope and
+ * approval checks use what Jira shows now (`retryJob` in src/router/recovery.ts). Does not change
+ * `state` — the caller transitions it.
+ */
+export function restampJobApproval(
+  db: Database.Database,
+  jobId: string,
+  input: {
+    approvalId: string;
+    inputHash: string;
+    kind: JobKind;
+    requiredCapabilities: readonly string[];
+    now: string;
+  },
+): void {
+  db.prepare(
+    `UPDATE jobs SET approval_id = ?, input_hash = ?, kind = ?, required_capabilities = ?,
+       updated_at = ? WHERE id = ?`,
+  ).run(
+    input.approvalId,
+    input.inputHash,
+    input.kind,
+    JSON.stringify(input.requiredCapabilities),
+    input.now,
+    jobId,
+  );
+}
+
+/** Jobs whose current attempt may still be running somewhere: the set Router re-checks against
+ *  Jira every `activeJobPollIntervalMs` (§2 "활성 작업의 승인은 최대 5초 간격으로 중앙에서 확인한다"). */
+export function getActiveJobs(db: Database.Database): JobRow[] {
+  const rows = db
+    .prepare(
+      "SELECT * FROM jobs WHERE state IN ('leased', 'running', 'cancel_requested') ORDER BY created_at ASC",
+    )
+    .all() as Record<string, unknown>[];
+  return rows.map(toJobRow);
+}

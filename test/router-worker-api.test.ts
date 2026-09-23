@@ -3,7 +3,9 @@ import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { upsertApproval } from "../src/router/db/approvals.js";
 import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
+import { listAudit } from "../src/router/db/audit.js";
 import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
+import { listBatchReportSteps } from "../src/router/db/report-steps.js";
 import { getResult } from "../src/router/db/results.js";
 import { revokeWorker } from "../src/router/db/workers.js";
 import { ADMIN_TOKEN, RouterHarness, type RegisteredWorker } from "./helpers/router-harness.js";
@@ -236,7 +238,7 @@ describe("worker API", () => {
     expect(getJob(router.db, envelope.jobId)?.state).toBe("timed_out");
   });
 
-  it("keeps a late result (lease already expired) only as an audit record", async () => {
+  it("keeps a late result (lease already expired) unapplied and takes it as the worker's stop confirmation", async () => {
     await router.seedQueuedJob();
     const worker = await router.connectWorker("worker-1");
     const envelope = await reserve(worker);
@@ -251,7 +253,14 @@ describe("worker API", () => {
 
     expect(late.json()).toEqual({ accepted: true, applied: false });
     expect(getResult(router.db, `result-${envelope.attemptId}`)?.applied).toBe(false);
-    expect(getJob(router.db, envelope.jobId)?.state).toBe("recovery_required");
+    // ADR 0021: the result proves the process is gone, so the job is released — as cancelled,
+    // never as succeeded — and Jira only hears that nothing was applied.
+    expect(getJob(router.db, envelope.jobId)?.state).toBe("cancelled");
+    expect(listAudit(router.db, envelope.jobId).map((entry) => entry.action)).toEqual([
+      "recovery.stop_confirmed",
+    ]);
+    const steps = listBatchReportSteps(router.db, `recovered:${envelope.attemptId}`);
+    expect(steps.map((step) => step.kind)).toEqual(["comment"]);
   });
 
   it("rejects a revoked token with 401", async () => {

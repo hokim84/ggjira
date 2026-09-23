@@ -15,8 +15,58 @@
 | 1. 계약·설정·저장소 | ✅ 완료 (2026-09-22) | 아래 상세 참고 |
 | 2. Router 입력·판단 | ✅ 완료 (2026-09-23) | 아래 상세 참고 |
 | 3. Worker 통신·실행 | ✅ 완료 (2026-09-23) | 아래 상세 참고 |
-| 4. PM·보고·복구 | ⬜ 미착수 | 다음 작업 시작점 |
-| 5. 운영 기능·기존 구조 제거 | ⬜ 미착수 | |
+| 4. PM·보고·복구 | ✅ 완료 (2026-09-23) | 아래 상세 참고 |
+| 5. 운영 기능·기존 구조 제거 | ⬜ 미착수 | 다음 작업 시작점 |
+
+### 4단계: PM·보고·복구 — 완료
+
+`docs/decisions/0021-router-stage4-reporting-recovery.md`에 판단을 기록했다. 사용자가 확정한 두 가지는
+실패 시 inProgressStatus 유지 + 라벨, needsDecisionStatus가 없을 때 reviewStatus다. 나머지는
+보고 저널 배치 구조, 쓰기 전 재조회 규칙, 생성 불명확 시 보류, 생성 마커 위치, 부모 계획 버전
+검사, Jira 재조회 기반 승인 확인, recovery 해제·재시도 경로다.
+
+구현 파일:
+
+- `src/router/db/schema.ts`·`migrate.ts` — migration 3: `jira_writes`를 `report_steps`(배치·순서·
+  상태 `pending/applied/skipped/failed/uncertain/recovery_required`)로 교체.
+- `src/router/db/report-steps.ts`·`audit.ts` — 저널 저장·조회·재대기, 감사 기록.
+- `src/router/report-journal.ts` — 결과·시작·중단 확인을 Jira 단계 목록으로 바꾸는 순수 로직.
+  계획 검증이 여기서 이루어진다.
+- `src/router/report-processor.ts` — `processReportJournal`. 단계별로 Jira를 다시 읽은 뒤 쓴다.
+- `src/router/recovery.ts` — `resolveRecoveryJob`, `retryJob`(Jira 승인 재확인 후 새 attempt),
+  `retryReportBatch`.
+- `src/router/issue-check.ts` — 승인 읽기(부모 계획 버전 검사 포함), planning context 수집,
+  `checkJobAgainstJira`. `src/router/scheduler.ts`의 `verifyActiveJobs`와 후보 밖 job 재확인이 쓴다.
+- `src/router/worker-service.ts` — `start`·`submitResult` 트랜잭션에서 저널 생성, 늦은 결과를
+  워커 중단 확인으로 처리. `src/router/envelope.ts` — planning context·PM system prompt.
+- `src/worker-runtime/planning.ts` — planning envelope 실행(읽기 전용, 계획 반환).
+- `src/pm/plan-render.ts`·`decision-render.ts` — 계획·결정 요청 렌더링을 v4와 공유하는 순수 모듈.
+  `src/pm/prompt.ts`의 `buildPlanningPrompt`는 구조적 입력을 받는다.
+- `src/router/config.ts` — `planning.subtaskIssueType`/`maxTasksPerPlan`, `reporting.failureLabel`.
+
+**의도적으로 아직 없는 것**: `processReportJournal`·`verifyActiveJobs`·`expireLeases`·
+`reconcileCandidates`를 주기적으로 부르는 `router serve`, recovery 함수의 관리자 HTTP API·CLI,
+`worker run` 진입점(5단계). PM 출력 스키마의 `assigneeAgentId`·Agent Profile 필드는 Router가
+무시하며, 제거는 구형 경로 삭제와 함께 5단계에서 한다.
+
+테스트: `test/router-reporting.test.ts`가 다음을 검증한다.
+- 시작 전이, 성공·실패 보고, 사람이 바꾼 상태 보존, 불명확한 댓글의 재조회 확정, 명확한 거부 →
+  관리자 재시도
+- planning context envelope, 계획 적용 전체와 재실행 멱등, 계획 버전 게이트, 불명확한 생성 보류
+  → 재시도, 결정 요청, 순환 계획 거부
+- Router 자신의 전이·댓글을 철회로 보지 않음, 사람이 옮기면 취소 요청, 조회 실패 시 유지
+- 관리자 resolve, retry, 재시도 거부, 재승인 시 새 job
+
+`test/worker-runtime-runner.test.ts`는 planning 실행 end-to-end를, `test/router-worker-api.test.ts`는
+늦은 결과의 중단 확인 처리를 검증한다.
+
+검증: typecheck·lint·format 통과. 이 Windows 환경에서는 전체 vitest 실행이 간헐적으로 멈춘다(runbook
+§13, HEAD에서도 재현). 그래서 테스트 파일마다 별도 프로세스로 실행했다. 결과는 480건 중 472 passed /
+8 failed이고, 실패는 기존 `spawn EFTYPE` 8건뿐이다.
+
+**5단계를 시작하는 세션/모델에게**: `router serve`는 `reconcileCandidates`(60초),
+`verifyActiveJobs`(`reconciliation.activeJobPollIntervalMs`), `processReportJournal`, `expireLeases`를
+주기적으로 호출한다. 관리자 API는 `src/router/recovery.ts`와 `listBlockedReportSteps`를 감싸면 된다.
 
 ### 3단계: Worker 통신·실행 — 완료
 
@@ -75,7 +125,7 @@ requestId 재전송·403/409·결과 중복/충돌·늦은 결과), `test/router
 실패 8건은 1·2단계와 같은 기존 `spawn EFTYPE`(`.sh` fixture, runbook §13)이며, HEAD의
 `src/worker/spawn.ts`로 되돌려 돌려도 같은 8건이 실패함을 확인했다.
 
-**4단계를 시작하는 세션/모델에게**: 결과는 `WorkerService.submitResult`에서 `results`에
+**4단계를 시작하는 세션/모델에게**(완료됨, 4단계 절 참고): 결과는 `WorkerService.submitResult`에서 `results`에
 저장된다. Jira 반영 작업 생성은 같은 트랜잭션 안(`applyResult` 옆)에 추가한다. planning 실행은
 `src/worker-runtime/executor.ts`의 `kind !== "implementation"` 분기를 채우면 되고, envelope의
 `planningContext`는 `src/router/envelope.ts`에서 채운다. ADR 0019 Consequences의 "승인 철회

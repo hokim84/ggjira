@@ -1,5 +1,9 @@
 import type Database from "better-sqlite3";
-import { SCHEMA_STATEMENTS, WORKER_PROTOCOL_STATEMENTS } from "./schema.js";
+import {
+  REPORT_JOURNAL_STATEMENTS,
+  SCHEMA_STATEMENTS,
+  WORKER_PROTOCOL_STATEMENTS,
+} from "./schema.js";
 
 interface Migration {
   version: number;
@@ -27,6 +31,13 @@ const MIGRATIONS: readonly Migration[] = [
       "worker protocol: pairing worker_id, worker availability/session columns, worker_sessions, attempt session/request ids, results.applied",
     up(db) {
       for (const statement of WORKER_PROTOCOL_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 3,
+    description: "Jira reporting journal: report_steps (replaces the never-used jira_writes)",
+    up(db) {
+      for (const statement of REPORT_JOURNAL_STATEMENTS) db.exec(statement);
     },
   },
 ];

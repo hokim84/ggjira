@@ -1,32 +1,38 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { canHandle } from "../agent/capability.js";
-import { readIssueRequirements } from "../agent/requirements.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
-import { PlanMetadataError, type PlanTaskMetadata, readPlanTaskMetadata } from "../pm/metadata.js";
+import { PlanMetadataError } from "../pm/metadata.js";
 import {
   getActiveAttemptForWorker,
   getAttempt,
   leaseAttempt,
   transitionAttemptState,
 } from "./db/attempts.js";
-import { upsertApproval } from "./db/approvals.js";
 import { markWorkerAssigned } from "./db/workers.js";
 import {
   createJob,
   type JobRow,
   getOpenJobForIssue,
+  getActiveJobs,
   getOpenJobs,
   getQueuedJobs,
   transitionJobState,
 } from "./db/jobs.js";
-import { computeApprovalId, computeInputHash } from "./approval.js";
 import { findWorkspaceCandidates } from "./candidates.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
+import {
+  checkJobAgainstJira,
+  collectPlanningContext,
+  type IssueApproval,
+  kindForStatus,
+  readIssueApproval,
+  storeApproval,
+} from "./issue-check.js";
 
 /** How long a lease is valid before Router considers it expired
  *  (docs/router-service-implementation-plan.md §3 "임대: 30초"). Stage 3/4 own renewal. */
@@ -50,6 +56,9 @@ export interface SchedulerDeps {
   decisionProvider: DecisionProvider;
   now: () => string;
   genId?: () => string;
+  /** Router's own Jira account, for telling human decision replies apart from Router's own
+   *  comments. Looked up once per pass via `getMyself` when not supplied. */
+  routerAccountId?: string;
 }
 
 export interface SchedulerReport {
@@ -108,20 +117,26 @@ async function resolveUnresolvedDependencies(
 
 /** Cancels a stale open job, respecting the state machine: `waiting`/`queued`/`leased` free the
  *  one-open-job-per-issue slot immediately; `running` can only be asked to stop
- *  (`cancel_requested`) and keeps occupying the slot until stage 3/4 confirms it stopped; any
- *  other open state (`failed`/`timed_out`/`recovery_required`/already `cancel_requested`) is left
- *  alone for a human/CLI retry (§3 "수동 재시도는 새로운 attempt를 만든다") rather than forced
- *  through a transition the state machine doesn't allow. Returns whether the slot is now free. */
-function cancelStaleJob(
+ *  (`cancel_requested`) and keeps occupying the slot until the stop is confirmed; a `failed`/
+ *  `timed_out` job has nothing running, so it closes too (a human re-approved the issue — ADR 0021);
+ *  `recovery_required` and an already `cancel_requested` job are left alone until a worker or an
+ *  admin confirms the stop. Returns whether the slot is now free. */
+export function cancelStaleJob(
   db: Database.Database,
   job: JobRow,
   now: string,
-  report: SchedulerReport,
+  report?: Pick<SchedulerReport, "jobsCancelled" | "jobsCancelRequested">,
 ): boolean {
   // An explicit state list, not `canTransitionJobState`: `cancel_requested` and
   // `recovery_required` can also reach `cancelled`, but only on a confirmed stop (worker result
   // or admin resolve) — never because a reconcile pass noticed the approval is gone.
-  if (job.state === "waiting" || job.state === "queued" || job.state === "leased") {
+  if (
+    job.state === "waiting" ||
+    job.state === "queued" ||
+    job.state === "leased" ||
+    job.state === "failed" ||
+    job.state === "timed_out"
+  ) {
     const run = db.transaction(() => {
       transitionJobState(db, job.id, "cancelled", now);
       // A leased job's attempt must go with it, or it keeps occupying the worker's
@@ -129,7 +144,7 @@ function cancelStaleJob(
       transitionCurrentAttempt(db, job, "cancelled", now);
     });
     run();
-    report.jobsCancelled.push(job.id);
+    report?.jobsCancelled.push(job.id);
     return true;
   }
   if (job.state === "running") {
@@ -139,7 +154,7 @@ function cancelStaleJob(
       transitionCurrentAttempt(db, job, "cancel_requested", now);
     });
     run();
-    report.jobsCancelRequested.push(job.id);
+    report?.jobsCancelRequested.push(job.id);
     return false;
   }
   return false;
@@ -163,43 +178,48 @@ async function reconcileIssue(
   workspace: WorkspaceConfig,
   issue: JiraIssue,
   genId: () => string,
+  routerAccountId: () => Promise<string>,
   report: SchedulerReport,
 ): Promise<void> {
-  let planTask: PlanTaskMetadata | null;
+  const kind = kindForStatus(issue.statusName, workspace);
+  let approval: IssueApproval;
   try {
-    planTask = await readPlanTaskMetadata(deps.jira, issue.key);
+    approval = await readIssueApproval(deps.jira, issue, kind, workspace);
   } catch (error) {
     if (error instanceof PlanMetadataError) {
       report.skipped.push({ issueKey: issue.key, reason: error.message });
+      // Corrupted or superseded plan metadata withdraws the approval an open job relied on.
+      const openJob = getOpenJobForIssue(deps.db, issue.key);
+      if (openJob && VERIFIED_JOB_STATES.has(openJob.state)) {
+        cancelStaleJob(deps.db, openJob, deps.now(), report);
+      }
       return;
     }
     throw error;
   }
+  const { requirements, planTask, approvalId, inputHash } = approval;
 
-  const requirements = readIssueRequirements(issue);
   const dependencyKeys = extractDependencyKeys(requirements.dependencies);
   const unresolvedDependencies = await resolveUnresolvedDependencies(
     deps.jira,
     workspace,
     dependencyKeys,
   );
-  const approvalId = await computeApprovalId(deps.jira, issue, workspace.workflow.requestStatus);
-  const inputHash = computeInputHash(requirements, planTask);
+  // A planning job's envelope carries comments/subtasks/decision reply; collected here, outside
+  // any DB transaction, so `jobs/next` can build the envelope from SQLite alone.
+  const planning =
+    kind === "planning"
+      ? await collectPlanningContext(deps.jira, issue, await routerAccountId())
+      : undefined;
   const now = deps.now();
-
-  upsertApproval(deps.db, {
-    issueKey: issue.key,
-    approvalId,
-    inputHash,
-    inputSnapshot: { issue, requirements, planTask },
-    now,
-  });
+  storeApproval(deps.db, approval, now, planning);
 
   const existingJob = getOpenJobForIssue(deps.db, issue.key);
   if (existingJob) {
     const approvalCurrent =
       existingJob.approvalId === approvalId &&
-      (existingJob.inputHash === null || existingJob.inputHash === inputHash);
+      (existingJob.inputHash === null || existingJob.inputHash === inputHash) &&
+      issue.assigneeAccountId !== null;
     if (approvalCurrent && existingJob.state !== "waiting") {
       // Unchanged, already dispatched/leased/running/etc — nothing for this pass to do.
       return;
@@ -243,8 +263,6 @@ async function reconcileIssue(
   }
 
   if (decision.target === "wait") {
-    const kind =
-      issue.statusName === workspace.workflow.planningStatus ? "planning" : "implementation";
     const job = createJob(deps.db, {
       id: genId(),
       issueKey: issue.key,
@@ -336,27 +354,63 @@ export function assignQueuedJobs(
   return assignments;
 }
 
+/** Job states whose approval is re-checked against Jira: anything that may still be dispatched or
+ *  run. `failed`/`timed_out`/`recovery_required` wait for a human instead. */
+const VERIFIED_JOB_STATES = new Set(["waiting", "queued", "leased", "running"]);
+
 /**
- * Cancels any open job whose issue didn't show up in this pass's candidate scan of any
- * configured workspace. Since Router doesn't write to Jira until stage 4, the only way an
- * open job's issue stops being a `requestStatus`/`planningStatus` candidate is a human moving
- * it elsewhere — i.e. approval revocation (§2 "실행 중 승인 철회... 는 취소 사유"). Needs no
- * extra Jira calls: "not seen this pass" is itself the signal.
+ * Re-checks one open job against Jira and cancels it if its approval no longer stands. Once Router
+ * moves an issue to `inProgressStatus` on `start`, "absent from the candidate scan" no longer
+ * means "revoked" (ADR 0019's caveat), so every out-of-scan job is asked about directly. A Jira
+ * failure leaves the job alone — "couldn't ask" is never treated as "revoked".
  */
-function reverifyStaleOpenJobs(
+async function verifyJob(deps: SchedulerDeps, job: JobRow, report: SchedulerReport): Promise<void> {
+  let check: Awaited<ReturnType<typeof checkJobAgainstJira>>;
+  try {
+    check = await checkJobAgainstJira(deps.jira, deps.config, job);
+  } catch (error) {
+    report.skipped.push({
+      issueKey: job.issueKey,
+      reason: `approval re-check failed: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    return;
+  }
+  const now = deps.now();
+  if (check.verdict === "current") {
+    storeApproval(deps.db, check.approval, now);
+    return;
+  }
+  report.skipped.push({ issueKey: job.issueKey, reason: check.reason });
+  cancelStaleJob(deps.db, job, now, report);
+}
+
+async function reverifyUnseenOpenJobs(
   deps: SchedulerDeps,
   processedIssueKeys: ReadonlySet<string>,
   report: SchedulerReport,
-): void {
-  const now = deps.now();
+): Promise<void> {
   for (const job of getOpenJobs(deps.db)) {
-    if (processedIssueKeys.has(job.issueKey)) continue;
-    cancelStaleJob(deps.db, job, now, report);
+    if (processedIssueKeys.has(job.issueKey) || !VERIFIED_JOB_STATES.has(job.state)) continue;
+    await verifyJob(deps, job, report);
   }
 }
 
 /**
- * Stage 2's entry point: re-derives Router's SQLite job/attempt state from the latest Jira
+ * The fast path for jobs that may be running right now (§2 "활성 작업의 승인은 최대 5초 간격으로
+ * 중앙에서 확인한다"): re-checks every leased/running job against Jira. A revoked running job is
+ * moved to `cancel_requested`, which the worker hears on its next job heartbeat.
+ */
+export async function verifyActiveJobs(deps: SchedulerDeps): Promise<SchedulerReport> {
+  const report = newReport();
+  for (const job of getActiveJobs(deps.db)) {
+    if (!VERIFIED_JOB_STATES.has(job.state)) continue;
+    await verifyJob(deps, job, report);
+  }
+  return report;
+}
+
+/**
+ * The background reconcile: re-derives Router's SQLite job/attempt state from the latest Jira
  * signals for every configured workspace, then assigns whatever is now `queued` to an available
  * worker (docs/router-service-implementation-plan.md §4 "2. Router 입력·판단"). Called on a
  * timer for the background/startup full sync (§2 "웹훅과 보완 조회"); a future webhook-driven
@@ -369,17 +423,22 @@ export async function reconcileCandidates(
   const genId = deps.genId ?? randomUUID;
   const report = newReport();
   const processedIssueKeys = new Set<string>();
+  let cachedAccountId = deps.routerAccountId;
+  const routerAccountId = async (): Promise<string> => {
+    cachedAccountId ??= (await deps.jira.getMyself()).accountId;
+    return cachedAccountId;
+  };
 
   for (const workspace of deps.config.workspaces) {
     const candidates = await findWorkspaceCandidates(deps.jira, workspace);
     for (const issue of candidates) {
       report.candidatesSeen += 1;
       processedIssueKeys.add(issue.key);
-      await reconcileIssue(deps, workspace, issue, genId, report);
+      await reconcileIssue(deps, workspace, issue, genId, routerAccountId, report);
     }
   }
 
-  reverifyStaleOpenJobs(deps, processedIssueKeys, report);
+  await reverifyUnseenOpenJobs(deps, processedIssueKeys, report);
   assignQueuedJobs(deps, availableWorkers, report);
   return report;
 }

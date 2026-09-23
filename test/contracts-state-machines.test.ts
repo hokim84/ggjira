@@ -36,7 +36,9 @@ describe("job state machine", () => {
       ["recovery_required", "cancelled"],
       ["recovery_required", "queued"],
       ["failed", "queued"],
+      ["failed", "cancelled"],
       ["timed_out", "queued"],
+      ["timed_out", "cancelled"],
     ];
     for (const [from, to] of allowed) {
       expect(canTransitionJobState(from as never, to as never)).toBe(true);

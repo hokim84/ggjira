@@ -8,12 +8,14 @@
 [`decisions/0018-router-centric-architecture.md`](./decisions/0018-router-centric-architecture.md)를
 본다. 이 절 아래의 내용(v2~v4)은 이 전환이 완료되기 전까지 유효한 현재 실행 경로다.
 
-현재 3단계까지 구현되었다. Router(`src/router/`)는 웹훅·후보 조회·승인 식별·규칙 기반 배정과
+현재 4단계까지 구현되었다. Router(`src/router/`)는 웹훅·후보 조회·승인 식별·규칙 기반 배정과
 `/api/v1/*` Worker API(pairing, 세션, `jobs/next` long polling, start, heartbeat, authorize,
 result)를 SQLite 위에서 제공한다. Worker(`src/worker-runtime/`)는 Router에만 연결해 envelope를
 받고 기존 `src/worker/` provider·worktree로 실행하며, 결과를 로컬 spool에 저장한 뒤 제출한다.
 Worker Runtime은 `src/jira/`를 import하지 않는다(`test/worker-runtime-no-jira.test.ts`).
 프로토콜 세부 판단은 [`decisions/0020-router-stage3-worker-protocol.md`](./decisions/0020-router-stage3-worker-protocol.md).
+Planning job도 워커가 실행하되 계획을 구조화 결과로만 반환하고, Jira 반영은 Router가 한다
+([`decisions/0021-router-stage4-reporting-recovery.md`](./decisions/0021-router-stage4-reporting-recovery.md)).
 
 ```
 Worker                                   Router (SQLite)
@@ -26,7 +28,21 @@ Worker                                   Router (SQLite)
   spool → jobs/{id}/result ──────────▶   결과 저장, 현재 attempt일 때만 상태 반영
 ```
 
-Jira 반영(결과 댓글·상태 전이·PM 계획 적용)과 실행 진입점 CLI는 아직 없다(4·5단계).
+Router의 Jira 쓰기는 모두 SQLite 저널(`report_steps`)을 거친다. 실행 허가·결과 저장과 같은
+트랜잭션에서 단계를 기록하고, 트랜잭션 밖의 `processReportJournal`이 Jira를 다시 읽은 뒤
+쓴다. 그래서 재시도해도 같은 쓰기가 두 번 일어나지 않고, 워커를 다시 실행하지도 않는다.
+
+```
+start 허가 ──▶ [start:<attempt>]   승인 상태 → inProgressStatus
+result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제거 → reviewStatus
+                                    실패: 댓글 + ggjira-failed (inProgressStatus 유지)
+                                    결정 요청: 댓글 → needsDecisionStatus ?? reviewStatus
+                                    계획: 부모 계획 블록 → 하위 이슈 생성(마커) → plan-task
+                                          → ggjira.plan → superseded → 댓글 → reviewStatus
+중단 확인 ───▶ [recovered:<attempt>] "적용된 것 없음" 댓글
+```
+
+실행 진입점 CLI(`router serve`, `worker run`)와 주기 타이머, 관리자 HTTP API는 아직 없다(5단계).
 
 ## Capability 기반 Runtime (configVersion 4)
 

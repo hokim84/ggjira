@@ -1,7 +1,7 @@
 import type { AppConfig } from "../config.js";
-import type { PlanningContext } from "./context.js";
 import { DECISION_REQUEST_MARKER } from "./marker.js";
 import type { Plan } from "./plan.js";
+import { renderDecisionRequest } from "./decision-render.js";
 
 export function buildPmSystemPrompt(): string {
   return [
@@ -15,7 +15,27 @@ export function buildPmSystemPrompt(): string {
   ].join(" ");
 }
 
-export function buildPlanningPrompt(ctx: PlanningContext): string {
+/**
+ * What the planning prompt reads. Structural, so both the v4 PM handler's Jira-backed
+ * `PlanningContext` (src/pm/context.ts) and a v5 worker's envelope snapshot
+ * (src/worker-runtime/planning.ts) fit without the worker importing Jira types.
+ */
+export interface PlanningPromptInput {
+  issue: { key: string; summary: string; description: string | null };
+  comments: ReadonlyArray<{ authorDisplayName: string | null; body: string }>;
+  existingSubtasks: ReadonlyArray<{ key: string; statusName: string; summary: string }>;
+  humanDecision?: { raw: string };
+  agents?: ReadonlyArray<{
+    agentId: string;
+    role: string;
+    preset: string | null;
+    capabilities: readonly string[];
+    enabled: boolean;
+    registration: unknown;
+  }>;
+}
+
+export function buildPlanningPrompt(ctx: PlanningPromptInput): string {
   const parts: string[] = [`Issue: ${ctx.issue.key} — ${ctx.issue.summary}`];
   if (ctx.issue.description) {
     parts.push("", "Description:", ctx.issue.description);
@@ -73,33 +93,9 @@ export function buildDecisionRequestComment(
   config: AppConfig,
   planVersion?: string,
 ): string {
-  const decision = plan.decision;
-  if (!decision) {
-    throw new Error("buildDecisionRequestComment called on a plan with no decision");
-  }
-
-  const lines = [
-    DECISION_REQUEST_MARKER,
-    ...(planVersion ? [`planVersion: ${planVersion}`, `decisionId: ${planVersion}-decision`] : []),
-    "",
-    "GGJIRA needs a decision before it can continue planning.",
-    "",
-    `Question: ${decision.question}`,
-    "",
-    "Options:",
-  ];
-  for (const option of decision.options) {
-    lines.push(`- ${option.id}: ${option.title}`);
-    if (option.pros.length > 0) lines.push(`  pros: ${option.pros.join("; ")}`);
-    if (option.cons.length > 0) lines.push(`  cons: ${option.cons.join("; ")}`);
-  }
-  if (decision.recommendation) lines.push("", `Recommendation: ${decision.recommendation}`);
-  if (decision.impact) lines.push("", `Impact: ${decision.impact}`);
-  lines.push(
-    "",
-    `To respond: comment "Decision: <option id>" on this issue and move it back to "${config.workflow.planningStatus ?? config.workflow.readyStatus}".`,
-    "",
-    `agent: ${config.agent.identity}@${config.agent.machine}`,
-  );
-  return lines.join("\n");
+  return renderDecisionRequest(plan, {
+    ...(planVersion ? { planVersion } : {}),
+    replyStatus: config.workflow.planningStatus ?? config.workflow.readyStatus,
+    signature: `agent: ${config.agent.identity}@${config.agent.machine}`,
+  });
 }

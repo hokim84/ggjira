@@ -2,7 +2,6 @@ import type { z } from "zod";
 import type { AppConfig } from "../config.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
-import { renderSections } from "../profile/description.js";
 import {
   createAgentProfile,
   disableAgentProfile,
@@ -11,8 +10,13 @@ import {
 import type { AgentProfile, WorkspaceConfig } from "../profile/types.js";
 import { PLAN_PROPERTY_KEY, PLAN_TASK_PROPERTY_KEY, readPlanTaskMetadata } from "./metadata.js";
 import type { Plan, PlanTaskSchema } from "./plan.js";
-
-const SUPERSEDED_LABEL = "ggjira-superseded";
+import {
+  PlanApplyError,
+  SUPERSEDED_LABEL,
+  renderParentPlan,
+  renderTaskDescription,
+  validateTaskGraph,
+} from "./plan-render.js";
 
 export interface ApplyPlanResult {
   createdKeys: string[];
@@ -21,7 +25,7 @@ export interface ApplyPlanResult {
   disabledAgentIds: string[];
 }
 
-export class PlanApplyError extends Error {}
+export { PlanApplyError };
 
 function isRoutableImplementAgent(agent: AgentProfile): boolean {
   return agent.role === "implement" && agent.enabled && agent.registration !== null;
@@ -51,58 +55,6 @@ async function resolveLegacyAssignee(
   return exact.accountId;
 }
 
-function renderTaskDescription(task: z.infer<typeof PlanTaskSchema>): string {
-  return [
-    task.description,
-    "",
-    renderSections([
-      {
-        heading: "GGJIRA Plan",
-        scalars: [
-          ["Objective", task.title],
-          ["Suggested Execution Strategy", task.suggestedExecutionStrategy ?? null],
-        ],
-      },
-      { heading: "Acceptance Criteria", items: task.acceptance },
-      { heading: "Dependencies", items: task.dependencies ?? [] },
-      { heading: "Constraints", items: task.constraints ?? [] },
-      { heading: "Required Capabilities", items: task.requiredCapabilities ?? ["programming"] },
-    ]),
-  ].join("\n");
-}
-
-function validateTaskGraph(tasks: Array<z.infer<typeof PlanTaskSchema>>, taskIds: string[]): void {
-  const known = new Set(taskIds);
-  const graph = new Map<string, string[]>();
-  for (const [index, task] of tasks.entries()) {
-    const taskId = taskIds[index] ?? `task-${index + 1}`;
-    const unresolved = (task.dependencies ?? []).filter(
-      (dependency) => !known.has(dependency) && !/^[A-Z][A-Z0-9_]+-\d+$/.test(dependency),
-    );
-    if (unresolved.length > 0) {
-      throw new PlanApplyError(
-        `Task ${taskId} has unresolved dependencies: ${unresolved.join(", ")}`,
-      );
-    }
-    graph.set(
-      taskId,
-      (task.dependencies ?? []).filter((dependency) => known.has(dependency)),
-    );
-  }
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const visit = (taskId: string): void => {
-    if (visiting.has(taskId))
-      throw new PlanApplyError(`Plan contains a dependency cycle at ${taskId}`);
-    if (visited.has(taskId)) return;
-    visiting.add(taskId);
-    for (const dependency of graph.get(taskId) ?? []) visit(dependency);
-    visiting.delete(taskId);
-    visited.add(taskId);
-  };
-  for (const taskId of taskIds) visit(taskId);
-}
-
 /**
  * Whether an existing subtask is still untouched and safe to supersede on a replan. In v2/legacy
  * mode a fresh task always sits at `workflow.readyStatus`, so equality is exact. In v4 mode a
@@ -122,36 +74,6 @@ function isStillPending(config: AppConfig, task: JiraIssue): boolean {
     ].filter((status): status is string => Boolean(status)),
   );
   return !startedStatuses.has(task.statusName);
-}
-
-const PLAN_START = "{noformat}[GGJIRA:PLAN:START]{noformat}";
-const PLAN_END = "{noformat}[GGJIRA:PLAN:END]{noformat}";
-
-function renderParentPlan(parent: JiraIssue, plan: Plan): string {
-  const managed = [
-    PLAN_START,
-    renderSections([
-      {
-        heading: "GGJIRA Plan",
-        scalars: [
-          ["Objective", plan.objective ?? parent.summary],
-          ["Suggested Execution Strategy", plan.suggestedExecutionStrategy ?? null],
-        ],
-      },
-      { heading: "Acceptance Criteria", items: plan.acceptanceCriteria ?? [] },
-      { heading: "Dependencies", items: plan.dependencies ?? [] },
-      { heading: "Constraints", items: plan.constraints ?? [] },
-      { heading: "Required Capabilities", items: plan.requiredCapabilities ?? [] },
-    ]),
-    PLAN_END,
-  ].join("\n");
-  const original = parent.description ?? "";
-  const start = original.indexOf(PLAN_START);
-  const end = original.indexOf(PLAN_END);
-  if (start >= 0 && end >= start) {
-    return `${original.slice(0, start)}${managed}${original.slice(end + PLAN_END.length)}`.trim();
-  }
-  return [original.trim(), managed].filter(Boolean).join("\n\n");
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   isGitRepository,
 } from "../worker/worktree.js";
 import type { WorkerConfig } from "./config.js";
+import { executePlanningEnvelope } from "./planning.js";
 
 /** A result minus the identifiers the runner stamps on (`resultId`, `jobId`, ...). */
 export type ExecutionOutcome = Omit<
@@ -40,7 +41,8 @@ function cancelled(summary: string, extra: Partial<ExecutionOutcome> = {}): Exec
 }
 
 /**
- * Runs one implementation envelope: worktree → provider → commit → validate. The v5 counterpart
+ * Runs one envelope. Planning goes to `executePlanningEnvelope`; implementation is
+ * worktree → provider → commit → validate. The v5 counterpart
  * of `src/implement/executor.ts`, minus Jira: where that one polled Jira for approval, this asks
  * Router (`authorize`) right before each side effect and stops on `signal`.
  *
@@ -52,15 +54,6 @@ export async function executeEnvelope(
   envelope: JobEnvelope,
   deps: ExecutorDeps,
 ): Promise<ExecutionOutcome> {
-  if (envelope.kind !== "implementation") {
-    // ADR 0020: planning execution arrives with stage 4's PM context split.
-    return {
-      status: "failed",
-      summary: "This worker does not run planning jobs yet.",
-      failureReason: `unsupported job kind "${envelope.kind}"`,
-    };
-  }
-
   const repository = deps.config.repositories.find((repo) => repo.id === envelope.repositoryId);
   if (!repository) {
     return {
@@ -76,6 +69,16 @@ export async function executeEnvelope(
       summary: "Refused: provider is not configured on this worker.",
       failureReason: `unknown providerId "${envelope.providerId}"`,
     };
+  }
+
+  if (envelope.kind === "planning") {
+    return executePlanningEnvelope(envelope, {
+      repository,
+      provider: deps.createProvider(providerConfig),
+      worktreesRoot: deps.worktreesRoot,
+      logPath: deps.config.logPath,
+      signal: deps.signal,
+    });
   }
 
   const issue = envelope.issueSnapshot;

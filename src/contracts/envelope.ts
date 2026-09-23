@@ -29,11 +29,21 @@ export const CommentSnapshotSchema = z.object({
   created: z.string(),
 });
 
+/** The human's reply to Router's latest decision-request comment (`findHumanDecision` in
+ *  src/pm/context.ts, resolved by Router since only Router knows its own Jira account). */
+export const HumanDecisionSnapshotSchema = z.object({
+  raw: z.string(),
+  optionId: z.string().min(1).optional(),
+  decisionId: z.string().min(1).optional(),
+  planVersion: z.string().min(1).optional(),
+});
+
 /** Extra context Router assembles only for `kind: "planning"` jobs. */
 export const PlanningContextSchema = z.object({
   planVersion: z.string().min(1).optional(),
   comments: z.array(CommentSnapshotSchema).default([]),
   existingSubtasks: z.array(IssueSnapshotSchema).default([]),
+  humanDecision: HumanDecisionSnapshotSchema.optional(),
 });
 export type PlanningContext = z.infer<typeof PlanningContextSchema>;
 

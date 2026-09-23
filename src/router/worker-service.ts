@@ -19,7 +19,7 @@ import type {
   WorkerSessionResponse,
 } from "../contracts/api.js";
 import type { AttemptState } from "../contracts/attempt-state.js";
-import type { JobEnvelope } from "../contracts/envelope.js";
+import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
 import type { JobState } from "../contracts/job-state.js";
 import { isWorkerDispatchable, toWorkerAvailability } from "./availability.js";
 import type { RouterConfig } from "./config.js";
@@ -36,6 +36,8 @@ import {
 } from "./db/attempts.js";
 import { getJob, type JobRow, transitionJobState } from "./db/jobs.js";
 import { consumePairingCode, createPairingCode, PairingCodeRejectedError } from "./db/pairing.js";
+import { appendAudit } from "./db/audit.js";
+import { insertReportBatch } from "./db/report-steps.js";
 import { recordResult, ResultConflictError } from "./db/results.js";
 import {
   findWorkerByTokenHash,
@@ -48,7 +50,15 @@ import {
   type WorkerRow,
 } from "./db/workers.js";
 import { buildJobEnvelope } from "./envelope.js";
+import type { ApprovalSnapshot } from "./issue-check.js";
 import { expireLeases } from "./leases.js";
+import {
+  buildRecoveredSteps,
+  buildResultSteps,
+  buildStartSteps,
+  recoveredBatchId,
+  startBatchId,
+} from "./report-journal.js";
 import { assignQueuedJobs, LEASE_DURATION_MS } from "./scheduler.js";
 
 /** §3 "long polling: 25초". */
@@ -85,6 +95,8 @@ export interface WorkerServiceDeps {
   pollIntervalMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }
+
+type ClosedJobState = Extract<JobState, "succeeded" | "failed" | "timed_out" | "cancelled">;
 
 const RUNNING_ATTEMPT_STATES: ReadonlySet<AttemptState> = new Set(["running", "cancel_requested"]);
 
@@ -318,6 +330,7 @@ export class WorkerService {
 
       transitionAttemptState(this.db, attempt.id, "running", now);
       transitionJobState(this.db, job.id, "running", now);
+      this.journalStart(job, attempt, now);
       return { granted: true, leaseExpiresAt: this.renew(attempt.id, now) };
     });
     // Outside the transaction: a refusal thrown below must not roll the expiry back.
@@ -396,8 +409,8 @@ export class WorkerService {
       const job = getJob(this.db, jobId);
       if (!job) throw new WorkerApiError(404, "unknown_job", "no such job");
 
-      const applicable =
-        job.currentAttemptId === attempt.id && RUNNING_ATTEMPT_STATES.has(attempt.state);
+      const current = job.currentAttemptId === attempt.id;
+      const applicable = current && RUNNING_ATTEMPT_STATES.has(attempt.state);
       let recorded: ReturnType<typeof recordResult>;
       try {
         recorded = recordResult(this.db, {
@@ -417,10 +430,15 @@ export class WorkerService {
       if (recorded.outcome === "duplicate") {
         return { accepted: true, applied: recorded.row.applied };
       }
+      if (current && attempt.state === "recovery_required" && job.state === "recovery_required") {
+        this.confirmStopFromResult(worker, job, attempt, result, now);
+        return { accepted: true, applied: false };
+      }
       if (!applicable) return { accepted: true, applied: false };
 
       setAttemptResultId(this.db, attempt.id, result.resultId);
-      this.applyResult(job, attempt, result, now);
+      const finalState = this.applyResult(job, attempt, result, now);
+      this.journalResult(job, attempt, result, finalState, now);
       return { accepted: true, applied: true };
     });
     // Outside the transaction: a refusal thrown below must not roll the expiry back.
@@ -430,27 +448,28 @@ export class WorkerService {
 
   // --- helpers -------------------------------------------------------------------------
 
+  /** Closes the job per ADR 0020 §4 and returns the state it closed in. */
   private applyResult(
     job: JobRow,
     attempt: AttemptRow,
     result: JobResultRequest,
     now: string,
-  ): void {
+  ): ClosedJobState {
     // A cancel request wins: even a successful run is closed as cancelled, since approval was
-    // withdrawn while it ran. Reporting it to Jira is stage 4's concern.
+    // withdrawn while it ran.
     if (attempt.state === "cancel_requested") {
       transitionAttemptState(this.db, attempt.id, "cancelled", now);
       transitionJobState(this.db, job.id, "cancelled", now);
-      return;
+      return "cancelled";
     }
 
-    let target: Extract<JobState, AttemptState>;
+    let target: ClosedJobState;
     switch (result.status) {
       case "succeeded":
       case "planned":
       case "needs_decision":
-        // The execution itself finished; what Jira should show for "planned"/"needs_decision"
-        // is decided when the result is reflected (stage 4).
+        // The execution itself finished; what Jira shows for "planned"/"needs_decision" is the
+        // report journal's concern (src/router/report-journal.ts).
         target = "succeeded";
         break;
       case "failed":
@@ -466,6 +485,93 @@ export class WorkerService {
     }
     transitionAttemptState(this.db, attempt.id, target, now);
     transitionJobState(this.db, job.id, target, now);
+    return target;
+  }
+
+  private workspaceFor(job: JobRow): RouterConfig["workspaces"][number] | undefined {
+    return this.config.workspaces.find((entry) => entry.id === job.workspaceId);
+  }
+
+  /** Journals the move to `inProgressStatus` in the transaction that grants execution. A
+   *  replayed `start` hits the batch's uniqueness and journals nothing new. */
+  private journalStart(job: JobRow, attempt: AttemptRow, now: string): void {
+    const workspace = this.workspaceFor(job);
+    if (!workspace) return;
+    insertReportBatch(this.db, {
+      batchId: startBatchId(attempt.id),
+      jobId: job.id,
+      attemptId: attempt.id,
+      issueKey: job.issueKey,
+      steps: buildStartSteps(job, workspace),
+      now,
+    });
+  }
+
+  /** Journals the result's Jira side effects in the transaction that stores it (§3 "Router는 결과
+   *  저장과 Jira 반영 작업 생성을 한 트랜잭션으로 처리한다"). */
+  private journalResult(
+    job: JobRow,
+    attempt: AttemptRow,
+    result: JobResult,
+    finalState: ClosedJobState,
+    now: string,
+  ): void {
+    const workspace = this.workspaceFor(job);
+    if (!workspace) return;
+    const snapshot = getApproval(this.db, job.issueKey)?.inputSnapshot as
+      | ApprovalSnapshot
+      | undefined;
+    insertReportBatch(this.db, {
+      batchId: result.resultId,
+      resultId: result.resultId,
+      jobId: job.id,
+      attemptId: attempt.id,
+      issueKey: job.issueKey,
+      steps: buildResultSteps({
+        job,
+        attemptId: attempt.id,
+        finalState,
+        result,
+        workspace,
+        config: this.config,
+        snapshot,
+      }),
+      now,
+    });
+  }
+
+  /**
+   * A result for the current attempt of a `recovery_required` job is the worker's confirmation
+   * that the process is gone (§3 "recovery_required는 워커의 중단 확인... 이 있어야 해제한다"). The
+   * result itself arrived after the lease expired, so it is not applied (§3 "늦게 도착한 결과는...
+   * 적용하지 않는다"); the job closes as cancelled and Jira is told the run needs a new request.
+   */
+  private confirmStopFromResult(
+    worker: WorkerRow,
+    job: JobRow,
+    attempt: AttemptRow,
+    result: JobResult,
+    now: string,
+  ): void {
+    transitionAttemptState(this.db, attempt.id, "cancelled", now);
+    transitionJobState(this.db, job.id, "cancelled", now);
+    appendAudit(this.db, {
+      at: now,
+      actor: `worker:${worker.id}`,
+      action: "recovery.stop_confirmed",
+      subject: job.id,
+      detail: { attemptId: attempt.id, resultId: result.resultId, status: result.status },
+    });
+    const workspace = this.workspaceFor(job);
+    if (!workspace) return;
+    insertReportBatch(this.db, {
+      batchId: recoveredBatchId(attempt.id),
+      jobId: job.id,
+      attemptId: attempt.id,
+      issueKey: job.issueKey,
+      steps: buildRecoveredSteps(job, attempt.id, result),
+      now,
+    });
   }
 
   private requestCancel(job: JobRow, attempt: AttemptRow, now: string): void {

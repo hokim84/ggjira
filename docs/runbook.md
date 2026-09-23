@@ -299,6 +299,13 @@ npx vitest run --pool=forks --poolOptions.forks.singleFork
 `spawn EFTYPE` 실패 8건은 이 워크어라운드와 무관한, 이 환경에서 `.sh` fixture를 직접
 spawn하지 못하는 별개의 기존 문제다(§9에 없는 새 항목이며 아직 원인 조사 전이다).
 
+`singleFork`로도 멈추는 경우가 있다(2026-09-23, 변경 전 HEAD에서도 재현). 그때는 파일마다 별도
+프로세스로 실행하고, 제한 시간에 걸린 파일만 다시 돌린다. 한 파일씩은 안정적으로 끝난다.
+
+```bash
+for f in test/*.test.ts; do timeout 60 npx vitest run "$f" || echo "FAILED/TIMEOUT $f"; done
+```
+
 ## 14. Router Worker API(v5, 구현 중) 진단
 
 Router·Worker 진입점 CLI는 5단계 전까지 없다. 아래는 테스트 하네스나 직접 조립한 Router에서
@@ -314,9 +321,32 @@ Router·Worker 진입점 CLI는 5단계 전까지 없다. 아래는 테스트 �
   최신 세션만 유효하다. 워커 runner는 이 응답을 받으면 세션을 다시 연다.
 - **`409 stale_lease`/`lease_expired`** — 임대(30초)가 갱신되지 않았다. 시작 전이면 job이
   `queued`로 돌아가고, 시작 후면 attempt·job이 `recovery_required`로 멈춘다.
-- **`recovery_required`에서 멈춘 job** — 자동 재배정하지 않는다. 워커가 결과(중단 확인)를
-  제출하면 그 결과는 `applied = 0` 감사 기록으로 남는다. 관리자 해제 명령(`jobs resolve`)은
-  5단계에서 추가된다. 그 전까지 작업 폴더·프로세스가 실제로 멈췄는지 워커 머신에서 확인한다.
+- **`recovery_required`에서 멈춘 job** — 자동 재배정하지 않는다(ADR 0021). 워커가 그 attempt의
+  결과를 늦게라도 제출하면 중단 확인으로 보고, 결과는 적용하지 않은 채(`applied = 0`) job을
+  `cancelled`로 닫는다. 이때 Jira에 "적용된 것 없음" 댓글이 달린다. 워커가 돌아오지 않으면 작업
+  폴더와 프로세스가 실제로 멈췄는지 워커 머신에서 확인한다. 그다음 `resolveRecoveryJob`(닫기)이나
+  `retryJob`(새 attempt)을 부른다(`src/router/recovery.ts`, CLI는 5단계). 둘 다 `audit_log`에 남는다.
 - **결과가 반영되지 않음** — `results.applied = 0`이면 늦게 도착한 결과다(대체된 attempt,
   이미 닫힌 job). 워커 쪽에 결과가 남아 있으면 spool 디렉터리의 `<resultId>.json`이며, 다음
   시작 때 재전송된다. `409 result_conflict`는 같은 `resultId`에 다른 내용을 보낸 것이다.
+
+## 15. Router Jira 반영이 멈추거나 이상할 때 (v5, ADR 0021)
+
+Router의 Jira 쓰기는 `report_steps` 저널을 `processReportJournal`이 실행해야 일어난다.
+
+- **이슈가 요청 상태에서 `inProgressStatus`로 안 넘어감 / 결과가 Jira에 안 보임** —
+  `report_steps`에서 그 job의 행을 본다. `pending`/`uncertain`이면 아직 실행되지 않았거나 Jira가
+  응답하지 않은 것이다(`last_error`, `tries`). 다음 패스에서 이어진다.
+- **`skipped`** — 정상적인 보류다. 사람이 이미 상태를 바꿨거나(`a human moved it`) 재승인된
+  이슈다. Router는 사람이 바꾼 상태를 덮어쓰지 않는다.
+- **`failed`** — Jira가 명확히 거부했다(4xx, 도달할 수 없는 상태 전이 등). workflow나 권한을
+  고친 뒤 `retryReportBatch`로 그 배치의 막힌 단계만 다시 대기시킨다. 워커는 다시 실행되지
+  않는다.
+- **`recovery_required`인 `create-subtask`** — 하위 이슈 생성 응답을 잃었고 마커로 찾지도
+  못했다. 부모의 하위 이슈에서 설명 첫 줄이 `[GGJIRA:REPORT:<단계 id>]`인 이슈가 있는지 확인한다.
+  확인 후 배치를 재시도하면 단계가 마커를 먼저 찾으므로, 이미 생성된 이슈는 다시 만들지 않는다.
+- **실패한 이슈** — `inProgressStatus`에 `ggjira-failed` 라벨과 실패 댓글이 남는다. 다시 돌리려면
+  요청 상태로 옮긴다. 이전 job은 닫히고 새 job이 만들어진다.
+- **계획이 적용되지 않음** — 적용할 수 없는 계획(작업 수 초과, taskId 중복, 의존성 순환·미해결)은
+  실패 댓글로 보고한다. 하위 이슈가 실행되지 않으면 `ggjira.plan-task`의 `planVersion`이 부모
+  `ggjira.plan`의 `version`과 같은지 본다. 재계획 뒤의 옛 작업은 승인되지 않는다.
