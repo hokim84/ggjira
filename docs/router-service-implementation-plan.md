@@ -16,7 +16,63 @@
 | 2. Router 입력·판단 | ✅ 완료 (2026-09-23) | 아래 상세 참고 |
 | 3. Worker 통신·실행 | ✅ 완료 (2026-09-23) | 아래 상세 참고 |
 | 4. PM·보고·복구 | ✅ 완료 (2026-09-23) | 아래 상세 참고 |
-| 5. 운영 기능·기존 구조 제거 | ⬜ 미착수 | 다음 작업 시작점 |
+| 5. 운영 기능·기존 구조 제거 | ✅ 구현 완료 (2026-09-23) | 아래 상세 참고. 실제 배포·외부 연동은 운영 단계 |
+
+### 5단계: 운영 기능·기존 구조 제거 — 구현 완료
+
+`docs/decisions/0022-router-stage5-operations-and-legacy-removal.md`에 판단을 기록했다. 여기에는
+구형 코드 삭제(사용자 확인), CLI 구성, 관리 API 경유, `jobs cancel`의 승인 hold, disable·revoke 범위,
+`router serve` 루프 구성, loopback 외 HTTP 금지, 백업 방식, Compose 구성이 들어 있다. 이 ADR은 0001·
+0004·0007·0008·0011·0012와 0013·0014 일부를 대체한다.
+
+구현 파일:
+
+- `src/router/daemon.ts` — `router serve`. HTTP 서버와 sync(부팅·60초·웹훅)·verify·reports·leases
+  루프다.
+- `src/router/admin-service.ts`·`server.ts` — `/api/v1/admin/*`(status, workers, jobs, reports,
+  reconcile, backup), `audit_log` actor 기록.
+- `src/router/db/holds.ts`·migration 4(`admin_holds`), `db/jobs.ts`의 `listJobs`(keyset 페이지네이션)·
+  통계, `db/attempts.ts`의 `listAttemptsForJob`.
+- `src/router/check.ts` — `router check`(인증, 상태, 하위 이슈 타입, 실행-Agent 필드, 샘플 이슈 전이).
+- `src/router/cli.ts`·`admin-client.ts`, `src/worker-runtime/cli.ts`·`ops.ts`, `src/cli*.ts` — CLI.
+  구형 명령은 대체 명령을 안내하고 종료 코드 2로 끝난다.
+- `src/worker-runtime/config.ts` — `dataDir`(spool·worktree 위치), `routerUrl` HTTPS 규칙.
+- `Dockerfile`(deps/test/build/runtime), `docker-compose.yml`(router + Caddy), `docker-compose.test.yml`,
+  `deploy/`(Caddyfile, 예시 설정·env), `worker.config.example.json`.
+- 삭제: `src/agent`, `src/implement/executor.ts`, `src/job`, `src/poller`, `src/profile`, `src/reporter`,
+  `src/setup`, `src/pm/apply.ts`·`executor.ts`, `src/config.ts`, v4 설정 예시·fixture, 관련 테스트 22개.
+  공유 로직은 `src/issue/`(capability·requirements·description)와 `src/worker/validate.ts`로 옮겼다.
+  PM 계획 스키마에서 Agent Profile 필드를 뺐다.
+- 문서: README, `docs/architecture.md`(v5로 재작성), `docs/runbook.md`(§16 배포, §17 백업·복원,
+  §18 워커 운영, §19 v4 전환. v4 절 삭제), `CLAUDE.md`. Node 24(`engines`, `.nvmrc`, CI).
+
+테스트:
+
+- `test/router-admin-api.test.ts` — 인증, disable/enable, revoke(임대 재대기·실행 취소), 페이지네이션,
+  cancel hold와 재승인, resolve/retry, 보고 재시도(워커 재실행 없음), 백업, status.
+- `test/router-daemon.test.ts` — 웹훅 기반 sync, 실패 backoff, 직렬 lane, 보고 루프, 백업 복원 후
+  웹훅·임대·보고 복구.
+- `test/router-integration.test.ts` — 실제 loopback HTTP 위의 Router 1대와 Fake 워커 2대. 관리 API로
+  pairing하고, 이슈 3건이 각 1회 실행되어 검토 상태가 되는지 확인한다.
+- `test/cli.test.ts`, `test/router-check.test.ts`, `test/worker-runtime-ops.test.ts`(실제 git
+  worktree prune), `test/example-configs.test.ts`.
+
+검증(2026-09-23):
+
+- [x] `npm run typecheck`·`lint`·`format:check`·`build` 통과.
+- [x] 테스트: 파일마다 별도 프로세스로 실행했다(runbook §13). 40개 파일, 324건 중 316 passed / 8 failed.
+  실패 8건은 기존 `spawn EFTYPE`(`.sh` fixture, Windows 전용)뿐이다.
+- [x] 빌드한 `node dist/cli.js`로 `router serve`를 실제 프로세스로 띄워 확인했다(Jira 주소는 일부러 연결
+  불가). 확인 항목: `/health`, `router status`, `workers pair` → `worker setup` → `worker check`,
+  `workers list`, 서명된 웹훅 202 / 잘못된 서명 401, `router backup`, Jira 실패 시 sync backoff.
+  구형 명령 `run`은 종료 코드 2로 안내한다.
+- [ ] `docker compose -f docker-compose.test.yml run --rm --build check`(Linux 전체 check): 이 머신에서
+  Docker 엔진이 꺼져 있어 실행하지 못했다.
+- [ ] 운영 단계: 실제 배포, Jira 웹훅, AI CLI 로그인, 여러 머신(runbook §16~§19).
+
+**아직 하지 않은 것(운영 단계)**: 실제 서버 배포, Jira 웹훅 연결, AI CLI 로그인, 실제 여러 머신
+구성. runbook §16~§19 순서로 진행한다. Compose 기반 Linux 검증(`docker-compose.test.yml`)은 Docker
+엔진이 켜진 환경에서 돌려야 한다.
 
 ### 4단계: PM·보고·복구 — 완료
 
@@ -64,7 +120,7 @@
 §13, HEAD에서도 재현). 그래서 테스트 파일마다 별도 프로세스로 실행했다. 결과는 480건 중 472 passed /
 8 failed이고, 실패는 기존 `spawn EFTYPE` 8건뿐이다.
 
-**5단계를 시작하는 세션/모델에게**: `router serve`는 `reconcileCandidates`(60초),
+**5단계를 시작하는 세션/모델에게**(완료됨, 5단계 절 참고): `router serve`는 `reconcileCandidates`(60초),
 `verifyActiveJobs`(`reconciliation.activeJobPollIntervalMs`), `processReportJournal`, `expireLeases`를
 주기적으로 호출한다. 관리자 API는 `src/router/recovery.ts`와 `listBlockedReportSteps`를 감싸면 된다.
 

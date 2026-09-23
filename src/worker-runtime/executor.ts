@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
 import type { WorkerProviderConfig } from "../contracts/provider.js";
-import { runValidateCommand } from "../implement/validate.js";
+import { runValidateCommand } from "../worker/validate.js";
 import type { WorkerProvider, WorkerResult } from "../worker/provider.js";
 import { buildImplementPrompt } from "../worker/prompt.js";
 import {

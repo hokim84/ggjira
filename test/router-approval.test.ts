@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { IssueRequirements } from "../src/agent/requirements.js";
+import type { IssueRequirements } from "../src/issue/requirements.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import type { PlanTaskMetadata } from "../src/pm/metadata.js";
 import { computeApprovalId, computeInputHash } from "../src/router/approval.js";

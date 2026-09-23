@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { WorkerProviderConfigSchema } from "../contracts/provider.js";
 
@@ -16,6 +17,27 @@ const WorkerRepositorySchema = z.object({
 });
 export type WorkerRepositoryConfig = z.infer<typeof WorkerRepositorySchema>;
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Why `url` may not be used as a Router URL, or `undefined` when it may: plain HTTP is only for
+ *  a loopback development Router (§5 "HTTP는 loopback 개발 환경만 허용한다"). */
+export function routerUrlProblem(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `"${url}" is not a URL`;
+  }
+  if (parsed.protocol === "https:") return undefined;
+  if (parsed.protocol === "http:" && LOOPBACK_HOSTS.has(parsed.hostname)) return undefined;
+  return `Router URL must use https:// (plain http:// is allowed only for localhost), got "${url}"`;
+}
+
+export function assertRouterUrlAllowed(url: string): void {
+  const problem = routerUrlProblem(url);
+  if (problem) throw new WorkerConfigError(problem);
+}
+
 export const WorkerConfigSchema = z
   .object({
     configVersion: z.literal(5),
@@ -31,8 +53,14 @@ export const WorkerConfigSchema = z
     backends: z.array(z.string().min(1)).default([]),
     providers: z.array(WorkerProviderConfigSchema).min(1),
     logPath: z.string().min(1).default("data/worker-logs"),
+    /** Worker-local state: `<dataDir>/spool` (results awaiting Router's ack) and
+     *  `<dataDir>/worktrees` (one git worktree per job, kept until `worker worktrees prune`). */
+    dataDir: z.string().min(1).default("data/worker"),
   })
   .superRefine((config, ctx) => {
+    const urlProblem = routerUrlProblem(config.routerUrl);
+    if (urlProblem) ctx.addIssue({ code: "custom", path: ["routerUrl"], message: urlProblem });
+
     const repositoryIds = new Set<string>();
     config.repositories.forEach((repo, index) => {
       if (repositoryIds.has(repo.id)) {
@@ -59,6 +87,14 @@ export const WorkerConfigSchema = z
   });
 
 export type WorkerConfig = z.infer<typeof WorkerConfigSchema>;
+
+export function workerSpoolDir(config: WorkerConfig): string {
+  return path.join(config.dataDir, "spool");
+}
+
+export function workerWorktreesRoot(config: WorkerConfig): string {
+  return path.resolve(config.dataDir, "worktrees");
+}
 
 export class WorkerConfigError extends Error {
   constructor(

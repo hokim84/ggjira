@@ -24,16 +24,6 @@ export const PlanTaskSchema = z.object({
   constraints: z.array(z.string()).optional(),
   requiredCapabilities: z.array(z.string().min(1)).min(1).optional(),
   suggestedExecutionStrategy: z.string().min(1).optional(),
-  /** agentId of a registered implement agent to route this task to; falls back to the roster default / legacy pm.implementAssignee. */
-  assigneeAgentId: z.string().min(1).optional(),
-});
-
-export const PlanAgentProfileRequestSchema = z.object({
-  agentId: z.string().min(1),
-  role: z.enum(["pm", "implement"]),
-  preset: z.string().min(1).optional(),
-  displayName: z.string().min(1).optional(),
-  capabilities: z.array(z.string()).default([]),
 });
 
 export const PlanSchema = z
@@ -50,10 +40,6 @@ export const PlanSchema = z
     /** Keys of existing subtasks a replan should keep as-is (not recreate or supersede). */
     keepTaskKeys: z.array(z.string()).default([]),
     decision: PlanDecisionSchema.optional(),
-    /** Agent Profiles to create (profile mode only; e.g. the requirement asked to add an agent). */
-    agentProfiles: z.array(PlanAgentProfileRequestSchema).default([]),
-    /** agentIds of existing Agent Profiles to disable (profile mode only). */
-    disableAgentIds: z.array(z.string()).default([]),
   })
   .superRefine((plan, ctx) => {
     if (plan.needsDecision && !plan.decision) {
@@ -63,19 +49,13 @@ export const PlanSchema = z
         message: "decision is required when needsDecision is true",
       });
     }
-    const managesAgentsOnly = plan.agentProfiles.length > 0 || plan.disableAgentIds.length > 0;
     const recordsParentPlan = (plan.requiredCapabilities?.length ?? 0) > 0;
-    if (
-      !plan.needsDecision &&
-      plan.tasks.length === 0 &&
-      !managesAgentsOnly &&
-      !recordsParentPlan
-    ) {
+    if (!plan.needsDecision && plan.tasks.length === 0 && !recordsParentPlan) {
       ctx.addIssue({
         code: "custom",
         path: ["tasks"],
         message:
-          "tasks must be non-empty when needsDecision is false, unless the plan only creates/disables agent profiles",
+          "tasks must be non-empty when needsDecision is false, unless the plan records the parent's own requiredCapabilities",
       });
     }
   });
@@ -97,8 +77,6 @@ export const PLAN_JSON_SCHEMA = {
     "suggestedExecutionStrategy",
     "tasks",
     "keepTaskKeys",
-    "agentProfiles",
-    "disableAgentIds",
   ],
   properties: {
     needsDecision: { type: "boolean" },
@@ -132,7 +110,6 @@ export const PLAN_JSON_SCHEMA = {
           constraints: { type: "array", items: { type: "string" } },
           requiredCapabilities: { type: "array", minItems: 1, items: { type: "string" } },
           suggestedExecutionStrategy: { type: "string" },
-          assigneeAgentId: { type: "string" },
         },
       },
     },
@@ -161,22 +138,6 @@ export const PLAN_JSON_SCHEMA = {
         impact: { type: "string" },
       },
     },
-    agentProfiles: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["agentId", "role"],
-        properties: {
-          agentId: { type: "string" },
-          role: { type: "string", enum: ["pm", "implement"] },
-          preset: { type: "string" },
-          displayName: { type: "string" },
-          capabilities: { type: "array", items: { type: "string" } },
-        },
-      },
-    },
-    disableAgentIds: { type: "array", items: { type: "string" } },
   },
 } as const;
 

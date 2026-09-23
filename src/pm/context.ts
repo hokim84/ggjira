@@ -1,5 +1,4 @@
-import type { JiraComment, JiraIssue } from "../jira/types.js";
-import type { AgentProfile } from "../profile/types.js";
+import type { JiraComment } from "../jira/types.js";
 import { DECISION_REQUEST_MARKER } from "./marker.js";
 
 export interface HumanDecision {
@@ -55,33 +54,5 @@ export function findHumanDecision(
     ...(optionId ? { optionId } : {}),
     ...(expectedDecisionId ? { decisionId: expectedDecisionId } : {}),
     ...(planVersion ? { planVersion } : {}),
-  };
-}
-
-export interface PlanningContext {
-  issue: JiraIssue;
-  comments: JiraComment[];
-  existingSubtasks: JiraIssue[];
-  humanDecision?: HumanDecision;
-  /** The registered Agent Profile roster (profile mode only), for routing tasks and managing agents. */
-  agents?: AgentProfile[];
-}
-
-/** Assembles everything a planning/replanning prompt needs from Jira state. */
-export function buildPlanningContext(
-  issue: JiraIssue,
-  comments: JiraComment[],
-  existingSubtasks: JiraIssue[],
-  selfAccountId: string,
-  agents?: AgentProfile[],
-  ownerAccountId?: string | null,
-): PlanningContext {
-  const humanDecision = findHumanDecision(comments, selfAccountId, ownerAccountId);
-  return {
-    issue,
-    comments,
-    existingSubtasks,
-    ...(humanDecision ? { humanDecision } : {}),
-    ...(agents ? { agents } : {}),
   };
 }

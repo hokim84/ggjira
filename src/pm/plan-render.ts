@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { renderSections } from "../profile/description.js";
+import { renderSections } from "../issue/description.js";
 import type { Plan, PlanTaskSchema } from "./plan.js";
 
 /**

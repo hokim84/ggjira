@@ -78,6 +78,7 @@ describe("WorkerRunner against a live Router", () => {
       capabilities: ["programming"],
       backends: [],
       providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
+      dataDir: path.join(workDir, "worker-data"),
       logPath: path.join(workDir, "logs"),
     };
   }

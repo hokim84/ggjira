@@ -1,0 +1,7 @@
+# TLS termination in front of the Router (plan §5: production uses HTTPS on a real domain).
+# Caddy obtains and renews the certificate for $GGJIRA_DOMAIN automatically.
+{$GGJIRA_DOMAIN} {
+	encode gzip
+	# jobs/next long-polls for up to 25s; Caddy's defaults do not cut that off.
+	reverse_proxy router:8787
+}

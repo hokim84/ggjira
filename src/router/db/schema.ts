@@ -241,3 +241,20 @@ export const REPORT_JOURNAL_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS idx_report_steps_status ON report_steps (status)",
   "CREATE INDEX IF NOT EXISTS idx_report_steps_job ON report_steps (job_id)",
 ];
+
+/**
+ * Migration 4 (stage 5 — admin operations). `admin_holds` records an admin's `jobs cancel`
+ * against the approval it ran under, so reconcile does not immediately re-dispatch an issue that
+ * still sits in the request status. A human re-approving in Jira produces a new approval id and
+ * the hold no longer matches (ADR 0022).
+ */
+export const ADMIN_OPERATIONS_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS admin_holds (
+    issue_key TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (issue_key, approval_id)
+  )`,
+];

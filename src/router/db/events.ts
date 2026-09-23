@@ -85,3 +85,11 @@ export function listUnprocessedEvents(db: Database.Database): EventRow[] {
 export function markEventProcessed(db: Database.Database, id: string, now: string): void {
   db.prepare("UPDATE events SET processed_at = ? WHERE id = ?").run(now, id);
 }
+
+/** When the oldest still-unprocessed webhook arrived — the webhook processing delay. */
+export function oldestUnprocessedEventAt(db: Database.Database): string | null {
+  const row = db
+    .prepare("SELECT MIN(received_at) AS at FROM events WHERE processed_at IS NULL")
+    .get() as { at: string | null } | undefined;
+  return row?.at ?? null;
+}

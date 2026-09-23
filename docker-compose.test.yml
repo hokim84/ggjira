@@ -1,0 +1,8 @@
+# Runs the full check (typecheck, lint, format, tests — including the one-Router/two-worker
+# integration scenario and the POSIX process-tree kill test) on Linux:
+#   docker compose -f docker-compose.test.yml run --rm --build check
+services:
+  check:
+    build:
+      context: .
+      target: test

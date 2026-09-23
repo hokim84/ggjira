@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { JiraComment } from "../src/jira/types.js";
-import { buildPlanningContext, findHumanDecision } from "../src/pm/context.js";
+import { findHumanDecision } from "../src/pm/context.js";
 import { DECISION_REQUEST_MARKER } from "../src/pm/marker.js";
 import { buildTestIssue } from "./helpers/fixtures.js";
 
@@ -96,28 +96,5 @@ describe("findHumanDecision", () => {
     const decision = findHumanDecision(comments, SELF);
 
     expect(decision).toMatchObject({ optionId: "A", decisionId: "d1", planVersion: "v1" });
-  });
-});
-
-describe("buildPlanningContext", () => {
-  it("assembles issue, comments, subtasks and human decision together", () => {
-    const issue = buildTestIssue({ key: "KAN-1" });
-    const comments = [
-      comment({ body: `${DECISION_REQUEST_MARKER}\n...`, authorAccountId: SELF }),
-      comment({ body: "Decision: A", authorAccountId: "human-1" }),
-    ];
-    const subtasks = [buildTestIssue({ key: "KAN-2", parentKey: "KAN-1" })];
-
-    const ctx = buildPlanningContext(issue, comments, subtasks, SELF);
-
-    expect(ctx.issue.key).toBe("KAN-1");
-    expect(ctx.existingSubtasks).toHaveLength(1);
-    expect(ctx.humanDecision?.optionId).toBe("A");
-  });
-
-  it("omits humanDecision entirely (not even as undefined) when there is none", () => {
-    const issue = buildTestIssue({ key: "KAN-1" });
-    const ctx = buildPlanningContext(issue, [], [], SELF);
-    expect("humanDecision" in ctx).toBe(false);
   });
 });

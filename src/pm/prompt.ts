@@ -1,7 +1,4 @@
-import type { AppConfig } from "../config.js";
 import { DECISION_REQUEST_MARKER } from "./marker.js";
-import type { Plan } from "./plan.js";
-import { renderDecisionRequest } from "./decision-render.js";
 
 export function buildPmSystemPrompt(): string {
   return [
@@ -16,23 +13,14 @@ export function buildPmSystemPrompt(): string {
 }
 
 /**
- * What the planning prompt reads. Structural, so both the v4 PM handler's Jira-backed
- * `PlanningContext` (src/pm/context.ts) and a v5 worker's envelope snapshot
- * (src/worker-runtime/planning.ts) fit without the worker importing Jira types.
+ * What the planning prompt reads: the envelope's issue snapshot and planning context
+ * (src/worker-runtime/planning.ts). Structural, so the worker never imports Jira types.
  */
 export interface PlanningPromptInput {
   issue: { key: string; summary: string; description: string | null };
   comments: ReadonlyArray<{ authorDisplayName: string | null; body: string }>;
   existingSubtasks: ReadonlyArray<{ key: string; statusName: string; summary: string }>;
   humanDecision?: { raw: string };
-  agents?: ReadonlyArray<{
-    agentId: string;
-    role: string;
-    preset: string | null;
-    capabilities: readonly string[];
-    enabled: boolean;
-    registration: unknown;
-  }>;
 }
 
 export function buildPlanningPrompt(ctx: PlanningPromptInput): string {
@@ -56,19 +44,6 @@ export function buildPlanningPrompt(ctx: PlanningPromptInput): string {
     );
   }
 
-  if (ctx.agents && ctx.agents.length > 0) {
-    parts.push("", "Registered agents:");
-    for (const agent of ctx.agents) {
-      const registered = agent.registration ? "registered" : "unregistered";
-      const status = agent.enabled ? registered : "disabled";
-      const preset = agent.preset ? `, preset ${agent.preset}` : "";
-      const capabilities = agent.capabilities.length
-        ? `, capabilities: ${agent.capabilities.join(", ")}`
-        : "";
-      parts.push(`- ${agent.agentId} (${agent.role}${preset}${capabilities}, ${status})`);
-    }
-  }
-
   const otherComments = ctx.comments.filter((c) => !c.body.includes(DECISION_REQUEST_MARKER));
   if (otherComments.length > 0) {
     parts.push("", "Other comments on this issue:");
@@ -80,22 +55,9 @@ export function buildPlanningPrompt(ctx: PlanningPromptInput): string {
   parts.push(
     "",
     "Produce a plan as JSON matching the given schema. If existing subtasks are still valid, list their keys in keepTaskKeys instead of recreating them; anything not listed there will be treated as superseded.",
-    "Each executable task must list canonical requiredCapabilities. Do not select or assign an agent; Jira assignees remain unchanged during AI delegation.",
+    "Each executable task must list canonical requiredCapabilities. Do not select or assign a worker; Router routes tasks by capability and Jira assignees stay unchanged.",
     "Every task needs a unique taskId, and intra-plan dependencies must reference those taskIds.",
-    "Agent Profiles are human-managed configuration. Never create, disable, or assign an Agent Profile from a plan.",
   );
 
   return parts.join("\n");
-}
-
-export function buildDecisionRequestComment(
-  plan: Plan,
-  config: AppConfig,
-  planVersion?: string,
-): string {
-  return renderDecisionRequest(plan, {
-    ...(planVersion ? { planVersion } : {}),
-    replyStatus: config.workflow.planningStatus ?? config.workflow.readyStatus,
-    signature: `agent: ${config.agent.identity}@${config.agent.machine}`,
-  });
 }

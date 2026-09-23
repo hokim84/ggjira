@@ -1,0 +1,27 @@
+{
+  "configVersion": 5,
+  "jira": { "baseUrl": "https://your-site.atlassian.net" },
+  "repositories": [{ "id": "main-repo", "displayName": "Main repository" }],
+  "workspaces": [
+    {
+      "id": "default",
+      "repositoryId": "main-repo",
+      "projectKeys": ["PROJ"],
+      "workflow": {
+        "requestStatus": "AI 작업 요청",
+        "inProgressStatus": "작업 중",
+        "reviewStatus": "AI 작업 완료"
+      }
+    }
+  ],
+  "workers": [
+    {
+      "workerId": "worker-1",
+      "allowedCapabilities": ["programming", "testing"],
+      "allowedRepositoryIds": ["main-repo"],
+      "providerId": "default"
+    }
+  ],
+  "db": { "path": "/data/router.sqlite3" },
+  "http": { "host": "0.0.0.0", "port": 8787 }
+}

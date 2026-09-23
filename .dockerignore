@@ -1,0 +1,13 @@
+node_modules
+dist
+data
+.git
+.claude
+*.log
+.env
+.env.*
+ggjira.config.json
+router.config.json
+worker.config.json
+deploy/router.env
+deploy/router.config.json

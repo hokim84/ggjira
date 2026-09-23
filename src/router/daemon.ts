@@ -1,0 +1,285 @@
+import type Database from "better-sqlite3";
+import type { FastifyInstance } from "fastify";
+import type { JiraGateway } from "../jira/gateway.js";
+import type { Logger } from "../logger.js";
+import { AdminService } from "./admin-service.js";
+import { buildWorkerAvailability } from "./availability.js";
+import type { RouterConfig } from "./config.js";
+import { listUnprocessedEvents, markEventProcessed } from "./db/events.js";
+import { RuleDecisionProvider } from "./decision.js";
+import { expireLeases, type LeaseExpiryReport } from "./leases.js";
+import { processReportJournal, type ReportPassReport } from "./report-processor.js";
+import {
+  reconcileCandidates,
+  type SchedulerDeps,
+  type SchedulerReport,
+  verifyActiveJobs,
+} from "./scheduler.js";
+import { buildRouterServer } from "./server.js";
+import { WorkerService } from "./worker-service.js";
+
+/** How often the daemon looks for newly received webhooks (§2 "웹훅 ... 이후 처리한다"). */
+export const EVENT_POLL_INTERVAL_MS = 1_000;
+/** How often pending Jira report steps are run forward. */
+export const REPORT_INTERVAL_MS = 2_000;
+/** How often expired leases are swept (worker API calls also sweep on the way in). */
+export const LEASE_SWEEP_INTERVAL_MS = 5_000;
+/** After a failed reconcile, webhook-triggered passes wait this long before trying Jira again. */
+export const SYNC_FAILURE_BACKOFF_MS = 10_000;
+
+export interface RouterDaemonDeps {
+  db: Database.Database;
+  jira: JiraGateway;
+  config: RouterConfig;
+  webhookSecret: string;
+  adminToken: string;
+  siteId: string;
+  logger?: Logger;
+  now?: () => string;
+  /** Epoch ms for scheduling decisions; injected by tests. */
+  nowMs?: () => number;
+  /** Loop cadences; production uses the constants above (tests shorten them). */
+  intervals?: Partial<{ eventPollMs: number; reportMs: number; leaseSweepMs: number }>;
+  /** `jobs/next` long-poll length; defaults to the protocol's 25s. */
+  longPollMs?: number;
+}
+
+interface Loop {
+  timer: NodeJS.Timeout | undefined;
+  inFlight: Promise<void> | undefined;
+}
+
+/**
+ * `ggjira router serve`: the one long-running Router process
+ * (docs/router-service-implementation-plan.md §2 "Router Service"). It owns the Fastify app
+ * (webhooks, worker API, admin API) and four background loops:
+ *
+ * - sync — full candidate reconcile on boot, every `reconciliation.backgroundIntervalMs`, and
+ *   whenever a webhook has been received (webhooks are change notifications; every decision still
+ *   re-reads Jira). Events are marked processed only after a pass that started after they arrived
+ *   succeeds.
+ * - verify — re-checks every leased/running job's approval every
+ *   `reconciliation.activeJobPollIntervalMs` (§2 "최대 5초 간격").
+ * - reports — runs the Jira report journal forward (ADR 0021).
+ * - leases — expires stale leases (§3 "임대와 작업 상태").
+ *
+ * sync and verify share one lane, so they never cancel the same job from two passes at once.
+ * Restarting the daemon changes nothing by itself: all state is in SQLite (§3 "Router 재시작은
+ * 임대를 지우거나 실행을 자동 재개하지 않는다").
+ */
+export class RouterDaemon {
+  readonly workerService: WorkerService;
+  readonly adminService: AdminService;
+  readonly app: FastifyInstance;
+
+  private readonly now: () => string;
+  private readonly nowMs: () => number;
+  private readonly schedulerDeps: SchedulerDeps;
+  private readonly loops = new Map<string, Loop>();
+  private lane: Promise<unknown> = Promise.resolve();
+  private stopping = false;
+  private lastSyncAtMs: number | undefined;
+  private lastSyncFailureAtMs: number | undefined;
+
+  constructor(private readonly deps: RouterDaemonDeps) {
+    this.now = deps.now ?? (() => new Date().toISOString());
+    this.nowMs = deps.nowMs ?? Date.now;
+    this.schedulerDeps = {
+      db: deps.db,
+      jira: deps.jira,
+      config: deps.config,
+      decisionProvider: new RuleDecisionProvider(deps.config.executionAgent),
+      now: this.now,
+    };
+    this.workerService = new WorkerService({
+      db: deps.db,
+      config: deps.config,
+      now: this.now,
+      ...(deps.longPollMs !== undefined ? { longPollMs: deps.longPollMs } : {}),
+    });
+    this.adminService = new AdminService({
+      db: deps.db,
+      jira: deps.jira,
+      config: deps.config,
+      now: this.now,
+      reconcileNow: () => this.reconcileNow(),
+    });
+    this.app = buildRouterServer({
+      db: deps.db,
+      webhookSecret: deps.webhookSecret,
+      siteId: deps.siteId,
+      now: this.now,
+      workerService: this.workerService,
+      adminToken: deps.adminToken,
+      adminService: this.adminService,
+    });
+  }
+
+  /** Starts the background loops. The first sync runs right away when
+   *  `reconciliation.startupFullSyncOnBoot` is set (§2 "Router 시작 시 전체 실행 후보를 재조회"). */
+  start(): void {
+    const { reconciliation } = this.deps.config;
+    if (!reconciliation.startupFullSyncOnBoot) this.lastSyncAtMs = this.nowMs();
+    const intervals = this.deps.intervals ?? {};
+    this.startLoop("sync", intervals.eventPollMs ?? EVENT_POLL_INTERVAL_MS, () => this.syncTick());
+    this.startLoop("verify", reconciliation.activeJobPollIntervalMs, async () => {
+      await this.verifyTick();
+    });
+    this.startLoop("reports", intervals.reportMs ?? REPORT_INTERVAL_MS, async () => {
+      await this.reportTick();
+    });
+    this.startLoop("leases", intervals.leaseSweepMs ?? LEASE_SWEEP_INTERVAL_MS, async () => {
+      this.leaseTick();
+    });
+  }
+
+  async listen(host: string, port: number): Promise<string> {
+    return this.app.listen({ host, port });
+  }
+
+  /** Stops the loops, waits for any pass in flight, then closes the HTTP server. */
+  async stop(): Promise<void> {
+    this.stopping = true;
+    for (const loop of this.loops.values()) {
+      if (loop.timer) clearTimeout(loop.timer);
+    }
+    await Promise.allSettled([...this.loops.values()].map((loop) => loop.inFlight));
+    await this.app.close();
+  }
+
+  // --- ticks (public so tests can drive them without timers) ----------------------------
+
+  /** Runs a reconcile if a webhook is waiting or the background interval has elapsed — unless the
+   *  last pass failed less than `SYNC_FAILURE_BACKOFF_MS` ago (Jira down: don't hammer it). */
+  async syncTick(): Promise<SchedulerReport | undefined> {
+    const nowMs = this.nowMs();
+    if (
+      this.lastSyncFailureAtMs !== undefined &&
+      nowMs - this.lastSyncFailureAtMs < SYNC_FAILURE_BACKOFF_MS
+    ) {
+      return undefined;
+    }
+    const intervalDue =
+      this.lastSyncAtMs === undefined ||
+      nowMs - this.lastSyncAtMs >= this.deps.config.reconciliation.backgroundIntervalMs;
+    if (!intervalDue && listUnprocessedEvents(this.deps.db).length === 0) return undefined;
+    return this.reconcileNow();
+  }
+
+  /** One full reconcile pass, serialized with every other sync/verify pass. */
+  reconcileNow(): Promise<SchedulerReport> {
+    return this.exclusive(async () => {
+      const eventIds = listUnprocessedEvents(this.deps.db).map((event) => event.id);
+      const startedAtMs = this.nowMs();
+      let report: SchedulerReport;
+      try {
+        report = await reconcileCandidates(
+          this.schedulerDeps,
+          buildWorkerAvailability(this.deps.db, this.deps.config, this.now()),
+        );
+      } catch (error) {
+        this.lastSyncFailureAtMs = this.nowMs();
+        throw error;
+      }
+      this.lastSyncAtMs = startedAtMs;
+      this.lastSyncFailureAtMs = undefined;
+      const processedAt = this.now();
+      for (const id of eventIds) markEventProcessed(this.deps.db, id, processedAt);
+      this.logSchedulerReport("reconcile", report, { events: eventIds.length });
+      return report;
+    });
+  }
+
+  verifyTick(): Promise<SchedulerReport> {
+    return this.exclusive(async () => {
+      const report = await verifyActiveJobs(this.schedulerDeps);
+      this.logSchedulerReport("verify", report);
+      return report;
+    });
+  }
+
+  async reportTick(): Promise<ReportPassReport> {
+    const report = await processReportJournal({
+      db: this.deps.db,
+      jira: this.deps.jira,
+      now: this.now,
+    });
+    if (report.applied.length || report.blocked.length || report.skipped.length) {
+      this.deps.logger?.info(
+        {
+          layer: "router",
+          applied: report.applied.length,
+          skipped: report.skipped,
+          blocked: report.blocked,
+          deferred: report.deferred.length,
+        },
+        "report journal pass",
+      );
+    }
+    return report;
+  }
+
+  leaseTick(): LeaseExpiryReport {
+    const report = expireLeases(this.deps.db, this.now());
+    if (report.requeued.length || report.recoveryRequired.length) {
+      this.deps.logger?.warn({ layer: "router", ...report }, "leases expired");
+    }
+    return report;
+  }
+
+  // --- internals -----------------------------------------------------------------------
+
+  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.lane.then(fn, fn);
+    this.lane = run.catch(() => undefined);
+    return run;
+  }
+
+  private startLoop(name: string, intervalMs: number, fn: () => Promise<unknown>): void {
+    const loop: Loop = { timer: undefined, inFlight: undefined };
+    this.loops.set(name, loop);
+    const tick = (): void => {
+      if (this.stopping) return;
+      loop.inFlight = fn()
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          this.deps.logger?.error({ layer: "router", loop: name, err: error }, "loop pass failed");
+        })
+        .finally(() => {
+          loop.inFlight = undefined;
+          if (!this.stopping) loop.timer = setTimeout(tick, intervalMs);
+        });
+    };
+    loop.timer = setTimeout(tick, 0);
+  }
+
+  private logSchedulerReport(
+    pass: string,
+    report: SchedulerReport,
+    extra: Record<string, unknown> = {},
+  ): void {
+    const changed =
+      report.jobsCreated.length ||
+      report.jobsCancelled.length ||
+      report.jobsCancelRequested.length ||
+      report.jobsAssigned.length ||
+      report.held.length ||
+      report.skipped.length;
+    if (!changed) return;
+    this.deps.logger?.info(
+      {
+        layer: "router",
+        pass,
+        ...extra,
+        candidates: report.candidatesSeen,
+        created: report.jobsCreated,
+        cancelled: report.jobsCancelled,
+        cancelRequested: report.jobsCancelRequested,
+        assigned: report.jobsAssigned,
+        held: report.held,
+        skipped: report.skipped,
+      },
+      `${pass} pass`,
+    );
+  }
+}

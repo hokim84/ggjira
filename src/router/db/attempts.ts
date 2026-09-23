@@ -209,3 +209,11 @@ export function transitionAttemptState(
   );
   return { ...attempt, state: to, startedAt, endedAt };
 }
+
+/** Every attempt a job has had, oldest first (admin `jobs show`). */
+export function listAttemptsForJob(db: Database.Database, jobId: string): AttemptRow[] {
+  const rows = db
+    .prepare("SELECT * FROM attempts WHERE job_id = ? ORDER BY leased_at ASC, rowid ASC")
+    .all(jobId) as Record<string, unknown>[];
+  return rows.map(toAttemptRow);
+}

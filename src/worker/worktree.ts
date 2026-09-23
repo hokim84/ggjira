@@ -135,4 +135,42 @@ export function listManagedWorktrees(worktreesRoot: string): ManagedWorktreeInfo
     });
 }
 
+/** Absolute paths of every worktree `repoPath` has registered (`git worktree list --porcelain`),
+ *  so `worker worktrees prune` removes each one through the repository that owns it. */
+export function listRepositoryWorktreePaths(repoPath: string): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", ["worktree", "list", "--porcelain"], {
+      cwd: repoPath,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf-8");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf-8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(
+          new GitCommandError(
+            `git worktree list failed (exit ${code}): ${stderr.trim()}`,
+            ["worktree", "list"],
+            stderr,
+          ),
+        );
+        return;
+      }
+      resolve(
+        output
+          .split("\n")
+          .filter((line) => line.startsWith("worktree "))
+          .map((line) => path.resolve(line.slice("worktree ".length).trim())),
+      );
+    });
+  });
+}
+
 export { GitCommandError };

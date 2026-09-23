@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
 import { PROTOCOL_VERSION } from "../../src/contracts/protocol.js";
 import { FakeJiraGateway } from "../../src/jira/fake.js";
+import { AdminService } from "../../src/router/admin-service.js";
 import type { RouterConfig } from "../../src/router/config.js";
 import { openRouterDb } from "../../src/router/db/connection.js";
 import { RuleDecisionProvider } from "../../src/router/decision.js";
@@ -40,6 +41,7 @@ export class RouterHarness {
   readonly clock = new ManualClock();
   readonly config: RouterConfig;
   service: WorkerService;
+  admin: AdminService;
   app: FastifyInstance;
   private readonly serviceOverrides: Partial<WorkerServiceDeps>;
 
@@ -53,7 +55,19 @@ export class RouterHarness {
     });
     this.serviceOverrides = opts.service ?? {};
     this.service = this.buildService();
+    this.admin = this.buildAdmin();
     this.app = this.buildApp();
+  }
+
+  private buildAdmin(): AdminService {
+    return new AdminService({
+      db: this.db,
+      jira: this.jira,
+      config: this.config,
+      now: this.clock.now,
+      reconcileNow: () => this.reconcile(),
+      backupDir: path.join(this.dataDir, "backups"),
+    });
   }
 
   private buildService(): WorkerService {
@@ -74,6 +88,7 @@ export class RouterHarness {
       now: this.clock.now,
       workerService: this.service,
       adminToken: ADMIN_TOKEN,
+      adminService: this.admin,
     });
   }
 
@@ -83,6 +98,7 @@ export class RouterHarness {
     this.db.close();
     this.db = openRouterDb(this.dbPath);
     this.service = this.buildService();
+    this.admin = this.buildAdmin();
     this.app = this.buildApp();
   }
 
@@ -122,6 +138,20 @@ export class RouterHarness {
       },
       [],
     );
+  }
+
+  /** An admin API call with the admin token (and an actor header, as the CLI sends). */
+  adminCall(method: "GET" | "POST", url: string, body?: unknown) {
+    return this.app.inject({
+      method,
+      url: `/api/v1/admin${url}`,
+      headers: {
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+        "x-ggjira-actor": "tester",
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      ...(body !== undefined ? { payload: JSON.stringify(body) } : {}),
+    });
   }
 
   post(url: string, body: unknown, token?: string) {

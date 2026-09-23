@@ -1,4 +1,3 @@
-import type { JiraSecrets } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { JiraGateway } from "./gateway.js";
 import { withRetry } from "./retry.js";
@@ -13,6 +12,14 @@ import type {
   JiraUser,
   SearchIssuesOptions,
 } from "./types.js";
+
+/** Where and as whom `JiraClient` connects. Router builds it from its config's `jira.baseUrl` and
+ *  the `JIRA_EMAIL`/`JIRA_API_TOKEN` environment variables (src/router/secrets.ts). */
+export interface JiraSecrets {
+  baseUrl: string;
+  email: string;
+  apiToken: string;
+}
 
 export class JiraApiError extends Error {
   constructor(

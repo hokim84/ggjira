@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { type IssueRequirements, readIssueRequirements } from "../agent/requirements.js";
+import { type IssueRequirements, readIssueRequirements } from "../issue/requirements.js";
 import type { IssueSnapshot, PlanningContext } from "../contracts/envelope.js";
 import type { JobKind } from "../contracts/protocol.js";
 import { JiraApiError } from "../jira/client.js";

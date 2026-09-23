@@ -202,3 +202,71 @@ export function getActiveJobs(db: Database.Database): JobRow[] {
     .all() as Record<string, unknown>[];
   return rows.map(toJobRow);
 }
+
+export interface ListJobsInput {
+  state?: JobState;
+  limit: number;
+  /** Opaque cursor from a previous page's `nextCursor`. */
+  cursor?: string;
+}
+
+export interface JobPage {
+  jobs: JobRow[];
+  /** Pass back as `cursor` for the next page; absent on the last page. */
+  nextCursor?: string;
+}
+
+function encodeJobCursor(job: JobRow): string {
+  return Buffer.from(JSON.stringify([job.createdAt, job.id]), "utf-8").toString("base64url");
+}
+
+function decodeJobCursor(cursor: string): [string, string] {
+  const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf-8")) as unknown;
+  if (
+    !Array.isArray(decoded) ||
+    decoded.length !== 2 ||
+    typeof decoded[0] !== "string" ||
+    typeof decoded[1] !== "string"
+  ) {
+    throw new Error("invalid job list cursor");
+  }
+  return [decoded[0], decoded[1]];
+}
+
+/** Newest first, keyset-paginated on `(created_at, id)` so a page never shifts under inserts
+ *  (§4 "작업 목록은 서버 페이지네이션을 적용한다"). Throws on a malformed cursor. */
+export function listJobs(db: Database.Database, input: ListJobsInput): JobPage {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (input.state) {
+    where.push("state = ?");
+    params.push(input.state);
+  }
+  if (input.cursor) {
+    const [createdAt, id] = decodeJobCursor(input.cursor);
+    where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+    params.push(createdAt, createdAt, id);
+  }
+  const sql = `SELECT * FROM jobs ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY created_at DESC, id DESC LIMIT ?`;
+  const rows = db.prepare(sql).all(...params, input.limit + 1) as Record<string, unknown>[];
+  const jobs = rows.slice(0, input.limit).map(toJobRow);
+  const last = jobs[jobs.length - 1];
+  return rows.length > input.limit && last ? { jobs, nextCursor: encodeJobCursor(last) } : { jobs };
+}
+
+export function countJobsByState(db: Database.Database): Partial<Record<JobState, number>> {
+  const rows = db.prepare("SELECT state, COUNT(*) AS n FROM jobs GROUP BY state").all() as Array<{
+    state: JobState;
+    n: number;
+  }>;
+  return Object.fromEntries(rows.map((row) => [row.state, row.n]));
+}
+
+/** `updated_at` of the longest-waiting `queued` job — when it last entered the queue. */
+export function oldestQueuedJobSince(db: Database.Database): string | null {
+  const row = db.prepare("SELECT MIN(updated_at) AS at FROM jobs WHERE state = 'queued'").get() as
+    | { at: string | null }
+    | undefined;
+  return row?.at ?? null;
+}

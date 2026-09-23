@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import {
+  ADMIN_OPERATIONS_STATEMENTS,
   REPORT_JOURNAL_STATEMENTS,
   SCHEMA_STATEMENTS,
   WORKER_PROTOCOL_STATEMENTS,
@@ -38,6 +39,13 @@ const MIGRATIONS: readonly Migration[] = [
     description: "Jira reporting journal: report_steps (replaces the never-used jira_writes)",
     up(db) {
       for (const statement of REPORT_JOURNAL_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 4,
+    description: "admin operations: admin_holds (an admin-cancelled approval is not re-dispatched)",
+    up(db) {
+      for (const statement of ADMIN_OPERATIONS_STATEMENTS) db.exec(statement);
     },
   },
 ];

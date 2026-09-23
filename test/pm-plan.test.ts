@@ -48,67 +48,27 @@ describe("parsePlan", () => {
     expect(() => parsePlan(undefined, "no json here at all")).toThrow(PlanParseError);
   });
 
-  it("allows empty tasks when the plan only requests new agent profiles", () => {
-    const plan = parsePlan(
-      {
-        needsDecision: false,
-        summary: "add a unity agent",
-        tasks: [],
-        keepTaskKeys: [],
-        agentProfiles: [
-          { agentId: "unity-implement-01", role: "implement", preset: "unity-programmer" },
-        ],
-        disableAgentIds: [],
-      },
-      "",
-    );
-    expect(plan.tasks).toEqual([]);
-    expect(plan.agentProfiles).toHaveLength(1);
-    expect(plan.agentProfiles[0]?.agentId).toBe("unity-implement-01");
-  });
-
-  it("allows empty tasks when the plan only disables agent profiles", () => {
-    const plan = parsePlan(
-      {
-        needsDecision: false,
-        summary: "remove an agent",
-        tasks: [],
-        keepTaskKeys: [],
-        agentProfiles: [],
-        disableAgentIds: ["unity-implement-01"],
-      },
-      "",
-    );
-    expect(plan.disableAgentIds).toEqual(["unity-implement-01"]);
-  });
-
-  it("still rejects empty tasks with no agentProfiles/disableAgentIds either", () => {
+  it("rejects empty tasks when the plan neither asks for a decision nor records capabilities", () => {
     expect(() =>
-      parsePlan(
-        {
-          needsDecision: false,
-          summary: "ok",
-          tasks: [],
-          keepTaskKeys: [],
-          agentProfiles: [],
-          disableAgentIds: [],
-        },
-        "",
-      ),
+      parsePlan({ needsDecision: false, summary: "ok", tasks: [], keepTaskKeys: [] }, ""),
     ).toThrow(PlanParseError);
   });
 
-  it("parses a task's assigneeAgentId when present", () => {
+  it("drops v4 Agent Profile fields instead of carrying them into the plan (ADR 0022)", () => {
     const plan = parsePlan(
       {
         needsDecision: false,
         summary: "ok",
         tasks: [{ title: "T1", description: "D1", assigneeAgentId: "unity-implement-01" }],
         keepTaskKeys: [],
+        agentProfiles: [{ agentId: "unity-implement-01", role: "implement" }],
+        disableAgentIds: ["old-agent"],
       },
       "",
     );
-    expect(plan.tasks[0]?.assigneeAgentId).toBe("unity-implement-01");
+    expect(plan.tasks[0]).not.toHaveProperty("assigneeAgentId");
+    expect(plan).not.toHaveProperty("agentProfiles");
+    expect(plan).not.toHaveProperty("disableAgentIds");
   });
 
   it("accepts a valid decision plan", () => {

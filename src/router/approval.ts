@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
-import type { IssueRequirements } from "../agent/requirements.js";
+import type { IssueRequirements } from "../issue/requirements.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
 
 /**

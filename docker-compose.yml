@@ -1,0 +1,41 @@
+# Router + Caddy (HTTPS) — docs/runbook.md "Router 배포 (Docker Compose)".
+# Before `docker compose up -d`:
+#   1. cp deploy/router.config.example.json deploy/router.config.json   (edit it)
+#   2. cp deploy/router.env.example deploy/router.env                   (fill in secrets)
+#   3. export GGJIRA_DOMAIN=router.example.com  (DNS must point here; Caddy obtains the certificate)
+services:
+  router:
+    build:
+      context: .
+      target: runtime
+    image: ggjira-router:local
+    restart: unless-stopped
+    env_file: deploy/router.env
+    environment:
+      # Lets `docker compose exec router node dist/cli.js router status` find the admin address.
+      GGJIRA_ROUTER_CONFIG: /config/router.config.json
+    volumes:
+      - ./deploy/router.config.json:/config/router.config.json:ro
+      - router-data:/data
+    expose:
+      - "8787"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - router
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      GGJIRA_DOMAIN: ${GGJIRA_DOMAIN:?set GGJIRA_DOMAIN to the Router's public host name}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  router-data:
+  caddy-data:
+  caddy-config:

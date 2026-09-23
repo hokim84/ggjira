@@ -1,0 +1,18 @@
+{
+  "configVersion": 5,
+  "routerUrl": "https://router.example.com",
+  "credentialPath": "data/worker-credential.json",
+  "repositories": [
+    {
+      "id": "main-repo",
+      "path": "/absolute/path/to/local/clone",
+      "baseBranch": "main",
+      "validateCommand": "npm test"
+    }
+  ],
+  "capabilities": ["programming", "testing"],
+  "backends": ["filesystem", "git", "coding-runtime"],
+  "providers": [{ "id": "default", "type": "claude-code" }],
+  "dataDir": "data/worker",
+  "logPath": "data/worker-logs"
+}

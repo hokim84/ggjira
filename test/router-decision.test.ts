@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { IssueRequirements } from "../src/agent/requirements.js";
+import type { IssueRequirements } from "../src/issue/requirements.js";
 import type { JiraIssue } from "../src/jira/types.js";
 import type { PlanTaskMetadata } from "../src/pm/metadata.js";
 import { RuleDecisionProvider, type RouteContext } from "../src/router/decision.js";

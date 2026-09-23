@@ -1,5 +1,5 @@
-import { unknownCapabilities } from "../agent/capability.js";
-import type { IssueRequirements } from "../agent/requirements.js";
+import { unknownCapabilities } from "../issue/capability.js";
+import type { IssueRequirements } from "../issue/requirements.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
 import type { RouteResult } from "../contracts/route.js";

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { canHandle } from "../agent/capability.js";
+import { canHandle } from "../issue/capability.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PlanMetadataError } from "../pm/metadata.js";
@@ -10,6 +10,7 @@ import {
   leaseAttempt,
   transitionAttemptState,
 } from "./db/attempts.js";
+import { isApprovalHeld } from "./db/holds.js";
 import { markWorkerAssigned } from "./db/workers.js";
 import {
   createJob,
@@ -232,6 +233,18 @@ async function reconcileIssue(
     // job was only "waiting" and its dependencies just resolved — both cases re-decide fresh.
     const slotFreed = cancelStaleJob(deps.db, existingJob, now, report);
     if (!slotFreed) return;
+  }
+
+  if (isApprovalHeld(deps.db, issue.key, approvalId)) {
+    // An admin cancelled the job for this very approval (`ggjira router jobs cancel`); only a
+    // fresh request in Jira (a new approval id) runs it again.
+    report.held.push({
+      issueKey: issue.key,
+      target: "human",
+      reason:
+        "cancelled by an admin for this approval; move the issue to the request status again to re-run",
+    });
+    return;
   }
 
   const context: RouteContext = {

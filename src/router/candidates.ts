@@ -1,11 +1,11 @@
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
-import { AGENT_LABEL, WORKSPACE_LABEL } from "../profile/types.js";
 import type { WorkspaceConfig } from "./config.js";
 
-/** GGJIRA's own meta issues carry one of these labels and must never be treated as work
- *  (mirrors `src/poller/poller.ts`'s `META_LABELS`; stage 5 removes that v4 path). */
-const META_LABELS = new Set([AGENT_LABEL, WORKSPACE_LABEL]);
+/** Labels of the v4 meta issues (`[AGENT] <id>` Agent Profiles, `[GGJIRA] Workspace
+ *  Configuration`). v5 no longer reads or writes them (ADR 0022), but projects that ran v4 still
+ *  have them, and they must never be treated as work. */
+const META_LABELS = new Set(["ggjira-agent", "ggjira-workspace"]);
 
 /** The statuses that make an issue in this workspace a candidate: `requestStatus` always,
  *  plus `planningStatus` when the workspace has one configured. */

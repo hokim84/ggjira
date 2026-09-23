@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { JiraSecrets } from "../src/config.js";
 import {
   JiraApiError,
   JiraClient,
+  type JiraSecrets,
   TransitionNotFoundError,
   parseRetryAfterMs,
 } from "../src/jira/client.js";

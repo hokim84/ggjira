@@ -6,5 +6,9 @@ data/
 *.log
 .DS_Store
 ggjira.config.json
+router.config.json
+worker.config.json
+deploy/router.config.json
+deploy/router.env
 # Backups setup writes before overwriting; .env.bak holds a real API token.
 *.bak

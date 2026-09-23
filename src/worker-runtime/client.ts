@@ -69,6 +69,12 @@ export class RouterClient {
     this.fetchImpl = options.fetch ?? ((input, init) => fetch(input, init));
   }
 
+  /** `GET /health` — reachability only; opens no session, so it is safe while `worker run` is up. */
+  async health(): Promise<boolean> {
+    const response = await this.fetchImpl(`${this.baseUrl}/health`, { method: "GET" });
+    return response.ok;
+  }
+
   register(body: WorkerRegisterRequest): Promise<WorkerRegisterResponse> {
     return this.call("/api/v1/workers/register", body, WorkerRegisterResponseSchema);
   }

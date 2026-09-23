@@ -1,4 +1,4 @@
-import { renderSections } from "../../src/profile/description.js";
+import { renderSections } from "../../src/issue/description.js";
 import type { RouterConfig, WorkerPolicyConfig, WorkspaceConfig } from "../../src/router/config.js";
 
 /** Shared v5 Router test fixtures (scheduler, worker API, leases, runner end-to-end). */

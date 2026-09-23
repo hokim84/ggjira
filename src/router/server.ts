@@ -14,7 +14,10 @@ import {
   WorkerRegisterRequestSchema,
   WorkerSessionRequestSchema,
 } from "../contracts/api.js";
+import { JOB_STATES } from "../contracts/job-state.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
+import { AdminError, type AdminService } from "./admin-service.js";
+import { RecoveryError } from "./recovery.js";
 import { ingestJiraWebhookEvent, verifyJiraWebhookSignature } from "./webhook.js";
 import { WorkerApiError, type WorkerService } from "./worker-service.js";
 
@@ -33,6 +36,8 @@ export interface RouterServerDeps {
   workerService?: WorkerService;
   /** Bearer token for `/api/v1/admin/*`. Admin routes are not registered without it. */
   adminToken?: string;
+  /** Enables the admin routes beyond pairing codes (workers, jobs, reports, sync, backup). */
+  adminService?: AdminService;
 }
 
 interface ParsedBody {
@@ -122,6 +127,13 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
   });
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof AdminError) {
+      return sendError(reply, error.status, { error: error.code, message: error.message });
+    }
+    if (error instanceof RecoveryError) {
+      const status = error.code === "unknown_job" || error.code === "unknown_batch" ? 404 : 409;
+      return sendError(reply, status, { error: error.code, message: error.message });
+    }
     if (error instanceof WorkerApiError) {
       return sendError(reply, error.status, {
         error: error.code,
@@ -141,7 +153,9 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
 
   const service = deps.workerService;
   if (service) registerWorkerRoutes(app, service);
-  if (service && deps.adminToken) registerAdminRoutes(app, service, deps.adminToken);
+  if (deps.adminToken && (service || deps.adminService)) {
+    registerAdminRoutes(app, deps.adminToken, service, deps.adminService);
+  }
 
   return app;
 }
@@ -203,16 +217,93 @@ function registerWorkerRoutes(app: FastifyInstance, service: WorkerService): voi
   );
 }
 
+const ACTOR_HEADER = "x-ggjira-actor";
+const JOB_STATE_SET: ReadonlySet<string> = new Set(JOB_STATES);
+
+/** Who an admin call acts as, for `audit_log`: the CLI sends the OS user name. */
+function actorOf(request: FastifyRequest): string {
+  const actor = headerValue(request.headers[ACTOR_HEADER])?.trim();
+  return actor ? `admin:${actor.slice(0, 100)}` : "admin";
+}
+
+/** `/api/v1/admin/*` (§4 "관리자 API는 /api/v1/admin 아래에서 워커·작업·보고·동기화·백업 기능을
+ *  제공한다"), all behind the admin bearer token. */
 function registerAdminRoutes(
   app: FastifyInstance,
-  service: WorkerService,
   adminToken: string,
+  service: WorkerService | undefined,
+  admin: AdminService | undefined,
 ): void {
-  app.post("/api/v1/admin/pairing-codes", async (request, reply) => {
-    if (!tokensEqual(bearerToken(request), adminToken)) {
-      return sendError(reply, 401, { error: "unauthenticated", message: "admin token required" });
-    }
-    const body = parseBody(AdminCreatePairingCodeRequestSchema, request.body);
-    return reply.code(201).send(service.createPairingCode(body.workerId));
-  });
+  app.register(
+    async (scope) => {
+      scope.addHook("onRequest", async (request, reply) => {
+        if (!tokensEqual(bearerToken(request), adminToken)) {
+          return sendError(reply, 401, {
+            error: "unauthenticated",
+            message: "admin token required",
+          });
+        }
+      });
+
+      if (service) {
+        scope.post("/pairing-codes", async (request, reply) => {
+          const body = parseBody(AdminCreatePairingCodeRequestSchema, request.body);
+          return reply.code(201).send(service.createPairingCode(body.workerId));
+        });
+      }
+      if (!admin) return;
+
+      type IdParams = { Params: { id: string } };
+      scope.get("/status", async () => admin.status());
+
+      scope.get("/workers", async () => ({ workers: admin.listWorkers() }));
+      scope.post<IdParams>("/workers/:id/disable", async (request) =>
+        admin.setWorkerEnabled(request.params.id, false, actorOf(request)),
+      );
+      scope.post<IdParams>("/workers/:id/enable", async (request) =>
+        admin.setWorkerEnabled(request.params.id, true, actorOf(request)),
+      );
+      scope.post<IdParams>("/workers/:id/revoke", async (request) =>
+        admin.revokeWorker(request.params.id, actorOf(request)),
+      );
+
+      scope.get<{ Querystring: { state?: string; limit?: string; cursor?: string } }>(
+        "/jobs",
+        async (request) => {
+          const { state, limit, cursor } = request.query;
+          if (state !== undefined && !JOB_STATE_SET.has(state)) {
+            throw new AdminError(400, "invalid_request", `unknown job state "${state}"`);
+          }
+          const parsedLimit = limit === undefined ? undefined : Number(limit);
+          if (parsedLimit !== undefined && !Number.isInteger(parsedLimit)) {
+            throw new AdminError(400, "invalid_request", "limit must be an integer");
+          }
+          return admin.listJobs({
+            ...(state ? { state: state as (typeof JOB_STATES)[number] } : {}),
+            ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}),
+            ...(cursor ? { cursor } : {}),
+          });
+        },
+      );
+      scope.get<IdParams>("/jobs/:id", async (request) => admin.showJob(request.params.id));
+      scope.post<IdParams>("/jobs/:id/cancel", async (request) =>
+        admin.cancelJob(request.params.id, actorOf(request)),
+      );
+      scope.post<IdParams>("/jobs/:id/retry", async (request) =>
+        admin.retryJob(request.params.id, actorOf(request)),
+      );
+      scope.post<IdParams>("/jobs/:id/resolve", async (request) =>
+        admin.resolveJob(request.params.id, actorOf(request)),
+      );
+
+      scope.get("/reports", async () => ({ batches: admin.listBlockedReports() }));
+      scope.post<IdParams>("/reports/:id/retry", async (request) =>
+        admin.retryReportBatch(request.params.id, actorOf(request)),
+      );
+
+      scope.post("/reconcile", async (request) => admin.reconcile(actorOf(request)));
+      scope.post("/backup", async (request) => admin.backup(actorOf(request)));
+    },
+    { prefix: "/api/v1/admin" },
+  );
 }
