@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { routerConfigTemplate } from "../src/router/cli.js";
+import { routerConfigTemplate } from "../src/router/config-store.js";
 import { loadRouterConfig } from "../src/router/config.js";
 import { RouterConfigSchema } from "../src/router/config.js";
 import { loadWorkerConfig } from "../src/worker-runtime/config.js";

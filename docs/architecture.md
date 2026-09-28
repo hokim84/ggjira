@@ -104,6 +104,18 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 | `router reports list/retry` | `/reports…` | 막힌 보고 배치 재대기 |
 | `router reconcile` | `POST /reconcile` | sync lane에서 즉시 1회 실행 |
 | `router backup` | `POST /backup` | SQLite online backup을 `<db dir>/backups/`에 저장 |
+| (웹 UI) | `GET/PUT /config`, `POST /check` | 설정 파일 조회·검증 후 저장(`.bak`, 재시작해야 적용), 저장된 설정으로 `router check` |
+
+## 웹 UI와 셋업 모드 (ADR 0023)
+
+`router serve`는 `web/router-ui/`(빌드 없는 정적 HTML/JS)를 `/ui/`에서 서빙한다(`src/router/web-ui.ts`).
+화면은 대시보드(`/status`), 워커(5초 폴링, 페어링 코드, enable/disable/revoke), 설정 편집, Jira 점검이다.
+모두 admin token으로 위 관리 API만 호출한다. 설정 저장은 파일만 바꾸고, 적용은 Router 재시작 때 된다.
+
+설정 파일이 없거나 비밀정보가 불완전하면 `router serve`는 셋업 모드로 뜬다(`src/router/setup-server.ts`).
+DB와 루프 없이 `/ui/`와 `/api/v1/setup/*`만 제공하고, 콘솔에 찍힌 일회용 setup token으로 인증한다.
+마법사가 설정 파일과 secrets 파일(`router.env`, 0600)을 쓰면 token은 무효가 된다. 비밀정보는
+환경변수가 우선이고, 없는 키만 secrets 파일에서 읽는다(`loadRouterSecrets`).
 
 ## 실패 추적
 
@@ -133,7 +145,7 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 ## 배포
 
 - Router는 `Dockerfile`(Node 24) + `docker-compose.yml`(router + Caddy)로 배포한다. DB는 named
-  volume `/data`, TLS는 Caddy가 맡는다. 운영 절차는 [runbook](./runbook.md) §16~§18에 있다.
+  volume `/data`, 설정과 secrets 파일은 쓰기 가능한 `./deploy/config:/config`, TLS는 Caddy가 맡는다. 운영 절차는 [runbook](./runbook.md) §16~§18에 있다.
 - Worker는 Windows·Linux 네이티브로 `ggjira worker run`을 실행한다. Router URL은 HTTPS여야 하고,
   loopback만 예외다.
 - `docker compose -f docker-compose.test.yml run --rm --build check`는 Linux에서 check 전체를

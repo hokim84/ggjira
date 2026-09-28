@@ -35,7 +35,7 @@ describe("Router server", () => {
   it("GET /health returns ok", async () => {
     const response = await app.inject({ method: "GET", url: "/health" });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ status: "ok" });
+    expect(response.json()).toEqual({ status: "ok", mode: "router" });
   });
 
   it("accepts a correctly signed webhook and persists one event", async () => {

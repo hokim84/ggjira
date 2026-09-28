@@ -139,6 +139,8 @@ export const ApiErrorResponseSchema = z.object({
   message: z.string().optional(),
   /** Set on `426` protocol mismatches so the worker can report what Router speaks. */
   supportedProtocolVersion: z.number().int().optional(),
+  /** Field-level validation problems (admin config updates). */
+  issues: z.array(z.object({ path: z.string(), message: z.string() })).optional(),
 });
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 

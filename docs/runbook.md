@@ -87,13 +87,19 @@ Router의 Jira 쓰기는 `report_steps` 저널을 `router serve`의 reports 루�
 준비물은 공인 DNS가 이 서버를 가리키는 도메인, 80/443 포트, Docker Engine + Compose다.
 
 ```bash
-cp deploy/router.config.example.json deploy/router.config.json   # Jira URL, workspaces, 상태, workers
-cp deploy/router.env.example deploy/router.env                   # JIRA_*, GGJIRA_* 비밀정보
+mkdir -p deploy/config && sudo chown 1000:1000 deploy/config    # 컨테이너의 node 사용자가 씀
 export GGJIRA_DOMAIN=router.example.com
 docker compose up -d --build
+docker compose logs router | grep -A1 "setup token"             # 웹 셋업(§20): 이 token으로 진행
+# 또는 수동 설정:
+#   cp deploy/router.config.example.json deploy/config/router.config.json
+#   cp deploy/router.env.example deploy/config/router.env
 docker compose exec router node dist/cli.js router check         # Jira 상태·전이 확인
 docker compose logs -f router
 ```
+
+- ADR 0023 이전 배포에서 옮겨 올 때: `deploy/router.config.json` → `deploy/config/router.config.json`,
+  `deploy/router.env` → `deploy/config/router.env`로 옮기고 `docker compose up -d --build`한다.
 
 - `router.config.json`의 `db.path`는 `/data/router.sqlite3`(volume), `http.host`는 `0.0.0.0`으로
   둔다. 컨테이너 밖에 포트를 열지 않고 Caddy만 443으로 받는다.
@@ -103,7 +109,8 @@ docker compose logs -f router
   만든다. 이벤트는 이슈 생성·수정·삭제와 댓글, 필터는 프로젝트 기준이다. 요청 상태로 거르지 않는다.
   그래야 승인 철회도 들어온다.
 - 관리 명령은 컨테이너 안에서 `docker compose exec router node dist/cli.js router <명령>`으로
-  실행한다. 밖에서 실행하려면 `--url https://<도메인>`과 `GGJIRA_ADMIN_TOKEN`을 준다.
+  실행한다(admin token은 `/config/router.env`에서 읽는다). 밖에서 실행하려면
+  `--url https://<도메인>`과 `GGJIRA_ADMIN_TOKEN`을 준다. 같은 일을 웹 UI `https://<도메인>/ui/`에서도 할 수 있다.
 - 웹훅이 안 들어오면 `router status`의 webhook delay가 `-`로 남는다. 이 경우에도 60초 보완 조회로는
   계속 진행된다. Caddy 로그와 Jira 웹훅 화면의 전달 기록을 본다. `401 invalid signature`면 secret이
   서로 다르다.
@@ -156,6 +163,26 @@ ggjira worker run --config worker.config.json            # Ctrl+C 1회: 현재 �
 - **워커 교체·폐기**: `router workers revoke <id>`는 token을 바로 무효화한다. 실행 중이던 job은 임대
   만료 후 `recovery_required`가 된다(§14). 같은 id로 다시 쓰려면 `workers pair`와
   `worker setup --force`를 한다.
+
+## 20. 웹 UI와 셋업 모드 (ADR 0023)
+
+- **최초 설치**: 설정 파일 없이 `ggjira router serve --config router.config.json`을 실행하면 셋업
+  모드로 뜨고, 콘솔에 `GGJIRA Router setup: open …/ui/`와 일회용 setup token이 찍힌다. 마법사가
+  `router.config.json`과 같은 폴더의 `router.env`(0600)를 쓴다. 결과 화면의 admin token과 webhook
+  secret은 한 번만 보이지만 `router.env`에도 남아 있다. 끝나면 Router를 재시작한다.
+- **셋업 모드로 뜨는 조건**: 설정 파일이 없거나, 환경변수와 secrets 파일을 합쳐도 비밀정보가
+  부족할 때다. 파일은 있는데 검증에 실패하면 셋업 모드로 가지 않고 `failed validation`으로 종료한다.
+  고친 뒤 다시 실행한다.
+- **setup token을 잃어버림**: Router를 재시작하면 새 token이 나온다. 이전 token은 프로세스 메모리에만
+  있다.
+- **로그인 실패(401)**: 웹 UI는 `GGJIRA_ADMIN_TOKEN`을 쓴다. 환경변수가 secrets 파일보다 우선하니, 둘이
+  다르면 환경변수 값이 맞다.
+- **설정 저장 후 반영 안 됨**: 저장은 파일만 바꾼다. 상단 "재시작 필요" 배너가 보이면 Router를 재시작한다.
+  직전 파일은 `router.config.json.bak`에 있다. 저장 기록은 `audit_log`의 `config.updated`다. Docker에서
+  저장이 `EACCES`/`EBUSY`로 실패하면 `deploy/config`가 디렉터리 마운트인지, uid 1000이 쓸 수 있는지 본다.
+- **점검 화면**: 저장된(아직 미적용일 수 있는) 설정 파일로 `router check`를 돌린다. `jira.baseUrl`을
+  바꿨다면 실행 중인 연결로 점검했다는 경고가 붙는다. 재시작한 뒤 다시 점검한다.
+- 셋업 모드와 웹 UI 모두 HTTP만 서빙한다. 원격에서는 반드시 Caddy HTTPS 뒤에서 연다.
 
 ## 19. v4에서 전환
 

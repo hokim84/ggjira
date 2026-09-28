@@ -44,8 +44,16 @@ export class RouterHarness {
   admin: AdminService;
   app: FastifyInstance;
   private readonly serviceOverrides: Partial<WorkerServiceDeps>;
+  private readonly configPath: string | undefined;
 
-  constructor(opts: { config?: Partial<RouterConfig>; service?: Partial<WorkerServiceDeps> } = {}) {
+  constructor(
+    opts: {
+      config?: Partial<RouterConfig>;
+      service?: Partial<WorkerServiceDeps>;
+      /** Config file the admin service reads/writes for `/admin/config` and `/admin/check`. */
+      configPath?: string;
+    } = {},
+  ) {
     this.dataDir = mkdtempSync(path.join(tmpdir(), "ggjira-router-harness-"));
     this.dbPath = path.join(this.dataDir, "router.sqlite3");
     this.db = openRouterDb(this.dbPath);
@@ -54,6 +62,7 @@ export class RouterHarness {
       ...opts.config,
     });
     this.serviceOverrides = opts.service ?? {};
+    this.configPath = opts.configPath;
     this.service = this.buildService();
     this.admin = this.buildAdmin();
     this.app = this.buildApp();
@@ -67,6 +76,7 @@ export class RouterHarness {
       now: this.clock.now,
       reconcileNow: () => this.reconcile(),
       backupDir: path.join(this.dataDir, "backups"),
+      ...(this.configPath ? { configPath: this.configPath } : {}),
     });
   }
 
@@ -141,7 +151,7 @@ export class RouterHarness {
   }
 
   /** An admin API call with the admin token (and an actor header, as the CLI sends). */
-  adminCall(method: "GET" | "POST", url: string, body?: unknown) {
+  adminCall(method: "GET" | "POST" | "PUT", url: string, body?: unknown) {
     return this.app.inject({
       method,
       url: `/api/v1/admin${url}`,

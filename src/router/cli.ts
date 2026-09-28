@@ -1,5 +1,4 @@
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import path from "node:path";
 import {
@@ -18,15 +17,25 @@ import type { AdminBlockedBatch, AdminWorkerView, RouterStatus } from "./admin-s
 import { AdminClient } from "./admin-client.js";
 import { type CheckItem, runRouterCheck } from "./check.js";
 import { loadRouterConfig, type RouterConfig } from "./config.js";
+import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
 import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
 import type { JobPage, JobRow } from "./db/jobs.js";
-import { loadRouterSecretsFromEnv } from "./secrets.js";
+import {
+  loadRouterSecrets,
+  parseEnvFile,
+  type RouterEnvSecrets,
+  RouterSecretsError,
+} from "./secrets.js";
+import { buildSetupServer } from "./setup-server.js";
 
 export const ROUTER_USAGE = `ggjira router <command>
 
   setup [--config <path>] [--force]      write a starter config and print fresh secrets
-  serve [--config <path>]                run the Router (webhooks, worker API, admin API)
+  serve [--config <path>] [--secrets <path>] [--host <h>] [--port <n>]
+                                         run the Router (webhooks, worker API, admin API, web UI
+                                         at /ui/); without a config or secrets it starts the web
+                                         setup wizard instead
   check [--config <path>] [--issue KEY]  verify config against Jira (read-only)
 
   Admin commands talk to a running Router (--url, or GGJIRA_ROUTER_URL, or the config's http
@@ -43,6 +52,7 @@ const DEFAULT_CONFIG = "router.config.json";
 
 const COMMON_OPTIONS = {
   config: { type: "string" },
+  secrets: { type: "string" },
   url: { type: "string" },
   json: { type: "boolean" },
 } as const;
@@ -51,38 +61,37 @@ function configPath(parsed: ParsedArgs, io: CliIo): string {
   return stringOption(parsed, "config") ?? io.env.GGJIRA_ROUTER_CONFIG ?? DEFAULT_CONFIG;
 }
 
-export function routerConfigTemplate(): Record<string, unknown> {
-  return {
-    configVersion: 5,
-    jira: { baseUrl: "https://your-site.atlassian.net" },
-    repositories: [{ id: "main-repo", displayName: "Main repository" }],
-    workspaces: [
-      {
-        id: "default",
-        repositoryId: "main-repo",
-        projectKeys: ["PROJ"],
-        workflow: {
-          requestStatus: "AI 작업 요청",
-          inProgressStatus: "작업 중",
-          reviewStatus: "AI 작업 완료",
-        },
-      },
-    ],
-    workers: [
-      {
-        workerId: "worker-1",
-        allowedCapabilities: ["programming", "testing"],
-        allowedRepositoryIds: ["main-repo"],
-        providerId: "default",
-      },
-    ],
-    db: { path: "data/router.sqlite3" },
-    http: { host: "127.0.0.1", port: 8787 },
-  };
+function secretsPath(parsed: ParsedArgs, io: CliIo): string {
+  return (
+    stringOption(parsed, "secrets") ??
+    io.env.GGJIRA_ROUTER_SECRETS ??
+    defaultSecretsPath(configPath(parsed, io))
+  );
 }
 
-function randomSecret(): string {
-  return randomBytes(32).toString("base64url");
+export type ServeMode =
+  | { mode: "router"; config: RouterConfig; secrets: RouterEnvSecrets }
+  | { mode: "setup"; reason: string };
+
+/**
+ * A missing config file or incomplete secrets start the setup wizard; a config file that exists
+ * but is broken stays a hard error so the wizard never silently replaces it.
+ */
+export function decideServeMode(
+  configFile: string,
+  secretsFile: string,
+  env: NodeJS.ProcessEnv,
+): ServeMode {
+  if (!existsSync(configFile)) {
+    return { mode: "setup", reason: `no Router config at ${configFile}` };
+  }
+  const config = loadRouterConfig(configFile);
+  try {
+    return { mode: "router", config, secrets: loadRouterSecrets(env, secretsFile) };
+  } catch (error) {
+    if (error instanceof RouterSecretsError) return { mode: "setup", reason: error.message };
+    throw error;
+  }
 }
 
 function setup(parsed: ParsedArgs, io: CliIo): number {
@@ -109,9 +118,59 @@ function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
+function portOption(parsed: ParsedArgs): number | undefined {
+  const raw = stringOption(parsed, "port");
+  if (raw === undefined) return undefined;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new UsageError(`--port must be a port number, got "${raw}"`);
+  }
+  return port;
+}
+
+function waitForShutdown(logger: typeof rootLogger, stop: () => Promise<void>): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const shutdown = (signal: string) => {
+      logger.info({ signal }, "router stopping");
+      stop()
+        .catch((error: unknown) => logger.error({ err: error }, "router stop failed"))
+        .finally(resolve);
+    };
+    process.once("SIGINT", () => shutdown("SIGINT"));
+    process.once("SIGTERM", () => shutdown("SIGTERM"));
+  });
+}
+
+async function serveSetup(parsed: ParsedArgs, io: CliIo, reason: string): Promise<number> {
+  const logger = rootLogger.child({ layer: "router" });
+  const host = stringOption(parsed, "host") ?? "127.0.0.1";
+  const port = portOption(parsed) ?? 8787;
+  const setupToken = randomSecret();
+  const app = buildSetupServer({
+    configPath: configPath(parsed, io),
+    secretsPath: secretsPath(parsed, io),
+    setupToken,
+    jiraFactory: (credentials) => new JiraClient(credentials, { logger }),
+  });
+  const address = await app.listen({ host, port });
+  logger.warn({ reason }, "router is not configured; serving the setup wizard only");
+  io.out("");
+  io.out(`GGJIRA Router setup: open ${address}/ui/ and enter this one-time setup token:`);
+  io.out(`  ${setupToken}`);
+  io.out("Restart the Router after the wizard finishes.");
+  io.out("");
+  if (!isLoopbackHost(host)) {
+    logger.warn({ host }, "setup wizard is reachable off this host; use it only over HTTPS");
+  }
+  await waitForShutdown(logger, () => app.close());
+  return 0;
+}
+
 async function serve(parsed: ParsedArgs, io: CliIo): Promise<number> {
-  const config = loadRouterConfig(configPath(parsed, io));
-  const secrets = loadRouterSecretsFromEnv(io.env);
+  const configFile = configPath(parsed, io);
+  const decided = decideServeMode(configFile, secretsPath(parsed, io), io.env);
+  if (decided.mode === "setup") return serveSetup(parsed, io, decided.reason);
+  const { config, secrets } = decided;
   const logger = rootLogger.child({ layer: "router" });
   mkdirSync(path.dirname(path.resolve(config.db.path)), { recursive: true });
   const db = openRouterDb(config.db.path);
@@ -129,32 +188,28 @@ async function serve(parsed: ParsedArgs, io: CliIo): Promise<number> {
     webhookSecret: secrets.webhookSecret,
     adminToken: secrets.adminToken,
     siteId: new URL(config.jira.baseUrl).host,
+    configPath: configFile,
     logger,
   });
 
-  if (!isLoopbackHost(config.http.host)) {
+  const host = stringOption(parsed, "host") ?? config.http.host;
+  const port = portOption(parsed) ?? config.http.port;
+  if (!isLoopbackHost(host)) {
     logger.warn(
-      { host: config.http.host },
+      { host },
       "Router serves plain HTTP; expose it only through the HTTPS proxy (docker-compose Caddy)",
     );
   }
-  const address = await daemon.listen(config.http.host, config.http.port);
+  const address = await daemon.listen(host, port);
   daemon.start();
-  logger.info({ address }, "router serving");
+  logger.info({ address, ui: `${address}/ui/` }, "router serving");
 
-  await new Promise<void>((resolve) => {
-    const shutdown = (signal: string) => {
-      logger.info({ signal }, "router stopping");
-      daemon
-        .stop()
-        .catch((error: unknown) => logger.error({ err: error }, "router stop failed"))
-        .finally(() => {
-          db.close();
-          resolve();
-        });
-    };
-    process.once("SIGINT", () => shutdown("SIGINT"));
-    process.once("SIGTERM", () => shutdown("SIGTERM"));
+  await waitForShutdown(logger, async () => {
+    try {
+      await daemon.stop();
+    } finally {
+      db.close();
+    }
   });
   return 0;
 }
@@ -166,13 +221,16 @@ async function check(parsed: ParsedArgs, io: CliIo): Promise<number> {
     level: "ok",
     message: `config ${configPath(parsed, io)} is valid (configVersion 5)`,
   });
+  let secrets: RouterEnvSecrets | undefined;
   try {
-    loadRouterSecretsFromEnv(io.env);
-    items.push({ level: "ok", message: "Router secrets are set in the environment" });
+    secrets = loadRouterSecrets(io.env, secretsPath(parsed, io));
+    items.push({ level: "ok", message: "Router secrets are set (environment or secrets file)" });
   } catch (error) {
     items.push({ level: "fail", message: (error as Error).message });
   }
-  if (!io.env.JIRA_EMAIL || !io.env.JIRA_API_TOKEN) {
+  const email = secrets?.jiraEmail ?? io.env.JIRA_EMAIL;
+  const apiToken = secrets?.jiraApiToken ?? io.env.JIRA_API_TOKEN;
+  if (!email || !apiToken) {
     items.push({
       level: "fail",
       message: "JIRA_EMAIL/JIRA_API_TOKEN not set; skipping Jira checks",
@@ -180,7 +238,7 @@ async function check(parsed: ParsedArgs, io: CliIo): Promise<number> {
     return printCheckItems(io, items);
   }
   const jira = new JiraClient(
-    { baseUrl: config.jira.baseUrl, email: io.env.JIRA_EMAIL, apiToken: io.env.JIRA_API_TOKEN },
+    { baseUrl: config.jira.baseUrl, email, apiToken },
     config.executionAgent ? { executionAgentFieldId: config.executionAgent.fieldId } : {},
   );
   const issueKey = stringOption(parsed, "issue");
@@ -188,9 +246,21 @@ async function check(parsed: ParsedArgs, io: CliIo): Promise<number> {
   return printCheckItems(io, items);
 }
 
+function adminTokenFromSecretsFile(file: string): string | undefined {
+  try {
+    return parseEnvFile(readFileSync(file, "utf-8")).GGJIRA_ADMIN_TOKEN || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function adminClient(parsed: ParsedArgs, io: CliIo): AdminClient {
-  const token = io.env.GGJIRA_ADMIN_TOKEN;
-  if (!token) throw new UsageError("GGJIRA_ADMIN_TOKEN must be set for admin commands");
+  const token = io.env.GGJIRA_ADMIN_TOKEN ?? adminTokenFromSecretsFile(secretsPath(parsed, io));
+  if (!token) {
+    throw new UsageError(
+      "GGJIRA_ADMIN_TOKEN must be set (environment or Router secrets file) for admin commands",
+    );
+  }
   let routerUrl = stringOption(parsed, "url") ?? io.env.GGJIRA_ROUTER_URL;
   if (!routerUrl) {
     let config: RouterConfig;
@@ -374,10 +444,22 @@ export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
         io,
       );
     case "serve":
-      return serve(parseCommandArgs(rest, { config: { type: "string" } }), io);
+      return serve(
+        parseCommandArgs(rest, {
+          config: { type: "string" },
+          secrets: { type: "string" },
+          host: { type: "string" },
+          port: { type: "string" },
+        }),
+        io,
+      );
     case "check":
       return check(
-        parseCommandArgs(rest, { config: { type: "string" }, issue: { type: "string" } }),
+        parseCommandArgs(rest, {
+          config: { type: "string" },
+          secrets: { type: "string" },
+          issue: { type: "string" },
+        }),
         io,
       );
     case "workers":

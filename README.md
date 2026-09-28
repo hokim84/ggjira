@@ -57,9 +57,13 @@ nvm use && npm install        # 워커 머신은 npm run build 후 `node dist/cl
 
 ## 2. Router 띄우기
 
+가장 쉬운 방법은 웹 셋업이다. 설정 없이 Router를 띄우면 `https://<도메인>/ui/`에 셋업 마법사가
+열리고, 컨테이너 로그에 일회용 setup token이 찍힌다(runbook §20). 수동으로 하려면:
+
 ```bash
-cp deploy/router.config.example.json deploy/router.config.json   # Jira URL, workspaces, 상태, workers
-cp deploy/router.env.example deploy/router.env                   # Jira token과 secret 2개 입력
+mkdir -p deploy/config && sudo chown 1000:1000 deploy/config
+cp deploy/router.config.example.json deploy/config/router.config.json   # Jira URL, workspaces, 상태, workers
+cp deploy/router.env.example deploy/config/router.env                   # Jira token과 secret 2개 입력
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"   # secret 생성
 export GGJIRA_DOMAIN=router.example.com
 docker compose up -d --build
@@ -68,8 +72,9 @@ docker compose exec router node dist/cli.js router check --issue PROJ-1   # 상�
 
 Jira 관리자 웹훅은 URL `https://router.example.com/webhooks/jira`로 만들고, secret은
 `GGJIRA_WEBHOOK_SECRET`와 같게 둔다. 필터는 프로젝트 기준이다(runbook §16). Docker 없이 띄우려면
-`ggjira router setup`이 loopback용 설정 파일과 새 secret을 만들어 주고, `ggjira router serve`로
-실행한다(개발용. 운영은 HTTPS 뒤에 둔다).
+`ggjira router serve`만 실행해 `http://127.0.0.1:8787/ui/`의 마법사를 쓰거나, `ggjira router setup`으로
+설정 템플릿과 새 secret을 만든다(개발용. 운영은 HTTPS 뒤에 둔다). 실행 중에는 같은 `/ui/`에서 워커
+상태, 페어링, 설정 편집, Jira 점검을 할 수 있다.
 
 ## 3. Worker 붙이기
 

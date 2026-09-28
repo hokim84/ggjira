@@ -34,6 +34,8 @@ export interface RouterDaemonDeps {
   webhookSecret: string;
   adminToken: string;
   siteId: string;
+  /** The config file `config` was loaded from; lets the web UI read and edit it. */
+  configPath?: string;
   logger?: Logger;
   now?: () => string;
   /** Epoch ms for scheduling decisions; injected by tests. */
@@ -103,6 +105,7 @@ export class RouterDaemon {
       config: deps.config,
       now: this.now,
       reconcileNow: () => this.reconcileNow(),
+      ...(deps.configPath ? { configPath: deps.configPath } : {}),
     });
     this.app = buildRouterServer({
       db: deps.db,

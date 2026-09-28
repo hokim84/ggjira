@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { main } from "../src/cli-main.js";
 import type { CliIo } from "../src/cli-io.js";
-import { RouterConfigSchema } from "../src/router/config.js";
+import { decideServeMode } from "../src/router/cli.js";
+import { RouterConfigError, RouterConfigSchema } from "../src/router/config.js";
+import { routerConfigTemplate } from "../src/router/config-store.js";
 import { loadWorkerConfig } from "../src/worker-runtime/config.js";
 import { loadWorkerCredential } from "../src/worker-runtime/credential.js";
 import { ADMIN_TOKEN, RouterHarness } from "./helpers/router-harness.js";
@@ -65,6 +67,35 @@ describe("ggjira CLI", () => {
     const again = captureIo();
     expect(await main(["router", "setup", "--config", configPath], again)).toBe(2);
     expect(again.stderr.join("\n")).toContain("already exists");
+  });
+
+  it("router serve picks setup mode for a missing config or secrets, router mode otherwise", () => {
+    const configPath = path.join(dir, "router.config.json");
+    const secretsPath = path.join(dir, "router.env");
+    expect(decideServeMode(configPath, secretsPath, {})).toMatchObject({ mode: "setup" });
+
+    writeFileSync(configPath, JSON.stringify(routerConfigTemplate()));
+    expect(decideServeMode(configPath, secretsPath, {})).toMatchObject({ mode: "setup" });
+
+    writeFileSync(
+      secretsPath,
+      [
+        "JIRA_EMAIL=bot@example.com",
+        "JIRA_API_TOKEN=t",
+        "GGJIRA_WEBHOOK_SECRET=webhook-secret-0123456789",
+        `GGJIRA_ADMIN_TOKEN=${ADMIN_TOKEN}`,
+      ].join("\n"),
+    );
+    const decided = decideServeMode(configPath, secretsPath, {});
+    expect(decided.mode).toBe("router");
+  });
+
+  it("router serve refuses a config file that exists but is invalid", () => {
+    const configPath = path.join(dir, "router.config.json");
+    writeFileSync(configPath, JSON.stringify({ configVersion: 4 }));
+    expect(() => decideServeMode(configPath, path.join(dir, "router.env"), {})).toThrow(
+      RouterConfigError,
+    );
   });
 
   it("router check fails fast on a config that is not v5", async () => {

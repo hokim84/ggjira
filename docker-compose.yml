@@ -1,7 +1,11 @@
 # Router + Caddy (HTTPS) — docs/runbook.md "Router 배포 (Docker Compose)".
 # Before `docker compose up -d`:
-#   1. cp deploy/router.config.example.json deploy/router.config.json   (edit it)
-#   2. cp deploy/router.env.example deploy/router.env                   (fill in secrets)
+#   1. mkdir -p deploy/config && sudo chown 1000:1000 deploy/config   (the container's `node` user
+#      writes config and secrets there)
+#   2. Either run the web setup wizard (start with an empty deploy/config, open https://$GGJIRA_DOMAIN/ui/,
+#      setup token is in `docker compose logs router`), or by hand:
+#        cp deploy/router.config.example.json deploy/config/router.config.json   (edit it)
+#        cp deploy/router.env.example deploy/config/router.env                   (fill in secrets)
 #   3. export GGJIRA_DOMAIN=router.example.com  (DNS must point here; Caddy obtains the certificate)
 services:
   router:
@@ -10,12 +14,14 @@ services:
       target: runtime
     image: ggjira-router:local
     restart: unless-stopped
-    env_file: deploy/router.env
     environment:
-      # Lets `docker compose exec router node dist/cli.js router status` find the admin address.
+      # Lets `docker compose exec router node dist/cli.js router status` find the admin address
+      # and token (config + secrets file live in /config, ADR 0023).
       GGJIRA_ROUTER_CONFIG: /config/router.config.json
+      GGJIRA_ROUTER_SECRETS: /config/router.env
     volumes:
-      - ./deploy/router.config.json:/config/router.config.json:ro
+      # A directory, read-write: the web UI saves config edits here (atomic rename + .bak).
+      - ./deploy/config:/config
       - router-data:/data
     expose:
       - "8787"

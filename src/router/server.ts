@@ -19,6 +19,7 @@ import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import { AdminError, type AdminService } from "./admin-service.js";
 import { RecoveryError } from "./recovery.js";
 import { ingestJiraWebhookEvent, verifyJiraWebhookSignature } from "./webhook.js";
+import { registerWebUi } from "./web-ui.js";
 import { WorkerApiError, type WorkerService } from "./worker-service.js";
 
 const SIGNATURE_HEADER = "x-hub-signature";
@@ -38,6 +39,8 @@ export interface RouterServerDeps {
   adminToken?: string;
   /** Enables the admin routes beyond pairing codes (workers, jobs, reports, sync, backup). */
   adminService?: AdminService;
+  /** Where the web UI's static files live; defaults to the repo's `web/router-ui/`. */
+  webUiRoot?: string;
 }
 
 interface ParsedBody {
@@ -49,13 +52,13 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function bearerToken(request: FastifyRequest): string | undefined {
+export function bearerToken(request: FastifyRequest): string | undefined {
   const header = headerValue(request.headers.authorization);
   const match = header?.match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim();
 }
 
-function tokensEqual(presented: string | undefined, expected: string): boolean {
+export function tokensEqual(presented: string | undefined, expected: string): boolean {
   if (!presented) return false;
   const a = Buffer.from(presented, "utf-8");
   const b = Buffer.from(expected, "utf-8");
@@ -103,7 +106,8 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
     }
   });
 
-  app.get("/health", async () => ({ status: "ok" }));
+  app.get("/health", async () => ({ status: "ok", mode: "router" }));
+  registerWebUi(app, deps.webUiRoot);
 
   app.post("/webhooks/jira", async (request, reply) => {
     const { raw, parsed } = request.body as ParsedBody;
@@ -128,7 +132,11 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AdminError) {
-      return sendError(reply, error.status, { error: error.code, message: error.message });
+      return sendError(reply, error.status, {
+        error: error.code,
+        message: error.message,
+        ...(error.issues ? { issues: error.issues } : {}),
+      });
     }
     if (error instanceof RecoveryError) {
       const status = error.code === "unknown_job" || error.code === "unknown_batch" ? 404 : 409;
@@ -300,6 +308,15 @@ function registerAdminRoutes(
       scope.post<IdParams>("/reports/:id/retry", async (request) =>
         admin.retryReportBatch(request.params.id, actorOf(request)),
       );
+
+      scope.get("/config", async () => admin.readConfig());
+      scope.put("/config", async (request) =>
+        admin.updateConfig((request.body as ParsedBody | undefined)?.parsed, actorOf(request)),
+      );
+      scope.post<{ Body: ParsedBody | undefined }>("/check", async (request) => {
+        const issueKey = (request.body?.parsed as { issueKey?: unknown } | undefined)?.issueKey;
+        return admin.check(typeof issueKey === "string" && issueKey ? issueKey : undefined);
+      });
 
       scope.post("/reconcile", async (request) => admin.reconcile(actorOf(request)));
       scope.post("/backup", async (request) => admin.backup(actorOf(request)));

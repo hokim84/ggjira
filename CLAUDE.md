@@ -26,6 +26,8 @@ Jira Assignee는 인간 책임자로만 남는다. PM(계획) 실행도 같은 �
 - `src/pm/` — 계획 스키마·메타데이터(`ggjira.plan*`)·렌더링·PM 프롬프트·결정 답변 파싱(순수 로직)
 - `src/issue/` — 이슈 설명의 GGJIRA 절 파싱, 요구 capability 읽기와 매칭(순수 로직)
 - `src/cli.ts`·`cli-main.ts`·`cli-io.ts` — 진입점과 명령 분기
+- `web/router-ui/` — Router가 `/ui/`로 서빙하는 빌드 없는 정적 웹 UI(계층 코드 아님, ADR 0023).
+  `/api/v1/admin/*`·`/api/v1/setup/*`만 호출한다
 
 Router만 Jira에 쓴다. 워커는 Router가 준 envelope만 실행하고 결과를 돌려준다(ADR 0018).
 v2~v4의 poller·claim·Agent Profile 경로는 5단계에서 삭제했다(ADR 0022). 되살리지 않는다.

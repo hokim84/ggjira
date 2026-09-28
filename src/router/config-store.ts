@@ -1,0 +1,117 @@
+import { randomBytes } from "node:crypto";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import path from "node:path";
+import { type RouterConfig, RouterConfigError, RouterConfigSchema } from "./config.js";
+import { type RouterEnvSecrets, SECRET_ENV_KEYS } from "./secrets.js";
+
+/**
+ * Reading and writing the Router's config and secrets files for `router setup` and the web UI
+ * (ADR 0023). A running Router never reloads what is written here; the new config takes effect on
+ * the next start.
+ */
+
+export interface ConfigIssue {
+  path: string;
+  message: string;
+}
+
+export type ConfigValidation =
+  | { ok: true; config: RouterConfig }
+  | { ok: false; issues: ConfigIssue[] };
+
+export function validateRouterConfig(raw: unknown): ConfigValidation {
+  const result = RouterConfigSchema.safeParse(raw);
+  if (result.success) return { ok: true, config: result.data };
+  return {
+    ok: false,
+    issues: result.error.issues.map((issue) => ({
+      path: issue.path.join("."),
+      message: issue.message,
+    })),
+  };
+}
+
+/** The file's JSON as written (defaults not filled in), for editing. */
+export function readRawRouterConfig(configPath: string): unknown {
+  let text: string;
+  try {
+    text = readFileSync(configPath, "utf-8");
+  } catch (error) {
+    throw new RouterConfigError(`Failed to read router config file at ${configPath}`, error);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new RouterConfigError(`Router config file at ${configPath} is not valid JSON`, error);
+  }
+}
+
+function writeAtomic(target: string, content: string, mode?: number): void {
+  mkdirSync(path.dirname(path.resolve(target)), { recursive: true });
+  const tmp = `${target}.${process.pid}.tmp`;
+  writeFileSync(tmp, content, { encoding: "utf-8", ...(mode !== undefined ? { mode } : {}) });
+  renameSync(tmp, target);
+}
+
+/** Writes the config the caller already validated, keeping the previous file as `<path>.bak`. */
+export function writeRouterConfig(configPath: string, raw: unknown): void {
+  if (existsSync(configPath)) copyFileSync(configPath, `${configPath}.bak`);
+  writeAtomic(configPath, `${JSON.stringify(raw, null, 2)}\n`);
+}
+
+/** Owner-only `KEY=VALUE` file in the same format as docker's `env_file`. */
+export function writeRouterSecretsFile(secretsPath: string, secrets: RouterEnvSecrets): void {
+  const lines = [
+    "# GGJIRA Router secrets — keep this file private (mode 0600). Environment variables win.",
+    ...(Object.keys(SECRET_ENV_KEYS) as Array<keyof RouterEnvSecrets>).map(
+      (key) => `${SECRET_ENV_KEYS[key]}=${secrets[key]}`,
+    ),
+  ];
+  writeAtomic(secretsPath, `${lines.join("\n")}\n`, 0o600);
+}
+
+/** Default secrets file: `router.env` next to the config file. */
+export function defaultSecretsPath(configPath: string): string {
+  return path.join(path.dirname(configPath), "router.env");
+}
+
+export function randomSecret(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+export function routerConfigTemplate(): Record<string, unknown> {
+  return {
+    configVersion: 5,
+    jira: { baseUrl: "https://your-site.atlassian.net" },
+    repositories: [{ id: "main-repo", displayName: "Main repository" }],
+    workspaces: [
+      {
+        id: "default",
+        repositoryId: "main-repo",
+        projectKeys: ["PROJ"],
+        workflow: {
+          requestStatus: "AI 작업 요청",
+          inProgressStatus: "작업 중",
+          reviewStatus: "AI 작업 완료",
+        },
+      },
+    ],
+    workers: [
+      {
+        workerId: "worker-1",
+        allowedCapabilities: ["programming", "testing"],
+        allowedRepositoryIds: ["main-repo"],
+        providerId: "default",
+      },
+    ],
+    db: { path: "data/router.sqlite3" },
+    http: { host: "127.0.0.1", port: 8787 },
+  };
+}
