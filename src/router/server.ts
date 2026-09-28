@@ -22,6 +22,13 @@ import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import { AdminError, type AdminService } from "./admin-service.js";
 import { RecoveryError } from "./recovery.js";
 import { ingestJiraWebhookEvent, verifyJiraWebhookSignature } from "./webhook.js";
+import {
+  type PullRequestClosed,
+  type PullRequestOutcome,
+  parsePullRequestClosed,
+  verifyGithubSignature,
+} from "./github.js";
+import { recordGithubDelivery } from "./db/pull-requests.js";
 import { registerWebUi } from "./web-ui.js";
 import { WorkerApiError, type WorkerService } from "./worker-service.js";
 
@@ -44,6 +51,11 @@ export interface RouterServerDeps {
   adminService?: AdminService;
   /** Where the web UI's static files live; defaults to the repo's `web/router-ui/`. */
   webUiRoot?: string;
+  /** Enables `/webhooks/github` (ADR 0027). */
+  github?: {
+    webhookSecret: string;
+    onPullRequestClosed: (event: PullRequestClosed) => PullRequestOutcome;
+  };
 }
 
 interface ParsedBody {
@@ -132,6 +144,27 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
     });
     return reply.code(202).send({ status: result });
   });
+
+  const github = deps.github;
+  if (github) {
+    app.post("/webhooks/github", async (request, reply) => {
+      const { raw, parsed } = request.body as ParsedBody;
+      const signature = headerValue(request.headers["x-hub-signature-256"]);
+      if (!verifyGithubSignature(raw, signature, github.webhookSecret)) {
+        return reply.code(401).send({ error: "invalid signature" });
+      }
+      const event = headerValue(request.headers["x-github-event"]) ?? "";
+      if (event === "ping") return reply.code(200).send({ status: "pong" });
+      const deliveryId = headerValue(request.headers["x-github-delivery"]);
+      if (!deliveryId) return reply.code(400).send({ error: "missing x-github-delivery header" });
+      if (!recordGithubDelivery(deps.db, { id: deliveryId, event, now: now() })) {
+        return reply.code(202).send({ status: "duplicate" });
+      }
+      const closed = parsePullRequestClosed(event, parsed);
+      if (!closed) return reply.code(202).send({ status: "ignored" });
+      return reply.code(202).send({ status: github.onPullRequestClosed(closed) });
+    });
+  }
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof AdminError) {
@@ -340,6 +373,7 @@ function registerAdminRoutes(
           ...(body.workflow.needsDecisionStatus
             ? { needsDecisionStatus: body.workflow.needsDecisionStatus }
             : {}),
+          ...(body.workflow.doneStatus ? { doneStatus: body.workflow.doneStatus } : {}),
         });
       });
       scope.post<{ Body: ParsedBody | undefined }>("/check", async (request) => {

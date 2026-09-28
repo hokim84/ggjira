@@ -144,6 +144,58 @@ export function buildStartSteps(job: JobRow, workspace: WorkspaceConfig): NewRep
   ]);
 }
 
+/** Batch id of the journal for one pull request closing (merge or close), one per PR. */
+export function pullRequestBatchId(repo: string, number: number): string {
+  return `github:${repo.toLowerCase()}#${number}`;
+}
+
+/**
+ * A worker-opened pull request was merged or closed (ADR 0027). A merge moves the issue from
+ * `reviewStatus` to `doneStatus` — only out of review, so a human who already moved it wins, and
+ * only while the approval the job ran under still stands. A close without merge is only reported.
+ */
+export function buildPullRequestClosedSteps(input: {
+  job: JobRow;
+  workspace: WorkspaceConfig;
+  url: string;
+  number: number;
+  merged: boolean;
+  by: string | null;
+}): NewReportStep[] {
+  const { job, workspace } = input;
+  const done = workspace.workflow.doneStatus;
+  const by = input.by ? ` by ${input.by}` : "";
+  const body = input.merged
+    ? [
+        `Pull request #${input.number} was merged${by}.`,
+        input.url,
+        ...(done ? ["", `Moving the issue to "${done}".`] : []),
+      ]
+    : [
+        `Pull request #${input.number} was closed without merging${by}.`,
+        input.url,
+        "",
+        "The issue stays where it is. To redo the work, move it back to its request status.",
+      ];
+  const approvalStatus = approvalStatusFor(job.kind, workspace);
+  return toNewSteps([
+    { kind: "comment", params: { body: [...body, "", `ggjira job: ${job.id}`].join("\n") } },
+    ...(input.merged && done
+      ? [
+          {
+            kind: "transition" as const,
+            params: {
+              to: done,
+              from: [workspace.workflow.reviewStatus],
+              approvalStatus,
+              approvalId: job.approvalId,
+            },
+          },
+        ]
+      : []),
+  ]);
+}
+
 export function recoveredBatchId(attemptId: string): string {
   return `recovered:${attemptId}`;
 }

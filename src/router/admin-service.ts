@@ -120,6 +120,8 @@ export interface AdminConfigView {
   pendingApply: boolean;
   /** Set when the file on disk is unreadable or invalid. */
   problem: string | null;
+  /** Which GitHub secrets the running Router has (ADR 0027); values are never returned. */
+  github: { webhook: boolean; token: boolean };
 }
 
 export interface BackupResult {
@@ -142,6 +144,8 @@ export interface AdminServiceDeps {
   /** Applies a validated config to the running Router (daemon: serialized with sync/verify, all
    *  services swapped). Without it only this service's own view changes. */
   applyConfig?: (config: RouterConfig) => Promise<void>;
+  /** Whether the GitHub webhook secret / poll token are set, for the settings screen. */
+  github?: { webhook: boolean; token: boolean };
 }
 
 export interface AdminAddWorkerResult {
@@ -420,6 +424,7 @@ export class AdminService {
         restartFields: [],
         pendingApply: false,
         problem: (error as RouterConfigError).message,
+        github: this.githubInfo(),
       };
     }
     const validation = validateRouterConfig(file);
@@ -431,6 +436,7 @@ export class AdminService {
         restartFields: [],
         pendingApply: false,
         problem: validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "),
+        github: this.githubInfo(),
       };
     }
     const restartFields = restartOnlyChanges(this.startedWith, validation.config);
@@ -441,6 +447,7 @@ export class AdminService {
       restartFields,
       pendingApply: canonicalJson(validation.config) !== canonicalJson(this.config),
       problem: null,
+      github: this.githubInfo(),
     };
   }
 
@@ -611,6 +618,10 @@ export class AdminService {
   }
 
   // --- helpers -------------------------------------------------------------------------
+
+  private githubInfo(): { webhook: boolean; token: boolean } {
+    return this.deps.github ?? { webhook: false, token: false };
+  }
 
   private requireConfigPath(): string {
     if (!this.deps.configPath) {

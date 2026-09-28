@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import {
   ADMIN_OPERATIONS_STATEMENTS,
+  GITHUB_STATEMENTS,
   REPORT_JOURNAL_STATEMENTS,
   SCHEMA_STATEMENTS,
   WORKER_PROTOCOL_STATEMENTS,
@@ -46,6 +47,13 @@ const MIGRATIONS: readonly Migration[] = [
     description: "admin operations: admin_holds (an admin-cancelled approval is not re-dispatched)",
     up(db) {
       for (const statement of ADMIN_OPERATIONS_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 5,
+    description: "GitHub pull requests: pull_requests, github_deliveries (ADR 0027)",
+    up(db) {
+      for (const statement of GITHUB_STATEMENTS) db.exec(statement);
     },
   },
 ];

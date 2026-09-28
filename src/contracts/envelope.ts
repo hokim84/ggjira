@@ -86,6 +86,14 @@ export const JobResultSchema = z.object({
   status: ExecutionStatusSchema,
   summary: z.string().min(1),
   branch: z.string().optional(),
+  /** The pull request the worker opened for `branch` (ADR 0027); Router closes the loop on merge. */
+  pullRequest: z
+    .object({
+      repo: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+      number: z.number().int().positive(),
+      url: z.string().url(),
+    })
+    .optional(),
   changes: z.array(z.string()).optional(),
   validation: z.array(z.string()).optional(),
   artifacts: z.array(z.string()).optional(),

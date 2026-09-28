@@ -17,6 +17,15 @@ const WorkerRepositorySchema = z.object({
   validateCommand: z.string().min(1).nullable().default(null),
   /** Where `worker start` clones `path` from when it does not exist yet (from Router's profile). */
   cloneUrl: CloneUrlSchema.optional(),
+  /** Git remote a finished job branch is pushed to, so people review it there (ADR 0026).
+   *  Unset: the branch stays in this worker's local clone only. */
+  pushRemote: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "pushRemote must be a git remote name like origin")
+    .optional(),
+  /** After pushing to a GitHub remote, open a pull request with the worker's `gh` login
+   *  (ADR 0027). Router then moves the issue to its done status when the PR is merged. */
+  createPullRequest: z.boolean().default(false),
 });
 export type WorkerRepositoryConfig = z.infer<typeof WorkerRepositorySchema>;
 

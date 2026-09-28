@@ -141,9 +141,9 @@ export type JobHeartbeatResponse = z.infer<typeof JobHeartbeatResponseSchema>;
 
 export const JobAuthorizeRequestSchema = z.object({
   ...AttemptLeaseFields,
-  /** What the worker is about to do — Router re-checks approval right before either
-   *  (§3 "커밋·검증 직전 실행 권한 재확인"). */
-  stage: z.enum(["commit", "validate"]),
+  /** What the worker is about to do — Router re-checks approval right before each
+   *  (§3 "커밋·검증 직전 실행 권한 재확인"; `push` since ADR 0026). */
+  stage: z.enum(["commit", "validate", "push"]),
 });
 export type JobAuthorizeRequest = z.infer<typeof JobAuthorizeRequestSchema>;
 
@@ -202,6 +202,7 @@ export const AdminWorkflowCheckRequestSchema = z.object({
     reviewStatus: z.string().min(1),
     planningStatus: z.string().min(1).optional(),
     needsDecisionStatus: z.string().min(1).optional(),
+    doneStatus: z.string().min(1).optional(),
   }),
 });
 

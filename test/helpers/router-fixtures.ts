@@ -46,6 +46,7 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
     execution: { timeoutMs: 60_000 },
     planning: { subtaskIssueType: "Sub-task", maxTasksPerPlan: 10 },
     reporting: { failureLabel: "ggjira-failed" },
+    github: { pollIntervalMs: 300_000 },
     ...overrides,
   };
 }

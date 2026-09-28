@@ -1,7 +1,7 @@
 // Config editor and Jira check views (router mode).
 
 import { admin } from "./api.js";
-import { clear, fill, errorNotice, field, h, notice, showFieldErrors } from "./dom.js";
+import { clear, copyButton, errorNotice, field, fill, h, notice, showFieldErrors } from "./dom.js";
 
 const FORM_KEYS = new Set([
   "configVersion",
@@ -21,6 +21,12 @@ const STATUS_FIELDS = [
     "needsDecisionStatus",
     "결정 필요 상태",
     "계획이 사람의 결정을 요청할 때. 비우면 검토 상태",
+    true,
+  ],
+  [
+    "doneStatus",
+    "완료 상태",
+    "워커가 연 GitHub PR이 머지되면 검토 상태에서 옮김. 비우면 댓글만",
     true,
   ],
 ];
@@ -84,6 +90,52 @@ function listEditor(state, key, render, blank, addLabel) {
   draw();
   wrap.redraw = draw;
   return wrap;
+}
+
+function githubSection(github) {
+  const webhookUrl = `${location.origin}/webhooks/github`;
+  return h(
+    "div",
+    { class: "github-setup" },
+    h(
+      "div",
+      { class: "secret-row" },
+      h("span", { class: "secret-label" }, "웹훅 URL"),
+      h("code", { class: "secret-value" }, webhookUrl),
+      copyButton(webhookUrl),
+    ),
+    h(
+      "p",
+      {},
+      h(
+        "span",
+        { class: `badge ${github.webhook ? "badge-ok" : "badge-warn"}` },
+        github.webhook ? "웹훅 켜짐" : "웹훅 꺼짐",
+      ),
+      " ",
+      github.webhook
+        ? "GitHub 저장소 Settings > Webhooks에 위 URL, Content type application/json, Secret(router.env의 GGJIRA_GITHUB_WEBHOOK_SECRET), 이벤트 Pull requests로 등록하세요."
+        : "router.env에 GGJIRA_GITHUB_WEBHOOK_SECRET(16자 이상)을 넣고 Router를 재시작하면 켜집니다. 꺼져 있어도 폴링으로 동작합니다.",
+    ),
+    h(
+      "p",
+      {},
+      h(
+        "span",
+        { class: `badge ${github.token ? "badge-ok" : "badge-muted"}` },
+        github.token ? "토큰 있음" : "토큰 없음",
+      ),
+      " ",
+      github.token
+        ? "열린 PR을 GitHub API로 주기적으로 확인합니다(고급 JSON의 github.pollIntervalMs, 기본 5분)."
+        : "토큰 없이도 공개 저장소는 확인합니다. 비공개 저장소면 router.env에 GITHUB_TOKEN(읽기 권한)을 넣으세요.",
+    ),
+    h(
+      "small",
+      { class: "hint" },
+      "로컬(127.0.0.1)에서는 GitHub이 Router에 닿지 않으므로 폴링이나 gh webhook forward를 씁니다(runbook §21).",
+    ),
+  );
 }
 
 function cleanPlanning(planning = {}) {
@@ -357,10 +409,15 @@ export async function renderConfig(root, ctx) {
       workspaces,
     ),
     section("계획(PM)", "계획 요청 상태를 쓸 때만 필요합니다.", planningFields),
+    section(
+      "GitHub PR 머지 → 완료",
+      "워커가 연 PR이 머지되면 이슈를 검토 상태에서 '완료 상태'로 옮깁니다. 웹훅으로 바로 알고, 놓친 것은 주기적으로 GitHub에 확인합니다.",
+      githubSection(view.github ?? { webhook: false, token: false }),
+    ),
     section("워커 정책", "워커별로 허용하는 capability와 저장소입니다.", workers),
     section(
       "고급 (JSON)",
-      "db, http, reconciliation, execution, reporting, executionAgent",
+      "db, http, reconciliation, execution, reporting, executionAgent, github",
       h(
         "div",
         { class: "field", "data-path": "advanced" },

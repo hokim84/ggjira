@@ -15,6 +15,12 @@ import {
   type SchedulerReport,
   verifyActiveJobs,
 } from "./scheduler.js";
+import {
+  type FetchLike,
+  handlePullRequestClosed,
+  type PullRequestPollReport,
+  pollPullRequests,
+} from "./github.js";
 import { buildRouterServer } from "./server.js";
 import { WorkerService } from "./worker-service.js";
 
@@ -44,6 +50,9 @@ export interface RouterDaemonDeps {
   intervals?: Partial<{ eventPollMs: number; reportMs: number; leaseSweepMs: number }>;
   /** `jobs/next` long-poll length; defaults to the protocol's 25s. */
   longPollMs?: number;
+  /** GitHub integration (ADR 0027): webhook secret enables `/webhooks/github`; the token (optional)
+   *  authenticates the pull-request poll. */
+  github?: { webhookSecret?: string | undefined; token?: string | undefined; fetch?: FetchLike };
 }
 
 interface Loop {
@@ -109,6 +118,7 @@ export class RouterDaemon {
       now: this.now,
       reconcileNow: () => this.reconcileNow(),
       applyConfig: (config) => this.applyConfig(config),
+      github: { webhook: Boolean(deps.github?.webhookSecret), token: Boolean(deps.github?.token) },
       ...(deps.configPath ? { configPath: deps.configPath } : {}),
     });
     this.app = buildRouterServer({
@@ -119,6 +129,15 @@ export class RouterDaemon {
       workerService: this.workerService,
       adminToken: deps.adminToken,
       adminService: this.adminService,
+      ...(deps.github?.webhookSecret
+        ? {
+            github: {
+              webhookSecret: deps.github.webhookSecret,
+              onPullRequestClosed: (event) =>
+                handlePullRequestClosed(deps.db, this.config, event, this.now()),
+            },
+          }
+        : {}),
     });
   }
 
@@ -144,6 +163,13 @@ export class RouterDaemon {
       () => intervals.reportMs ?? REPORT_INTERVAL_MS,
       async () => {
         await this.reportTick();
+      },
+    );
+    this.startLoop(
+      "github",
+      () => this.config.github.pollIntervalMs,
+      async () => {
+        await this.githubTick();
       },
     );
     this.startLoop(
@@ -255,6 +281,24 @@ export class RouterDaemon {
           deferred: report.deferred.length,
         },
         "report journal pass",
+      );
+    }
+    return report;
+  }
+
+  /** Re-checks open GGJIRA pull requests on GitHub (the webhook fallback, ADR 0027). */
+  async githubTick(): Promise<PullRequestPollReport> {
+    const report = await pollPullRequests({
+      db: this.deps.db,
+      config: this.config,
+      token: this.deps.github?.token,
+      ...(this.deps.github?.fetch ? { fetch: this.deps.github.fetch } : {}),
+      now: this.now,
+    });
+    if (report.closed.length || report.errors.length) {
+      this.deps.logger?.info(
+        { layer: "router", closed: report.closed, errors: report.errors },
+        "pull request poll",
       );
     }
     return report;

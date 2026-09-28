@@ -31,6 +31,7 @@ function configuredStatuses(workspace: WorkspaceConfig): Array<[label: string, s
     ...(workflow.needsDecisionStatus
       ? [["needsDecisionStatus", workflow.needsDecisionStatus] as [string, string]]
       : []),
+    ...(workflow.doneStatus ? [["doneStatus", workflow.doneStatus] as [string, string]] : []),
   ];
 }
 

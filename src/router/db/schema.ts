@@ -258,3 +258,30 @@ export const ADMIN_OPERATIONS_STATEMENTS: readonly string[] = [
     PRIMARY KEY (issue_key, approval_id)
   )`,
 ];
+
+/**
+ * Migration 5 (ADR 0027). `pull_requests` links a worker-opened GitHub pull request to the job
+ * and issue it came from, so a merge (webhook or poll) can move the issue to its done status.
+ * `github_deliveries` de-duplicates webhook deliveries by `X-GitHub-Delivery`.
+ */
+export const GITHUB_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS pull_requests (
+    repo TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs (id),
+    attempt_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('open', 'merged', 'closed')),
+    closed_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (repo, number)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_pull_requests_state ON pull_requests (state)",
+  `CREATE TABLE IF NOT EXISTS github_deliveries (
+    id TEXT PRIMARY KEY,
+    event TEXT NOT NULL,
+    received_at TEXT NOT NULL
+  )`,
+];

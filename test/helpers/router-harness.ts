@@ -10,6 +10,7 @@ import type { RouterConfig } from "../../src/router/config.js";
 import { openRouterDb } from "../../src/router/db/connection.js";
 import { RuleDecisionProvider } from "../../src/router/decision.js";
 import { reconcileCandidates } from "../../src/router/scheduler.js";
+import { handlePullRequestClosed } from "../../src/router/github.js";
 import { buildRouterServer } from "../../src/router/server.js";
 import { WorkerService, type WorkerServiceDeps } from "../../src/router/worker-service.js";
 import {
@@ -45,6 +46,7 @@ export class RouterHarness {
   app: FastifyInstance;
   private readonly serviceOverrides: Partial<WorkerServiceDeps>;
   private readonly configPath: string | undefined;
+  private readonly githubWebhookSecret: string | undefined;
 
   constructor(
     opts: {
@@ -52,6 +54,8 @@ export class RouterHarness {
       service?: Partial<WorkerServiceDeps>;
       /** Config file the admin service reads/writes for `/admin/config` and `/admin/check`. */
       configPath?: string;
+      /** Enables `/webhooks/github` with this secret. */
+      githubWebhookSecret?: string;
     } = {},
   ) {
     this.dataDir = mkdtempSync(path.join(tmpdir(), "ggjira-router-harness-"));
@@ -63,6 +67,7 @@ export class RouterHarness {
     });
     this.serviceOverrides = opts.service ?? {};
     this.configPath = opts.configPath;
+    this.githubWebhookSecret = opts.githubWebhookSecret;
     this.service = this.buildService();
     this.admin = this.buildAdmin();
     this.app = this.buildApp();
@@ -103,6 +108,15 @@ export class RouterHarness {
       workerService: this.service,
       adminToken: ADMIN_TOKEN,
       adminService: this.admin,
+      ...(this.githubWebhookSecret
+        ? {
+            github: {
+              webhookSecret: this.githubWebhookSecret,
+              onPullRequestClosed: (event) =>
+                handlePullRequestClosed(this.db, this.config, event, this.clock.now()),
+            },
+          }
+        : {}),
     });
   }
 

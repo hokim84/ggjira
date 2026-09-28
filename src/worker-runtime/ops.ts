@@ -162,6 +162,9 @@ export function workerConfigFromProfile(input: {
       baseBranch: repo.baseBranch ?? "main",
       validateCommand: null,
       ...(repo.cloneUrl ? { cloneUrl: repo.cloneUrl } : {}),
+      // Results reach people through the remote: the worker's clone is its own (ADR 0026).
+      pushRemote: "origin",
+      createPullRequest: true,
     })),
     capabilities: input.profile.capabilities,
     backends: ["filesystem", "git", "coding-runtime"],

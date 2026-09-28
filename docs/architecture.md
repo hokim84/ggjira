@@ -113,7 +113,10 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 `workers/register` 응답에는 워커 프로필(허용 capabilities, providerId, 저장소 id·`cloneUrl`·`baseBranch`)이
 함께 온다. `worker start`(`src/worker-runtime/start.ts`)는 처음 실행될 때 터미널에서 Router 주소, LLM CLI,
 페어링 코드, 저장소 폴더를 차례로 묻고 이 프로필로 워커 설정을 쓴다. `cloneUrl`이 있는 저장소는
-`<dataDir>/repos/<id>`에 clone하고 바로 실행한다. Router는 URL만 주고, 로컬 경로와 검증 명령은 워커가 정한다.
+`<dataDir>/repos/<id>`에 clone하고 바로 실행한다. Router는 URL만 주고, 로컬 경로와 검증 명령은 워커가 정한다. 성공한 작업 브랜치는 워커 설정의 `pushRemote`(기본 `origin`)에 push하고,
+push 직전에 `authorize`(stage `push`)로 권한을 다시 확인한다(ADR 0026). GitHub 원격이고 `createPullRequest`면 워커가
+`gh`로 PR을 열어 결과에 담는다. Router는 이를 `pull_requests`에 기록하고, `/webhooks/github`(HMAC 검증) 또는
+5분 폴링으로 머지를 알게 되면 이슈를 검토 상태에서 `doneStatus`로 옮긴다(ADR 0027, `src/router/github.ts`).
 
 ## 웹 UI와 셋업 모드 (ADR 0023)
 

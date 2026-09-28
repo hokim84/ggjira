@@ -44,6 +44,9 @@ export function routerWorkflowHops(workflow: WorkflowStatus): WorkflowHop[] {
       to: workflow.needsDecisionStatus,
     });
   }
+  if (workflow.doneStatus) {
+    hops.push({ label: "PR 머지 후 완료", from: workflow.reviewStatus, to: workflow.doneStatus });
+  }
   return hops;
 }
 

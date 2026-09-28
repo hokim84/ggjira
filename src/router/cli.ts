@@ -22,6 +22,7 @@ import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
 import type { JobPage, JobRow } from "./db/jobs.js";
 import {
+  loadRouterGithubSecrets,
   loadRouterSecrets,
   parseEnvFile,
   type RouterEnvSecrets,
@@ -181,6 +182,7 @@ async function serve(parsed: ParsedArgs, io: CliIo): Promise<number> {
       ...(config.executionAgent ? { executionAgentFieldId: config.executionAgent.fieldId } : {}),
     },
   );
+  const github = loadRouterGithubSecrets(io.env, secretsPath(parsed, io));
   const daemon = new RouterDaemon({
     db,
     jira,
@@ -190,6 +192,7 @@ async function serve(parsed: ParsedArgs, io: CliIo): Promise<number> {
     siteId: new URL(config.jira.baseUrl).host,
     configPath: configFile,
     logger,
+    github: { webhookSecret: github.webhookSecret, token: github.token },
   });
 
   const host = stringOption(parsed, "host") ?? config.http.host;

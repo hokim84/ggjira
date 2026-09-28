@@ -27,8 +27,18 @@ const WorkflowStatusSchema = z
     reviewStatus: nfcString,
     planningStatus: nfcString.optional(),
     needsDecisionStatus: nfcString.optional(),
+    /** Where Router moves an issue from `reviewStatus` once the worker's GitHub pull request is
+     *  merged (ADR 0027). Unset: a merge is only commented on. */
+    doneStatus: nfcString.optional(),
   })
   .superRefine((workflow, ctx) => {
+    if (workflow.doneStatus && workflow.doneStatus === workflow.reviewStatus) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["doneStatus"],
+        message: "workflow.doneStatus must differ from workflow.reviewStatus",
+      });
+    }
     if (workflow.planningStatus === workflow.requestStatus) {
       ctx.addIssue({
         code: "custom",
@@ -128,6 +138,16 @@ const PlanningConfigSchema = z.object({
   maxTasksPerPlan: z.number().int().positive().default(10),
 });
 
+const GithubConfigSchema = z.object({
+  /** How often open GGJIRA pull requests are re-checked on GitHub, in case a webhook was missed
+   *  or none is configured (ADR 0027). */
+  pollIntervalMs: z
+    .number()
+    .int()
+    .positive()
+    .default(5 * 60 * 1000),
+});
+
 const ReportingConfigSchema = z.object({
   /** Added to an issue whose execution failed or timed out; the issue itself stays in
    *  `inProgressStatus` until a human re-approves it (ADR 0021). */
@@ -148,6 +168,7 @@ export const RouterConfigSchema = z
     execution: ExecutionConfigSchema.default({}),
     planning: PlanningConfigSchema.default({}),
     reporting: ReportingConfigSchema.default({}),
+    github: GithubConfigSchema.default({}),
   })
   .superRefine((config, ctx) => {
     const repositoryIds = new Set(config.repositories.map((repo) => repo.id));

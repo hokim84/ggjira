@@ -38,6 +38,7 @@ import {
 import { getJob, type JobRow, transitionJobState } from "./db/jobs.js";
 import { consumePairingCode, createPairingCode, PairingCodeRejectedError } from "./db/pairing.js";
 import { appendAudit } from "./db/audit.js";
+import { recordPullRequest } from "./db/pull-requests.js";
 import { insertReportBatch } from "./db/report-steps.js";
 import { recordResult, ResultConflictError } from "./db/results.js";
 import {
@@ -547,6 +548,15 @@ export class WorkerService {
     const snapshot = getApproval(this.db, job.issueKey)?.inputSnapshot as
       | ApprovalSnapshot
       | undefined;
+    if (result.pullRequest && finalState === "succeeded") {
+      recordPullRequest(this.db, {
+        ...result.pullRequest,
+        issueKey: job.issueKey,
+        jobId: job.id,
+        attemptId: attempt.id,
+        now,
+      });
+    }
     insertReportBatch(this.db, {
       batchId: result.resultId,
       resultId: result.resultId,

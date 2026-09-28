@@ -165,6 +165,11 @@ npm run dev -- worker start      # 이후: 바로 실행
   저장소는 건너뛴다.
 - **`로컬 폴더(…)가 없습니다`**: 터미널에서 `worker start`를 다시 실행하면 폴더를 묻고 설정에 저장한다.
   또는 Router 설정 > 저장소에 `cloneUrl`을 넣는다.
+- **작업 결과 보기**: 워커는 작업마다 `ggjira/<이슈>-<번호>` 브랜치에 커밋하고, 저장소에 `pushRemote`
+  (기본 `origin`)가 있으면 그 원격에 push한다(ADR 0026). Jira 완료 댓글의 `pushed:`와 `pull request:` 줄을
+  보고 원격에서 검토하고 합친다. `push failed`면 워커 머신의 git 권한(SSH 키, `gh auth login`, credential
+  helper)을 확인한 뒤, 댓글에 적힌 `git push` 명령을 워커 clone 폴더에서 실행한다. push를 끄려면 워커 설정에서
+  `pushRemote`를 지운다.
 - 워커 설정은 페어링 시점의 Router 정책으로 만들어진다. 나중에 capabilities나 저장소를 넓히면 워커의
   `worker.config.json`도 고친다.
 
@@ -188,6 +193,22 @@ ggjira worker run --config worker.config.json            # Ctrl+C 1회: 현재 �
 - **워커 교체·폐기**: `router workers revoke <id>`는 token을 바로 무효화한다. 실행 중이던 job은 임대
   만료 후 `recovery_required`가 된다(§14). 같은 id로 다시 쓰려면 `workers pair`와
   `worker setup --force`를 한다.
+
+## 19. v4에서 전환
+
+계획 §5 "운영 전환" 순서를 따른다. v4 설정(`ggjira.config.json`)과 `data/` 실행 기록은 지우지 않지만
+v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 안내하고 종료한다.
+
+1. 기존 에이전트(`ggjira run`)를 모두 멈추고, 진행 중이던 작업이 끝났는지 Jira와 `data/runs/`에서
+   확인한다.
+2. Router 설정을 새로 만든다. 상태 이름은 v4 설정의 `workflow`에서 옮긴다(`implementationStatus`는
+   `requestStatus`가 된다). 실행-Agent 필드를 쓰면 `executionAgent.optionWorkerMap`에 옵션 id별
+   workerId를 적는다.
+3. `router check --issue <테스트 이슈>`로 상태·전이를 확인한다.
+4. §16대로 Router를 올리고 웹훅을 연결한다.
+5. 워커를 §18대로 pairing한 뒤 `router reconcile`을 실행한다.
+6. 테스트 이슈 하나로 요청 → 작업 중 → 완료 상태를 확인한다.
+7. 기존 에이전트의 자동 시작(작업 스케줄러 등)을 해제한다.
 
 ## 20. 웹 UI와 셋업 모드 (ADR 0023, 0024)
 
@@ -218,18 +239,29 @@ ggjira worker run --config worker.config.json            # Ctrl+C 1회: 현재 �
   바꿨다면 실행 중인 연결로 점검했다는 경고가 붙는다. 이 경우는 재시작한 뒤 다시 점검한다.
 - 셋업 모드와 웹 UI 모두 HTTP만 서빙한다. 원격에서는 반드시 Caddy HTTPS 뒤에서 연다.
 
-## 19. v4에서 전환
+## 21. GitHub PR 머지 → Jira 완료 (ADR 0027)
 
-계획 §5 "운영 전환" 순서를 따른다. v4 설정(`ggjira.config.json`)과 `data/` 실행 기록은 지우지 않지만
-v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 안내하고 종료한다.
+흐름: 워커가 브랜치를 push하고 PR을 연다 → 이슈는 검토 상태 → 사람이 GitHub에서 머지 → Router가 이슈를
+`완료`(workspace `doneStatus`)로 옮기고 댓글을 단다.
 
-1. 기존 에이전트(`ggjira run`)를 모두 멈추고, 진행 중이던 작업이 끝났는지 Jira와 `data/runs/`에서
-   확인한다.
-2. Router 설정을 새로 만든다. 상태 이름은 v4 설정의 `workflow`에서 옮긴다(`implementationStatus`는
-   `requestStatus`가 된다). 실행-Agent 필드를 쓰면 `executionAgent.optionWorkerMap`에 옵션 id별
-   workerId를 적는다.
-3. `router check --issue <테스트 이슈>`로 상태·전이를 확인한다.
-4. §16대로 Router를 올리고 웹훅을 연결한다.
-5. 워커를 §18대로 pairing한 뒤 `router reconcile`을 실행한다.
-6. 테스트 이슈 하나로 요청 → 작업 중 → 완료 상태를 확인한다.
-7. 기존 에이전트의 자동 시작(작업 스케줄러 등)을 해제한다.
+설정:
+1. 설정 > Workspace > 상태 흐름에서 **완료 상태**를 고르고, "PR 머지 후 완료" 전이가 "연결됨"인지 본다.
+2. 워커 설정의 저장소에 `"pushRemote": "origin"`, `"createPullRequest": true`를 둔다. `worker start`로 만든
+   설정은 기본값이 이렇다. 워커 머신에서 `gh auth login`을 해 둔다.
+3. 머지 알림은 둘 중 하나 또는 둘 다 쓴다.
+   - **폴링(설정 불필요)**: Router가 5분마다(`github.pollIntervalMs`) 열린 PR을 GitHub에 묻는다. 비공개
+     저장소면 `router.env`에 `GITHUB_TOKEN=<읽기 권한 토큰>`을 넣는다. 로컬에서는 `gh auth token`의 값을 써도
+     된다.
+   - **웹훅(즉시)**: `router.env`에 `GGJIRA_GITHUB_WEBHOOK_SECRET=<16자 이상>`을 넣고 Router를 재시작한다.
+     GitHub 저장소 Settings > Webhooks에 URL `https://<Router 도메인>/webhooks/github`, Content type
+     `application/json`, 같은 secret, 이벤트 "Pull requests"로 등록한다.
+   - **로컬 Router**: GitHub이 127.0.0.1에 닿지 않는다. 폴링만 써도 되고, 즉시 받으려면
+     `gh extension install cli/gh-webhook` 후 다음 명령을 켜 둔다.
+     `gh webhook forward --repo <owner>/<repo> --events pull_request --url http://127.0.0.1:8787/webhooks/github --secret <같은 secret>`
+
+진단:
+- 머지했는데 완료로 안 감: `router reports list`에 막힌 단계가 있는지 본다. 댓글에 "a human moved it"이면
+  이슈가 이미 검토 상태가 아니었다(의도된 동작). 전이 실패면 설정 화면의 "PR 머지 후 완료" 전이를 확인한다.
+- Jira 댓글에 `pull request failed`가 있으면 워커 머신의 `gh auth status`를 확인한다. 이 경우 PR은 추적되지
+  않는다. 사람이 직접 PR을 만들어 머지한 뒤 이슈를 손으로 완료 처리한다.
+- 웹훅 401: secret이 서로 다르다. GitHub 웹훅 화면의 Recent Deliveries에서 응답을 볼 수 있다.

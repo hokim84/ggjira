@@ -3,14 +3,19 @@ import path from "node:path";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
 import type { WorkerProviderConfig } from "../contracts/provider.js";
 import { runValidateCommand } from "../worker/validate.js";
+import { type CreatePullRequest, createPullRequest } from "../worker/github.js";
 import type { WorkerProvider, WorkerResult } from "../worker/provider.js";
 import { buildImplementPrompt } from "../worker/prompt.js";
 import {
   changedFilesSince,
   commitAll,
   createWorktree,
+  githubCompareUrl,
+  githubRepoSlug,
   hasUncommittedChanges,
   isGitRepository,
+  pushBranch,
+  remoteUrl,
 } from "../worker/worktree.js";
 import type { WorkerConfig } from "./config.js";
 import { executePlanningEnvelope } from "./planning.js";
@@ -29,7 +34,9 @@ export interface ExecutorDeps {
   /** Aborted when Router asks to cancel or the lease is lost. */
   signal: AbortSignal;
   /** Router's `jobs/{id}/authorize`; `false` means stop before this side effect. */
-  authorize: (stage: "commit" | "validate") => Promise<boolean>;
+  authorize: (stage: "commit" | "validate" | "push") => Promise<boolean>;
+  /** Opens the pull request after a push; tests pass a fake. */
+  createPullRequest?: CreatePullRequest;
 }
 
 function errorMessage(error: unknown): string {
@@ -167,16 +174,103 @@ export async function executeEnvelope(
     }
   }
 
+  const artifacts = branch
+    ? changes.length > 0
+      ? [`branch: ${branch}`]
+      : []
+    : [`workspace: ${cwd} (direct edits; no Git branch or commit)`];
+  let pullRequest: ExecutionOutcome["pullRequest"];
+  if (branch && changes.length > 0 && repository.pushRemote) {
+    if (!(await deps.authorize("push"))) {
+      return cancelled("Stopped before push: Router withdrew execution authority.", {
+        ...withBranch,
+        changes,
+        validation,
+      });
+    }
+    const pushed = await pushJobBranch(repository, cwd, branch, {
+      issueKey: issue.key,
+      issueSummary: issue.summary,
+      jobId: envelope.jobId,
+      attemptId: envelope.attemptId,
+      summary: workerResult.summary,
+      changes,
+      createPullRequest: deps.createPullRequest ?? createPullRequest,
+    });
+    artifacts.push(...pushed.artifacts);
+    pullRequest = pushed.pullRequest;
+  }
+
   return {
     status: "succeeded",
     summary: workerResult.summary,
     changes,
     validation,
-    artifacts: branch
-      ? changes.length > 0
-        ? [`branch: ${branch}`]
-        : []
-      : [`workspace: ${cwd} (direct edits; no Git branch or commit)`],
+    artifacts,
     ...withBranch,
+    ...(pullRequest ? { pullRequest } : {}),
   };
+}
+
+/**
+ * Pushes the job branch and, for GitHub remotes with `createPullRequest`, opens a PR. Failures are
+ * reported in the artifacts, never fatal: the commit is still on the worker.
+ */
+async function pushJobBranch(
+  repository: WorkerConfig["repositories"][number],
+  cwd: string,
+  branch: string,
+  job: {
+    issueKey: string;
+    issueSummary: string;
+    jobId: string;
+    attemptId: string;
+    summary: string;
+    changes: string[];
+    createPullRequest: CreatePullRequest;
+  },
+): Promise<{ artifacts: string[]; pullRequest?: ExecutionOutcome["pullRequest"] }> {
+  const remote = repository.pushRemote as string;
+  try {
+    await pushBranch(cwd, remote, branch);
+  } catch (error) {
+    return {
+      artifacts: [
+        `push failed (${remote}): ${errorMessage(error)}`,
+        `the branch is only on the worker: run "git push ${remote} ${branch}" in ${repository.path}`,
+      ],
+    };
+  }
+  const artifacts = [`pushed: ${remote}/${branch}`];
+  const url = await remoteUrl(repository.path, remote);
+  const slug = url ? githubRepoSlug(url) : undefined;
+  const compare = url ? githubCompareUrl(url, repository.baseBranch, branch) : undefined;
+  if (!slug || !repository.createPullRequest) {
+    return { artifacts: [...artifacts, ...(compare ? [`open a pull request: ${compare}`] : [])] };
+  }
+  try {
+    const pullRequest = await job.createPullRequest({
+      cwd,
+      repo: slug,
+      base: repository.baseBranch,
+      head: branch,
+      title: `[${job.issueKey}] ${job.issueSummary}`.slice(0, 200),
+      body: [
+        job.summary,
+        ...(job.changes.length ? ["", "Changes:", ...job.changes.map((c) => `- ${c}`)] : []),
+        "",
+        `Opened by GGJIRA for ${job.issueKey}. Merging it moves the Jira issue to done.`,
+        `<!-- ggjira issue=${job.issueKey} job=${job.jobId} attempt=${job.attemptId} -->`,
+      ].join("\n"),
+    });
+    return { artifacts: [...artifacts, `pull request: ${pullRequest.url}`], pullRequest };
+  } catch (error) {
+    return {
+      artifacts: [
+        ...artifacts,
+        `pull request failed: ${errorMessage(error)}`,
+        ...(compare ? [`open a pull request: ${compare}`] : []),
+      ],
+    };
+  }
 }

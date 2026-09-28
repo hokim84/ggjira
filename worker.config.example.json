@@ -7,7 +7,9 @@
       "id": "main-repo",
       "path": "/absolute/path/to/local/clone",
       "baseBranch": "main",
-      "validateCommand": "npm test"
+      "validateCommand": "npm test",
+      "pushRemote": "origin",
+      "createPullRequest": true
     }
   ],
   "capabilities": ["programming", "testing"],

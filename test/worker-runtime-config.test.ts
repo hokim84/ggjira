@@ -39,6 +39,7 @@ describe("loadWorkerConfig", () => {
       path: "/repos/repo-1",
       baseBranch: "main",
       validateCommand: null,
+      createPullRequest: false,
     });
     expect(config.capabilities).toEqual([]);
     expect(config.backends).toEqual([]);

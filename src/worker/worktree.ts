@@ -23,9 +23,18 @@ class GitCommandError extends Error {
   }
 }
 
-function runGit(args: string[], cwd: string): Promise<void> {
+function runGit(
+  args: string[],
+  cwd: string,
+  opts: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn("git", args, {
+      cwd,
+      stdio: ["ignore", "ignore", "pipe"],
+      ...(opts.env ? { env: opts.env } : {}),
+      ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+    });
     const stderrChunks: string[] = [];
     child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk.toString("utf-8")));
     child.on("error", (err) => reject(err));
@@ -62,6 +71,63 @@ export async function cloneRepository(url: string, dest: string, branch?: string
     ],
     parent,
   );
+}
+
+/** A git remote name as configured locally (`origin`, `upstream`, ...); never an option or URL. */
+export const REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * Pushes a job branch to `remote` with the worker machine's own git credentials. Never prompts
+ * (a prompt would hang an unattended worker) and gives up after `timeoutMs`.
+ */
+export async function pushBranch(
+  worktreePath: string,
+  remote: string,
+  branch: string,
+  timeoutMs = 120_000,
+): Promise<void> {
+  if (!REMOTE_NAME_PATTERN.test(remote)) throw new Error(`invalid git remote name "${remote}"`);
+  await runGit(["push", remote, `refs/heads/${branch}:refs/heads/${branch}`], worktreePath, {
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    timeoutMs,
+  });
+}
+
+/** `git remote get-url`, or undefined when the remote does not exist. */
+export function remoteUrl(repoPath: string, remote: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const child = spawn("git", ["remote", "get-url", "--", remote], {
+      cwd: repoPath,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf-8");
+    });
+    child.on("error", () => resolve(undefined));
+    child.on("close", (code) => resolve(code === 0 ? output.trim() || undefined : undefined));
+  });
+}
+
+/** `owner/repo` for a GitHub remote URL; undefined for other hosts. */
+export function githubRepoSlug(remote: string): string | undefined {
+  const match =
+    remote.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/) ??
+    remote.match(/^(?:ssh:\/\/)?git@github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/);
+  return match ? `${match[1]}/${match[2]}` : undefined;
+}
+
+/** A "open a pull request" page for GitHub remotes; undefined for other hosts. */
+export function githubCompareUrl(
+  remote: string,
+  baseBranch: string,
+  branch: string,
+): string | undefined {
+  const slug = githubRepoSlug(remote);
+  if (!slug) return undefined;
+  const [owner, repo] = slug.split("/");
+  const ref = (name: string) => name.split("/").map(encodeURIComponent).join("/");
+  return `https://github.com/${owner}/${repo}/compare/${ref(baseBranch)}...${ref(branch)}?expand=1`;
 }
 
 /** Checks the configured workspace itself, so worktree failures in real repos stay visible. */

@@ -93,3 +93,35 @@ export function loadRouterSecrets(
   }
   return loadRouterSecretsFromEnv(merged);
 }
+
+/** Optional GitHub integration secrets (ADR 0027), from the environment or the secrets file. */
+export interface RouterGithubSecrets {
+  /** Verifies `X-Hub-Signature-256` on `/webhooks/github`; the route is off without it. */
+  webhookSecret?: string;
+  /** Read-only token for polling pull requests; public repositories work without one. */
+  token?: string;
+}
+
+export function loadRouterGithubSecrets(
+  env: NodeJS.ProcessEnv,
+  secretsPath: string | undefined,
+): RouterGithubSecrets {
+  let file: Record<string, string> = {};
+  if (secretsPath) {
+    try {
+      file = parseEnvFile(readFileSync(secretsPath, "utf-8"));
+    } catch {
+      file = {};
+    }
+  }
+  const pick = (key: string) => env[key] || file[key] || undefined;
+  const webhookSecret = pick("GGJIRA_GITHUB_WEBHOOK_SECRET");
+  if (webhookSecret !== undefined && webhookSecret.length < 16) {
+    throw new RouterSecretsError("GGJIRA_GITHUB_WEBHOOK_SECRET must be at least 16 characters");
+  }
+  const token = pick("GITHUB_TOKEN");
+  return {
+    ...(webhookSecret ? { webhookSecret } : {}),
+    ...(token ? { token } : {}),
+  };
+}

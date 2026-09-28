@@ -74,7 +74,15 @@ describe("WorkerRunner against a live Router", () => {
       routerUrl,
       credentialPath: path.join(workDir, "credential.json"),
       // A plain (non-git) directory: the executor edits it directly instead of making a worktree.
-      repositories: [{ id: "repo1", path: workDir, baseBranch: "main", validateCommand: null }],
+      repositories: [
+        {
+          id: "repo1",
+          path: workDir,
+          baseBranch: "main",
+          validateCommand: null,
+          createPullRequest: false,
+        },
+      ],
       capabilities: ["programming"],
       backends: [],
       providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
