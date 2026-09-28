@@ -73,6 +73,15 @@ export async function renderConfig(root, ctx) {
     (i) => [
       field(state, `repositories.${i}.id`, "저장소 id"),
       field(state, `repositories.${i}.displayName`, "표시 이름", { optional: true }),
+      field(state, `repositories.${i}.cloneUrl`, "git clone URL", {
+        optional: true,
+        placeholder: "git@github.com:org/repo.git",
+        hint: "워커가 처음 실행할 때 자동으로 clone합니다",
+      }),
+      field(state, `repositories.${i}.baseBranch`, "기준 브랜치", {
+        optional: true,
+        placeholder: "main",
+      }),
     ],
     () => ({ id: "" }),
     "저장소 추가",

@@ -232,6 +232,11 @@ export function renderSetup(root) {
           hint: "워커 설정의 repositories[].id와 같아야 합니다",
         }),
         field(repository(), "displayName", "저장소 표시 이름", { optional: true }),
+        field(repository(), "cloneUrl", "git clone URL (선택)", {
+          optional: true,
+          placeholder: "git@github.com:org/repo.git",
+          hint: "있으면 워커가 처음 실행할 때 자동으로 clone합니다",
+        }),
       ),
       h("h3", {}, "상태"),
       statusFields,

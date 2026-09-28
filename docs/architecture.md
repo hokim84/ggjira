@@ -100,11 +100,19 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 |---|---|---|
 | `router status` | `GET /status` | job 상태별 수, 큐 대기, 워커 연결, recovery 대기, 웹훅 지연, 막힌 보고 |
 | `router workers list/pair/disable/enable/revoke` | `/workers…`, `/pairing-codes` | pairing code는 10분, 1회. disable은 새 배정만 막고, revoke는 token 무효화와 함께 활성 실행에 취소를 건다 |
+| (웹 UI 워커 추가) | `POST /workers` | 정책을 설정에 추가, 적용, 첫 pairing code 발급(ADR 0025) |
 | `router jobs list/show/cancel/retry/resolve` | `/jobs…` | list는 keyset 페이지네이션. retry는 Jira 승인을 재확인한 뒤 새 attempt를 만든다. resolve는 중단 확인 |
 | `router reports list/retry` | `/reports…` | 막힌 보고 배치 재대기 |
 | `router reconcile` | `POST /reconcile` | sync lane에서 즉시 1회 실행 |
 | `router backup` | `POST /backup` | SQLite online backup을 `<db dir>/backups/`에 저장 |
 | (웹 UI) | `GET/PUT /config`, `POST /config/apply`, `POST /check` | 설정 파일 조회, 검증 후 저장(`.bak`)과 즉시 적용, 손으로 고친 파일 적용, 저장된 설정으로 `router check` |
+
+## 워커 시작 (`worker start`, ADR 0025)
+
+`workers/register` 응답에는 워커 프로필(허용 capabilities, providerId, 저장소 id·`cloneUrl`·`baseBranch`)이
+함께 온다. `worker start`(`src/worker-runtime/start.ts`)는 처음 실행될 때 터미널에서 Router 주소, LLM CLI,
+페어링 코드, 저장소 폴더를 차례로 묻고 이 프로필로 워커 설정을 쓴다. `cloneUrl`이 있는 저장소는
+`<dataDir>/repos/<id>`에 clone하고 바로 실행한다. Router는 URL만 주고, 로컬 경로와 검증 명령은 워커가 정한다.
 
 ## 웹 UI와 셋업 모드 (ADR 0023)
 

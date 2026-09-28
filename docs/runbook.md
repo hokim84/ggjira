@@ -145,6 +145,31 @@ docker compose cp router:/data/backups ./router-backups      # 서버 밖으로 
 
 ## 18. 워커 운영
 
+가장 간단한 방법(ADR 0025):
+
+```bash
+# Router 웹 UI > 워커 > 워커 추가 → 코드 발급
+cd <ggjira 폴더>
+npm run dev -- worker start      # 처음: Router 주소, LLM, 페어링 코드, (필요하면) 저장소 폴더를 묻는다
+npm run dev -- worker start      # 이후: 바로 실행
+```
+
+- **`command not found: ggjira`**: 전역 설치 전에는 `npm run dev -- …`로 실행한다. `--` 뒤에 한 칸 띄우고
+  `ggjira`라는 단어는 넣지 않는다. 설치하려면 `npm run build && npm link`.
+- **`LLM CLI를 찾지 못했습니다`**: `claude` 또는 `codex`를 설치하고 로그인한 뒤 다시 실행한다. 코드는 LLM을
+  고른 뒤에야 쓰므로 같은 코드를 다시 쓸 수 있다(10분 안).
+- **`페어링 코드가 맞지 않거나 만료됐습니다`**: 웹 UI에서 새 코드를 받아 입력한다(같은 질문을 다시 한다).
+- **`터미널에서 실행하면 설정을 차례로 묻습니다`**: 서비스나 CI처럼 물을 수 없는 곳이다.
+  `--router`, `--pairing-code`, `--provider claude-code|codex`를 주고, 저장소는 `cloneUrl`로 받는다.
+- **`clone 실패`**: 워커 머신의 git 권한(SSH 키, credential helper)을 확인하고 다시 실행한다. 이미 받은
+  저장소는 건너뛴다.
+- **`로컬 폴더(…)가 없습니다`**: 터미널에서 `worker start`를 다시 실행하면 폴더를 묻고 설정에 저장한다.
+  또는 Router 설정 > 저장소에 `cloneUrl`을 넣는다.
+- 워커 설정은 페어링 시점의 Router 정책으로 만들어진다. 나중에 capabilities나 저장소를 넓히면 워커의
+  `worker.config.json`도 고친다.
+
+수동 구성:
+
 ```bash
 ggjira router workers pair worker-1                      # Router 쪽: 1회용 code(10분)
 ggjira worker setup --router https://router.example.com --pairing-code <code> --config worker.config.json

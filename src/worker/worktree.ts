@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 export interface WorktreeHandle {
@@ -40,6 +40,28 @@ function runGit(args: string[], cwd: string): Promise<void> {
       );
     });
   });
+}
+
+/**
+ * `git clone <url> <dest>` for `worker start`. `--` ends option parsing so a URL can never be read
+ * as an option, and `protocol.ext.allow=never` rules out command-running transports even if a
+ * URL slipped past `CloneUrlSchema`.
+ */
+export async function cloneRepository(url: string, dest: string, branch?: string): Promise<void> {
+  const parent = path.dirname(path.resolve(dest));
+  mkdirSync(parent, { recursive: true });
+  await runGit(
+    [
+      "-c",
+      "protocol.ext.allow=never",
+      "clone",
+      ...(branch ? ["--branch", branch] : []),
+      "--",
+      url,
+      path.resolve(dest),
+    ],
+    parent,
+  );
 }
 
 /** Checks the configured workspace itself, so worktree failures in real repos stay visible. */

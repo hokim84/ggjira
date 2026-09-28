@@ -14,6 +14,7 @@ import type {
   WorkerHeartbeatRequest,
   WorkerHeartbeatResponse,
   WorkerRegisterRequest,
+  WorkerProfile,
   WorkerRegisterResponse,
   WorkerSessionRequest,
   WorkerSessionResponse,
@@ -191,7 +192,27 @@ export class WorkerService {
       });
       return workerId;
     });
-    return { workerId: run(), workerToken: token };
+    const workerId = run();
+    return { workerId, workerToken: token, profile: this.profileFor(workerId) };
+  }
+
+  /** The worker's policy as `worker start` needs it: allowed capabilities and repositories (with
+   *  clone URLs) and the provider id Router will name in its envelopes (ADR 0025). */
+  private profileFor(workerId: string): WorkerProfile {
+    const policy = this.config.workers.find((entry) => entry.workerId === workerId);
+    const repositories = new Map(this.config.repositories.map((repo) => [repo.id, repo]));
+    return {
+      capabilities: policy?.allowedCapabilities ?? [],
+      providerId: policy?.providerId ?? "default",
+      repositories: (policy?.allowedRepositoryIds ?? []).map((id) => {
+        const repo = repositories.get(id);
+        return {
+          id,
+          ...(repo?.cloneUrl ? { cloneUrl: repo.cloneUrl } : {}),
+          ...(repo?.baseBranch ? { baseBranch: repo.baseBranch } : {}),
+        };
+      }),
+    };
   }
 
   openSession(worker: WorkerRow, request: WorkerSessionRequest): WorkerSessionResponse {

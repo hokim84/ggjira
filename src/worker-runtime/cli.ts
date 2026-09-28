@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
+import { createInterface } from "node:readline/promises";
 import {
   type CliIo,
   type ParsedArgs,
@@ -22,10 +23,15 @@ import {
 import { loadWorkerCredential } from "./credential.js";
 import { pairWorker, pruneWorktrees, runWorkerCheck, writeWorkerConfigTemplate } from "./ops.js";
 import { WorkerRunner } from "./runner.js";
+import { prepareWorkerStart } from "./start.js";
 import { ResultSpool } from "./spool.js";
 
 export const WORKER_USAGE = `ggjira worker <command>
 
+  start [--config <path>]          run the worker; the first time it asks (in the terminal) for
+                                   the Router address, LLM CLI, pairing code and repository
+                                   folders, then writes the config. Non-terminal: pass
+                                   --router, --pairing-code [--provider claude-code|codex]
   setup --pairing-code <code> [--router <url>] [--name <name>] [--config <path>]
         [--credential <path>] [--force]
                                    pair with Router; writes the credential file (and a starter
@@ -84,8 +90,33 @@ async function setup(parsed: ParsedArgs, io: CliIo): Promise<number> {
   return 0;
 }
 
+function terminalAsk(): ((question: string) => Promise<string>) | undefined {
+  if (!process.stdin.isTTY) return undefined;
+  return async (question) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      return await rl.question(question);
+    } finally {
+      rl.close();
+    }
+  };
+}
+
+async function start(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const ask = terminalAsk();
+  const config = await prepareWorkerStart(configPath(parsed, io), parsed, io, ask ? { ask } : {});
+  if (!config) return 1;
+  io.out(
+    `워커가 ${config.routerUrl} 에서 작업을 기다립니다. (Ctrl+C 1회: 현재 작업 후 종료, 2회: 즉시 종료)`,
+  );
+  return runWithConfig(config, io);
+}
+
 async function run(parsed: ParsedArgs, io: CliIo): Promise<number> {
-  const config = loadWorkerConfig(configPath(parsed, io));
+  return runWithConfig(loadWorkerConfig(configPath(parsed, io)), io);
+}
+
+async function runWithConfig(config: WorkerConfig, io: CliIo): Promise<number> {
   const runner = workerRunner(config);
   const controller = new AbortController();
   const stop = (signal: string) => {
@@ -148,6 +179,19 @@ export async function runWorkerCli(args: string[], io: CliIo): Promise<number> {
   const [command, ...rest] = args;
   const config = { config: { type: "string" } } as const;
   switch (command) {
+    case "start":
+      return start(
+        parseCommandArgs(rest, {
+          ...config,
+          "pairing-code": { type: "string" },
+          router: { type: "string" },
+          provider: { type: "string" },
+          name: { type: "string" },
+          credential: { type: "string" },
+          force: { type: "boolean" },
+        }),
+        io,
+      );
     case "setup":
       return setup(
         parseCommandArgs(rest, {

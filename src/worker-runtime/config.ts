@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { CloneUrlSchema } from "../contracts/api.js";
 import { WorkerProviderConfigSchema } from "../contracts/provider.js";
 
 /**
@@ -14,6 +15,8 @@ const WorkerRepositorySchema = z.object({
   path: z.string().min(1),
   baseBranch: z.string().min(1).default("main"),
   validateCommand: z.string().min(1).nullable().default(null),
+  /** Where `worker start` clones `path` from when it does not exist yet (from Router's profile). */
+  cloneUrl: CloneUrlSchema.optional(),
 });
 export type WorkerRepositoryConfig = z.infer<typeof WorkerRepositorySchema>;
 

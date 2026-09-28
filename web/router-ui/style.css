@@ -534,3 +534,26 @@ textarea {
     flex: 1;
   }
 }
+
+.title-action {
+  margin-left: auto;
+}
+.repo-options {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 1rem 0 0.25rem;
+  padding: 0.5rem 0.9rem 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+}
+.repo-options legend {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0 0.25rem;
+}
+.check-option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}

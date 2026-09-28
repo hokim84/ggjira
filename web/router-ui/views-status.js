@@ -100,37 +100,161 @@ export function renderWorkers(root, ctx) {
     }
   }
 
-  async function pair(workerId) {
-    clear(messageEl);
-    clear(pairingEl);
-    try {
-      const code = await admin("POST", "/pairing-codes", { workerId });
-      const command = `ggjira worker setup --router ${location.origin} --pairing-code ${code.pairingCode}`;
-      pairingEl.append(
-        notice(
-          "info",
-          h("strong", {}, `${workerId} 페어링 코드`),
-          h(
-            "p",
-            {},
-            `만료: ${new Date(code.expiresAt).toLocaleString()} — 워커 머신에서 실행하세요.`,
-          ),
-          h(
-            "div",
-            { class: "secret-row" },
-            h("code", { class: "secret-value" }, command),
-            copyButton(command),
-          ),
+  function copyRow(label, value) {
+    return h(
+      "div",
+      { class: "secret-row" },
+      h("span", { class: "secret-label" }, label),
+      h("code", { class: "secret-value" }, value),
+      copyButton(value),
+    );
+  }
+
+  function showPairing(workerId, code, firstTime) {
+    const expires = new Date(code.expiresAt).toLocaleTimeString();
+    const body = firstTime
+      ? [
+          h("p", {}, "워커 머신의 ggjira 폴더에서 아래 명령을 실행하고, 묻는 대로 입력하세요."),
+          copyRow("1. 실행", "npm run dev -- worker start"),
+          copyRow("2. Router 주소", location.origin),
+          copyRow("3. 페어링 코드", code.pairingCode),
           h(
             "small",
             { class: "hint" },
-            "Router가 HTTPS 프록시 뒤에 있으면 --router에 외부 HTTPS 주소를 쓰세요.",
+            "이어서 LLM(Claude Code/Codex)과, clone URL이 없는 저장소의 로컬 폴더를 묻습니다. 다음부터는 1번 명령만 실행하면 됩니다.",
           ),
+        ]
+      : [
+          h(
+            "p",
+            {},
+            "워커 머신의 ggjira 폴더에서 실행하세요. 기존 워커 설정은 두고 인증만 새로 받습니다.",
+          ),
+          copyRow("실행", `npm run dev -- worker setup --pairing-code ${code.pairingCode} --force`),
+        ];
+    fill(
+      pairingEl,
+      notice(
+        "info",
+        h("strong", {}, `${workerId} 페어링 코드 — ${expires}까지 (10분, 1회용)`),
+        ...body,
+        h(
+          "small",
+          { class: "hint" },
+          " ggjira 명령을 설치(npm run build && npm link)했다면 npm run dev -- 대신 ggjira를 써도 됩니다. 다른 컴퓨터의 워커라면 Router 주소로 외부 HTTPS 주소를 쓰세요.",
         ),
-      );
+      ),
+    );
+    pairingEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  async function pair(worker) {
+    clear(messageEl);
+    clear(pairingEl);
+    try {
+      const code = await admin("POST", "/pairing-codes", { workerId: worker.workerId });
+      showPairing(worker.workerId, code, !worker.paired);
     } catch (error) {
       messageEl.append(errorNotice(error));
     }
+  }
+
+  const addEl = h("div");
+  async function openAddForm() {
+    clear(messageEl);
+    clear(pairingEl);
+    let repositories = [];
+    try {
+      const view = await admin("GET", "/config");
+      repositories = view.file?.repositories ?? [];
+    } catch (error) {
+      fill(addEl, errorNotice(error));
+      return;
+    }
+    const idInput = h("input", {
+      type: "text",
+      id: "new-worker-id",
+      placeholder: "예: build-server-1",
+      autocomplete: "off",
+      spellcheck: "false",
+    });
+    const capsInput = h("input", {
+      type: "text",
+      id: "new-worker-caps",
+      value: "programming, testing",
+      autocomplete: "off",
+    });
+    const repoBoxes = repositories.map((repo, i) =>
+      h(
+        "label",
+        { class: "check-option" },
+        h("input", { type: "checkbox", value: repo.id, checked: i === 0 }),
+        ` ${repo.displayName ? `${repo.displayName} (${repo.id})` : repo.id}`,
+        repo.cloneUrl ? null : h("small", { class: "hint" }, " — cloneUrl 없음"),
+      ),
+    );
+    const formMessage = h("div");
+    const form = h(
+      "form",
+      { class: "panel" },
+      h("h2", {}, "워커 추가"),
+      h(
+        "div",
+        { class: "grid" },
+        h("div", { class: "field" }, h("label", { for: "new-worker-id" }, "workerId"), idInput),
+        h(
+          "div",
+          { class: "field" },
+          h("label", { for: "new-worker-caps" }, "허용 capabilities"),
+          capsInput,
+          h("small", { class: "hint" }, "쉼표로 구분"),
+        ),
+      ),
+      h(
+        "fieldset",
+        { class: "repo-options" },
+        h("legend", {}, "작업할 저장소"),
+        repoBoxes.length ? repoBoxes : h("p", { class: "muted" }, "설정에 저장소가 없습니다."),
+      ),
+      h(
+        "small",
+        { class: "hint" },
+        "cloneUrl이 있는 저장소는 워커가 처음 실행할 때 자동으로 clone합니다. 설정 > 저장소에서 넣을 수 있습니다.",
+      ),
+      formMessage,
+      h(
+        "div",
+        { class: "form-actions" },
+        h("button", { type: "button", class: "btn", onclick: () => clear(addEl) }, "취소"),
+        h("button", { type: "submit", class: "btn btn-primary" }, "추가하고 페어링 코드 발급"),
+      ),
+    );
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clear(formMessage);
+      const body = {
+        workerId: idInput.value.trim(),
+        allowedCapabilities: capsInput.value
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        allowedRepositoryIds: repoBoxes
+          .map((label) => label.querySelector("input"))
+          .filter((input) => input.checked)
+          .map((input) => input.value),
+      };
+      try {
+        const result = await admin("POST", "/workers", body);
+        clear(addEl);
+        showPairing(result.worker.workerId, result, true);
+        await refresh();
+      } catch (error) {
+        if (error.status === 401) return ctx.logout();
+        formMessage.append(errorNotice(error));
+      }
+    });
+    fill(addEl, form);
+    idInput.focus();
   }
 
   function row(worker) {
@@ -140,7 +264,7 @@ export function renderWorkers(root, ctx) {
       actions.push(
         h(
           "button",
-          { type: "button", class: "btn btn-small", onclick: () => pair(worker.workerId) },
+          { type: "button", class: "btn btn-small", onclick: () => pair(worker) },
           worker.paired ? "재페어링 코드" : "페어링 코드 발급",
         ),
       );
@@ -231,7 +355,7 @@ export function renderWorkers(root, ctx) {
         listEl,
         workers.length
           ? workers.map(row)
-          : h("p", { class: "muted" }, "설정에 선언된 워커가 없습니다. 설정 화면에서 추가하세요."),
+          : h("p", { class: "muted" }, "아직 워커가 없습니다. '워커 추가'로 시작하세요."),
       );
     } catch (error) {
       if (error.status === 401) return ctx.logout();
@@ -246,12 +370,13 @@ export function renderWorkers(root, ctx) {
       { class: "title-row" },
       h("h1", {}, "워커"),
       h("small", { class: "muted" }, "5초마다 갱신"),
+      h(
+        "button",
+        { type: "button", class: "btn btn-primary title-action", onclick: () => openAddForm() },
+        "워커 추가",
+      ),
     ),
-    h(
-      "p",
-      { class: "muted" },
-      "설정 화면에서 워커를 추가하면 저장 즉시 여기서 페어링할 수 있습니다.",
-    ),
+    addEl,
     messageEl,
     pairingEl,
     listEl,

@@ -78,20 +78,20 @@ Jira 관리자 웹훅은 URL `https://router.example.com/webhooks/jira`로 만�
 
 ## 3. Worker 붙이기
 
-Router 설정 `workers[]`에 워커를 선언한다(허용 capability·저장소). 그다음:
+1. Router 웹 UI > **워커** > **워커 추가**에서 workerId, capabilities, 저장소를 고른다. 정책이 저장,
+   적용되고 페어링 코드(10분, 1회용)가 표시된다.
+2. 워커 머신의 ggjira 폴더에서 실행하고, 묻는 대로 답한다(Router 주소, LLM, 페어링 코드, 필요하면
+   저장소 폴더).
 
 ```bash
-# Router 쪽 (컨테이너 안, 또는 --url https://… 와 GGJIRA_ADMIN_TOKEN으로 밖에서)
-ggjira router workers pair worker-1
-
-# Worker 머신
-ggjira worker setup --router https://router.example.com --pairing-code <code> --config worker.config.json
-#  → worker.config.json의 repositories[].path, providers, capabilities를 채운다
-ggjira worker check --config worker.config.json
-ggjira worker run --config worker.config.json
+cd <ggjira 폴더>
+npm run dev -- worker start      # 처음에는 설정을 묻고, 이후에는 바로 실행
 ```
 
-`worker.config.example.json`이 예시다. token은 credential 파일에만 저장된다.
+`npm run dev --`는 이 레포의 CLI를 실행한다(`--` 뒤가 ggjira에 넘어가는 인자). `npm run build && npm link`로
+설치하면 어디서든 `ggjira worker start`로 쓸 수 있다. 저장소 설정에 `cloneUrl`을 넣어 두면 워커가 직접
+clone한다(설정 > 저장소). token은 credential 파일(`data/worker-credential.json`)에만 저장된다. 손으로
+구성하려면 `worker setup` 후 `worker.config.json`(예시 `worker.config.example.json`)을 채우고 `worker run`을 쓴다.
 
 ## 운영 명령
 

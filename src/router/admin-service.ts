@@ -1,6 +1,7 @@
 import { mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
+import type { AdminAddWorkerRequest } from "../contracts/api.js";
 import type { JobState } from "../contracts/job-state.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import { isWorkerDispatchable } from "./availability.js";
@@ -23,6 +24,7 @@ import {
 import { type AuditEntry, appendAudit, listAudit } from "./db/audit.js";
 import { oldestUnprocessedEventAt } from "./db/events.js";
 import { recordAdminHold } from "./db/holds.js";
+import { createPairingCode } from "./db/pairing.js";
 import {
   countJobsByState,
   getJob,
@@ -134,6 +136,12 @@ export interface AdminServiceDeps {
   /** Applies a validated config to the running Router (daemon: serialized with sync/verify, all
    *  services swapped). Without it only this service's own view changes. */
   applyConfig?: (config: RouterConfig) => Promise<void>;
+}
+
+export interface AdminAddWorkerResult {
+  worker: AdminWorkerView;
+  pairingCode: string;
+  expiresAt: string;
 }
 
 export interface ConfigApplyResult extends AdminConfigView {
@@ -439,6 +447,51 @@ export class AdminService {
     }
     writeRouterConfig(configPath, raw);
     return this.apply(validation.config, actor, "config.updated", configPath);
+  }
+
+  /**
+   * "워커 추가": appends the policy to the config file, applies it, and issues the first pairing
+   * code, so the new worker can run `worker start` right away (ADR 0025).
+   */
+  async addWorker(input: AdminAddWorkerRequest, actor: string): Promise<AdminAddWorkerResult> {
+    const configPath = this.requireConfigPath();
+    let raw: unknown;
+    try {
+      raw = readRawRouterConfig(configPath);
+    } catch (error) {
+      throw new AdminError(409, "config_unreadable", (error as Error).message);
+    }
+    const file = raw as { workers?: Array<{ workerId?: unknown }> };
+    const workers = Array.isArray(file.workers) ? file.workers : [];
+    if (workers.some((worker) => worker.workerId === input.workerId)) {
+      throw new AdminError(409, "worker_exists", `worker "${input.workerId}" is already declared`);
+    }
+    const next = {
+      ...(raw as Record<string, unknown>),
+      workers: [
+        ...workers,
+        {
+          workerId: input.workerId,
+          allowedCapabilities: input.allowedCapabilities,
+          allowedRepositoryIds: input.allowedRepositoryIds,
+          ...(input.providerId ? { providerId: input.providerId } : {}),
+        },
+      ],
+    };
+    const validation = validateRouterConfig(next);
+    if (!validation.ok) {
+      throw new AdminError(400, "invalid_config", "worker policy is invalid", validation.issues);
+    }
+    writeRouterConfig(configPath, next);
+    await this.apply(validation.config, actor, "config.updated", configPath);
+    const now = this.now();
+    const code = createPairingCode(this.db, { workerId: input.workerId, now });
+    appendAudit(this.db, { at: now, actor, action: "worker.added", subject: input.workerId });
+    return {
+      worker: this.workerView(input.workerId),
+      pairingCode: code.code,
+      expiresAt: code.expiresAt,
+    };
   }
 
   /** Applies the file as it is on disk (after a hand edit) without changing it. */

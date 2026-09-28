@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type { z } from "zod";
 import {
+  AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
   type ApiErrorResponse,
   JobAuthorizeRequestSchema,
@@ -265,6 +266,16 @@ function registerAdminRoutes(
       scope.get("/status", async () => admin.status());
 
       scope.get("/workers", async () => ({ workers: admin.listWorkers() }));
+      scope.post("/workers", async (request, reply) =>
+        reply
+          .code(201)
+          .send(
+            await admin.addWorker(
+              parseBody(AdminAddWorkerRequestSchema, request.body),
+              actorOf(request),
+            ),
+          ),
+      );
       scope.post<IdParams>("/workers/:id/disable", async (request) =>
         admin.setWorkerEnabled(request.params.id, false, actorOf(request)),
       );

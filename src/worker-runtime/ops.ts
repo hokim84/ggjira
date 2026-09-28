@@ -10,8 +10,10 @@ import {
   writeSync,
 } from "node:fs";
 import path from "node:path";
+import type { WorkerProfile } from "../contracts/api.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import {
+  cloneRepository,
   isGitRepository,
   listRepositoryWorktreePaths,
   removeWorktree,
@@ -83,6 +85,129 @@ export function writeWorkerConfigTemplate(
   writeFileAtomic(configPath, `${JSON.stringify(workerConfigTemplate(input), null, 2)}\n`, 0o644);
 }
 
+export const PROVIDER_TYPES = ["claude-code", "codex"] as const;
+export type ProviderType = (typeof PROVIDER_TYPES)[number];
+
+const PROVIDER_LABELS: Record<ProviderType, string> = {
+  "claude-code": "Claude Code (claude)",
+  codex: "OpenAI Codex (codex)",
+};
+
+/** The LLM CLIs that start on this machine (`<command> --version`). */
+export function detectInstalledProviders(
+  runs: (command: string) => boolean = commandRuns,
+): ProviderType[] {
+  return PROVIDER_TYPES.filter((type) => runs(DEFAULT_PROVIDER_COMMANDS[type] ?? type));
+}
+
+/**
+ * The one question `worker start` asks: which LLM CLI runs jobs. `--provider` wins; otherwise the
+ * only installed CLI is taken as is, and a choice between several is asked (ADR 0025).
+ */
+export async function chooseProvider(input: {
+  requested?: string | undefined;
+  installed: ProviderType[];
+  ask?: (question: string) => Promise<string>;
+}): Promise<ProviderType> {
+  const { requested, installed, ask } = input;
+  if (requested) {
+    if (!(PROVIDER_TYPES as readonly string[]).includes(requested)) {
+      throw new Error(`--provider는 ${PROVIDER_TYPES.join(", ")} 중 하나여야 합니다`);
+    }
+    return requested as ProviderType;
+  }
+  if (installed.length === 0) {
+    throw new Error(
+      `LLM CLI를 찾지 못했습니다. ${PROVIDER_TYPES.map((t) => PROVIDER_LABELS[t]).join(" 또는 ")}를 설치하고 로그인한 뒤 다시 실행하세요`,
+    );
+  }
+  const [only] = installed;
+  if (installed.length === 1 && only) return only;
+  if (!ask) {
+    throw new Error(
+      `LLM CLI가 여러 개 설치돼 있습니다(${installed.join(", ")}). --provider로 고르세요`,
+    );
+  }
+  const menu = installed.map((type, i) => `  ${i + 1}) ${PROVIDER_LABELS[type]}`).join("\n");
+  for (;;) {
+    const answer = (await ask(`작업에 쓸 LLM을 고르세요:\n${menu}\n번호 [1]: `)).trim();
+    const index = answer === "" ? 0 : Number(answer) - 1;
+    const picked = installed[index] ?? installed.find((type) => type === answer);
+    if (picked) return picked;
+  }
+}
+
+/** Where `worker start` keeps clones of repositories Router gave a clone URL for. */
+export function workerRepositoryPath(dataDir: string, repositoryId: string): string {
+  return path.join(dataDir, "repos", repositoryId);
+}
+
+/** A complete worker config from Router's profile plus the one local choice, the provider. */
+export function workerConfigFromProfile(input: {
+  routerUrl: string;
+  credentialPath: string;
+  profile: WorkerProfile;
+  providerType: ProviderType;
+  dataDir?: string;
+  logPath?: string;
+}): Record<string, unknown> {
+  const dataDir = input.dataDir ?? "data/worker";
+  return {
+    configVersion: 5,
+    routerUrl: input.routerUrl,
+    credentialPath: input.credentialPath,
+    repositories: input.profile.repositories.map((repo) => ({
+      id: repo.id,
+      path: workerRepositoryPath(dataDir, repo.id),
+      baseBranch: repo.baseBranch ?? "main",
+      validateCommand: null,
+      ...(repo.cloneUrl ? { cloneUrl: repo.cloneUrl } : {}),
+    })),
+    capabilities: input.profile.capabilities,
+    backends: ["filesystem", "git", "coding-runtime"],
+    providers: [{ id: input.profile.providerId, type: input.providerType }],
+    dataDir,
+    logPath: input.logPath ?? "data/worker-logs",
+  };
+}
+
+export function writeWorkerConfig(configPath: string, config: Record<string, unknown>): void {
+  writeFileAtomic(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o644);
+}
+
+export interface RepositoryPreparation {
+  ready: string[];
+  cloned: string[];
+  /** Repositories whose path does not exist and that have no clone URL to fetch it from. */
+  missing: Array<{ id: string; path: string }>;
+  failed: Array<{ id: string; error: string }>;
+}
+
+/** Clones every configured repository that has a clone URL but no local copy yet. */
+export async function prepareRepositories(
+  config: WorkerConfig,
+  clone: typeof cloneRepository = cloneRepository,
+): Promise<RepositoryPreparation> {
+  const outcome: RepositoryPreparation = { ready: [], cloned: [], missing: [], failed: [] };
+  for (const repo of config.repositories) {
+    if (existsSync(repo.path)) {
+      outcome.ready.push(repo.id);
+      continue;
+    }
+    if (!repo.cloneUrl) {
+      outcome.missing.push({ id: repo.id, path: repo.path });
+      continue;
+    }
+    try {
+      await clone(repo.cloneUrl, repo.path, repo.baseBranch);
+      outcome.cloned.push(repo.id);
+    } catch (error) {
+      outcome.failed.push({ id: repo.id, error: errorText(error) });
+    }
+  }
+  return outcome;
+}
+
 /**
  * `worker setup`: redeems an admin-issued pairing code (`router workers pair`) for this worker's
  * token and stores it in the credential file — never in the config file, never logged (§3 "워커
@@ -94,7 +219,7 @@ export async function pairWorker(input: {
   workerName: string;
   credentialPath: string;
   force?: boolean;
-}): Promise<WorkerCredential> {
+}): Promise<WorkerCredential & { profile?: WorkerProfile }> {
   if (existsSync(input.credentialPath) && !input.force) {
     throw new Error(
       `${input.credentialPath} already exists; pass --force to replace it with a new pairing`,
@@ -110,7 +235,7 @@ export async function pairWorker(input: {
     workerToken: response.workerToken,
   };
   writeFileAtomic(input.credentialPath, `${JSON.stringify(credential, null, 2)}\n`, 0o600);
-  return credential;
+  return { ...credential, ...(response.profile ? { profile: response.profile } : {}) };
 }
 
 /** Whether `command` can be started at all (`<command> --version`). On Windows the CLIs are

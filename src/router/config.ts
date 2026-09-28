@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { CloneUrlSchema } from "../contracts/api.js";
 
 /** See src/config.ts's `nfc` for why status/transition names get normalized. */
 function nfc(value: string): string {
@@ -41,6 +42,10 @@ export type WorkflowStatus = z.infer<typeof WorkflowStatusSchema>;
 const RepositorySchema = z.object({
   id: z.string().min(1),
   displayName: z.string().min(1).optional(),
+  /** Git remote a worker clones on `worker start` when it has no local copy yet (ADR 0025). */
+  cloneUrl: CloneUrlSchema.optional(),
+  /** Branch job worktrees start from; workers default to "main". */
+  baseBranch: z.string().min(1).optional(),
 });
 export type RepositoryConfig = z.infer<typeof RepositorySchema>;
 

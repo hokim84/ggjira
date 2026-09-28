@@ -24,9 +24,41 @@ export const WorkerRegisterRequestSchema = z.object({
 });
 export type WorkerRegisterRequest = z.infer<typeof WorkerRegisterRequestSchema>;
 
+/**
+ * A git remote a worker may clone: `https://`, `ssh://`, `file://` or scp-like `user@host:path`.
+ * Anything else — options (`-…`), `ext::` and other transport helpers, whitespace — is refused on
+ * both sides, since the worker passes it to `git clone` (ADR 0025).
+ */
+export const CloneUrlSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (url) =>
+      !/\s/.test(url) &&
+      !url.startsWith("-") &&
+      (/^(https|ssh|file):\/\/[^\s]+$/.test(url) || /^[\w.-]+@[\w.-]+:[^:\s][^\s]*$/.test(url)),
+    { message: "cloneUrl must be an https://, ssh://, file:// or user@host:path git URL" },
+  );
+
+/** What Router's policy for this worker says, so `worker start` can write its config without the
+ *  operator typing capabilities or repositories (ADR 0025). Local paths stay the worker's choice. */
+export const WorkerProfileSchema = z.object({
+  capabilities: z.array(z.string().min(1)),
+  providerId: z.string().min(1),
+  repositories: z.array(
+    z.object({
+      id: z.string().min(1),
+      cloneUrl: CloneUrlSchema.optional(),
+      baseBranch: z.string().min(1).optional(),
+    }),
+  ),
+});
+export type WorkerProfile = z.infer<typeof WorkerProfileSchema>;
+
 export const WorkerRegisterResponseSchema = z.object({
   workerId: z.string().min(1),
   workerToken: z.string().min(1),
+  profile: WorkerProfileSchema.optional(),
 });
 export type WorkerRegisterResponse = z.infer<typeof WorkerRegisterResponseSchema>;
 
@@ -143,6 +175,18 @@ export const ApiErrorResponseSchema = z.object({
   issues: z.array(z.object({ path: z.string(), message: z.string() })).optional(),
 });
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
+
+/** `POST /api/v1/admin/workers` — declares a worker policy in Router config, applies it and
+ *  issues its first pairing code in one step (ADR 0025). */
+export const AdminAddWorkerRequestSchema = z.object({
+  workerId: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "use letters, digits, '.', '_' or '-' (max 64)"),
+  allowedCapabilities: z.array(z.string().min(1)).default([]),
+  allowedRepositoryIds: z.array(z.string().min(1)).min(1),
+  providerId: z.string().min(1).optional(),
+});
+export type AdminAddWorkerRequest = z.infer<typeof AdminAddWorkerRequestSchema>;
 
 /** `POST /api/v1/admin/pairing-codes` — admin-token authenticated. The code is bound to a
  *  `workerId` already declared in Router config's `workers[]` policy list. */
