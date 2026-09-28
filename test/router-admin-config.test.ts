@@ -27,12 +27,14 @@ describe("admin config and check API (web UI)", () => {
     expect(response.statusCode).toBe(401);
   });
 
-  it("returns the file as written and no restart when it matches the running config", async () => {
+  it("returns the file as written, in sync with the running config", async () => {
     const response = await router.adminCall("GET", "/config");
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       path: configPath,
       restartRequired: false,
+      restartFields: [],
+      pendingApply: false,
       problem: null,
       file: expect.objectContaining({ configVersion: 5 }),
     });
@@ -52,29 +54,85 @@ describe("admin config and check API (web UI)", () => {
     expect(readFileSync(configPath, "utf-8")).toBe(before);
   });
 
-  it("saves a valid config, keeps a .bak, audits it, and flags a restart", async () => {
+  it("saves and applies at once: a newly added worker can pair without a restart", async () => {
+    const before = await router.adminCall("POST", "/pairing-codes", { workerId: "worker-3" });
+    expect(before.statusCode).toBe(404);
+
     const updated = {
       ...router.config,
-      reporting: { failureLabel: "ai-failed" },
+      workers: [
+        ...router.config.workers,
+        {
+          workerId: "worker-3",
+          allowedRepositoryIds: router.config.workers[0]?.allowedRepositoryIds,
+        },
+      ],
     };
     const response = await router.adminCall("PUT", "/config", updated);
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ restartRequired: true, problem: null });
-    expect(JSON.parse(readFileSync(configPath, "utf-8")).reporting.failureLabel).toBe("ai-failed");
+    expect(response.json()).toMatchObject({
+      restartRequired: false,
+      pendingApply: false,
+      appliedWithout: [],
+    });
     expect(existsSync(`${configPath}.bak`)).toBe(true);
     expect(listAudit(router.db, "router-config").map((entry) => entry.action)).toEqual([
       "config.updated",
     ]);
-    expect((await router.adminCall("GET", "/config")).json()).toMatchObject({
-      restartRequired: true,
+
+    const pair = await router.adminCall("POST", "/pairing-codes", { workerId: "worker-3" });
+    expect(pair.statusCode).toBe(201);
+    const { workers } = (await router.adminCall("GET", "/workers")).json() as {
+      workers: Array<{ workerId: string }>;
+    };
+    expect(workers.map((worker) => worker.workerId)).toContain("worker-3");
+  });
+
+  it("applies the rest but flags connection settings that need a restart", async () => {
+    const response = await router.adminCall("PUT", "/config", {
+      ...router.config,
+      http: { host: "127.0.0.1", port: 9999 },
+      reporting: { failureLabel: "ai-failed" },
     });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      restartRequired: true,
+      restartFields: ["http"],
+      appliedWithout: ["http"],
+      pendingApply: false,
+    });
+  });
+
+  it("applies a hand-edited file on request", async () => {
+    const edited = { ...router.config, workers: [router.config.workers[0]] };
+    writeFileSync(configPath, JSON.stringify(edited));
+    expect((await router.adminCall("GET", "/config")).json()).toMatchObject({
+      pendingApply: true,
+    });
+
+    const applied = await router.adminCall("POST", "/config/apply");
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json()).toMatchObject({ pendingApply: false });
+    expect(listAudit(router.db, "router-config").map((entry) => entry.action)).toEqual([
+      "config.applied",
+    ]);
+    expect(
+      (await router.adminCall("POST", "/pairing-codes", { workerId: "worker-2" })).statusCode,
+    ).toBe(404);
+  });
+
+  it("refuses to apply a file that is invalid", async () => {
+    writeFileSync(configPath, JSON.stringify({ configVersion: 5 }));
+    const response = await router.adminCall("POST", "/config/apply");
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: "invalid_config" });
   });
 
   it("reports a broken file on disk instead of failing", async () => {
     writeFileSync(configPath, "{ not json");
     const response = await router.adminCall("GET", "/config");
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ file: null, restartRequired: true });
+    expect(response.json()).toMatchObject({ file: null, pendingApply: false });
     expect((response.json() as { problem: string }).problem).toContain("not valid JSON");
   });
 

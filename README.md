@@ -74,7 +74,7 @@ Jira 관리자 웹훅은 URL `https://router.example.com/webhooks/jira`로 만�
 `GGJIRA_WEBHOOK_SECRET`와 같게 둔다. 필터는 프로젝트 기준이다(runbook §16). Docker 없이 띄우려면
 `ggjira router serve`만 실행해 `http://127.0.0.1:8787/ui/`의 마법사를 쓰거나, `ggjira router setup`으로
 설정 템플릿과 새 secret을 만든다(개발용. 운영은 HTTPS 뒤에 둔다). 실행 중에는 같은 `/ui/`에서 워커
-상태, 페어링, 설정 편집, Jira 점검을 할 수 있다.
+상태, 페어링, 설정 편집(저장 즉시 적용), Jira 점검을 할 수 있다.
 
 ## 3. Worker 붙이기
 

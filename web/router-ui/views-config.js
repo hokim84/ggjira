@@ -172,9 +172,18 @@ export async function renderConfig(root, ctx) {
       workers: state.workers,
     };
     try {
-      await admin("PUT", "/config", body);
+      const result = await admin("PUT", "/config", body);
       showFieldErrors(form, []);
-      messageEl.append(notice("ok", "저장했습니다. Router를 재시작해야 적용됩니다."));
+      messageEl.append(
+        result.appliedWithout.length
+          ? notice(
+              "warn",
+              "저장하고 적용했습니다. 단, ",
+              h("code", {}, result.appliedWithout.join(", ")),
+              " 변경은 Router를 재시작해야 적용됩니다.",
+            )
+          : notice("ok", "저장하고 바로 적용했습니다."),
+      );
       ctx.refreshBanner();
     } catch (error) {
       if (error.status === 401) return ctx.logout();
@@ -191,7 +200,7 @@ export async function renderConfig(root, ctx) {
       "p",
       { class: "muted" },
       h("code", {}, view.path),
-      " — 저장해도 실행 중인 Router에는 재시작 후 적용됩니다.",
+      " — 저장하면 바로 적용됩니다. http, db.path, jira.baseUrl, executionAgent.fieldId만 재시작이 필요합니다.",
     ),
     view.problem ? notice("warn", `현재 파일 문제: ${view.problem}`) : null,
     messageEl,

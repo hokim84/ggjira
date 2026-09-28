@@ -112,7 +112,7 @@ function defaultSleep(ms: number): Promise<void> {
  */
 export class WorkerService {
   private readonly db: Database.Database;
-  private readonly config: RouterConfig;
+  private config: RouterConfig;
   private readonly now: () => string;
   private readonly genId: () => string;
   private readonly genToken: () => string;
@@ -129,6 +129,11 @@ export class WorkerService {
     this.longPollMs = deps.longPollMs ?? LONG_POLL_MS;
     this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.sleep = deps.sleep ?? defaultSleep;
+  }
+
+  /** Swaps in an applied config; calls already in flight finish on the one they read. */
+  setConfig(config: RouterConfig): void {
+    this.config = config;
   }
 
   // --- admin ---------------------------------------------------------------------------

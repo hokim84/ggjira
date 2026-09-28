@@ -13,8 +13,8 @@ import { type RouterEnvSecrets, SECRET_ENV_KEYS } from "./secrets.js";
 
 /**
  * Reading and writing the Router's config and secrets files for `router setup` and the web UI
- * (ADR 0023). A running Router never reloads what is written here; the new config takes effect on
- * the next start.
+ * (ADR 0023). A running Router applies a saved config in place, except for the connection
+ * settings in `RESTART_ONLY_SETTINGS` (ADR 0024).
  */
 
 export interface ConfigIssue {
@@ -36,6 +36,35 @@ export function validateRouterConfig(raw: unknown): ConfigValidation {
       message: issue.message,
     })),
   };
+}
+
+/** Settings bound to the open HTTP listener, SQLite file or Jira client; they need a restart. */
+export const RESTART_ONLY_SETTINGS: ReadonlyArray<{
+  label: string;
+  pick: (config: RouterConfig) => unknown;
+}> = [
+  { label: "http", pick: (config) => config.http },
+  { label: "db.path", pick: (config) => config.db.path },
+  { label: "jira.baseUrl", pick: (config) => config.jira.baseUrl },
+  { label: "executionAgent.fieldId", pick: (config) => config.executionAgent?.fieldId },
+];
+
+/** Which restart-only settings differ between the config the process started with and `next`. */
+export function restartOnlyChanges(started: RouterConfig, next: RouterConfig): string[] {
+  return RESTART_ONLY_SETTINGS.filter(
+    ({ pick }) => canonicalJson(pick(started)) !== canonicalJson(pick(next)),
+  ).map(({ label }) => label);
+}
+
+/** JSON with object keys sorted, so key order never reads as a config change. */
+export function canonicalJson(value: unknown): string {
+  return (
+    JSON.stringify(value, (_key, node: unknown) =>
+      node && typeof node === "object" && !Array.isArray(node)
+        ? Object.fromEntries(Object.entries(node).sort(([a], [b]) => a.localeCompare(b)))
+        : node,
+    ) ?? "undefined"
+  );
 }
 
 /** The file's JSON as written (defaults not filled in), for editing. */

@@ -250,7 +250,7 @@ export function renderWorkers(root, ctx) {
     h(
       "p",
       { class: "muted" },
-      "설정에 새로 추가한 워커는 Router를 재시작한 뒤에 페어링할 수 있습니다.",
+      "설정 화면에서 워커를 추가하면 저장 즉시 여기서 페어링할 수 있습니다.",
     ),
     messageEl,
     pairingEl,

@@ -164,7 +164,7 @@ ggjira worker run --config worker.config.json            # Ctrl+C 1회: 현재 �
   만료 후 `recovery_required`가 된다(§14). 같은 id로 다시 쓰려면 `workers pair`와
   `worker setup --force`를 한다.
 
-## 20. 웹 UI와 셋업 모드 (ADR 0023)
+## 20. 웹 UI와 셋업 모드 (ADR 0023, 0024)
 
 - **최초 설치**: 설정 파일 없이 `ggjira router serve --config router.config.json`을 실행하면 셋업
   모드로 뜨고, 콘솔에 `GGJIRA Router setup: open …/ui/`와 일회용 setup token이 찍힌다. 마법사가
@@ -177,11 +177,15 @@ ggjira worker run --config worker.config.json            # Ctrl+C 1회: 현재 �
   있다.
 - **로그인 실패(401)**: 웹 UI는 `GGJIRA_ADMIN_TOKEN`을 쓴다. 환경변수가 secrets 파일보다 우선하니, 둘이
   다르면 환경변수 값이 맞다.
-- **설정 저장 후 반영 안 됨**: 저장은 파일만 바꾼다. 상단 "재시작 필요" 배너가 보이면 Router를 재시작한다.
-  직전 파일은 `router.config.json.bak`에 있다. 저장 기록은 `audit_log`의 `config.updated`다. Docker에서
+- **설정 적용**: 웹에서 저장하면 바로 적용된다(로그 `config applied`). "재시작 필요" 배너가 뜨면
+  `http`, `db.path`, `jira.baseUrl`, `executionAgent.fieldId` 중 하나를 바꾼 것이니 Router를 재시작한다.
+  파일을 직접 고쳤으면 "적용 대기" 배너의 "지금 적용"(`POST /api/v1/admin/config/apply`)을 누른다.
+  직전 파일은 `router.config.json.bak`에 있다. 기록은 `audit_log`의 `config.updated`/`config.applied`다.
+- **워커 정책을 뺐는데 그 워커가 작업 중이었음**: 새 세션과 새 배정만 막힌다. 실행 중이던 작업은 임대가
+  만료되어 `recovery_required`가 된다(§14). 워커 머신에서 멈췄는지 확인하고 `jobs resolve`/`retry`를 한다. Docker에서
   저장이 `EACCES`/`EBUSY`로 실패하면 `deploy/config`가 디렉터리 마운트인지, uid 1000이 쓸 수 있는지 본다.
 - **점검 화면**: 저장된(아직 미적용일 수 있는) 설정 파일로 `router check`를 돌린다. `jira.baseUrl`을
-  바꿨다면 실행 중인 연결로 점검했다는 경고가 붙는다. 재시작한 뒤 다시 점검한다.
+  바꿨다면 실행 중인 연결로 점검했다는 경고가 붙는다. 이 경우는 재시작한 뒤 다시 점검한다.
 - 셋업 모드와 웹 UI 모두 HTTP만 서빙한다. 원격에서는 반드시 Caddy HTTPS 뒤에서 연다.
 
 ## 19. v4에서 전환

@@ -104,13 +104,15 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 | `router reports list/retry` | `/reports…` | 막힌 보고 배치 재대기 |
 | `router reconcile` | `POST /reconcile` | sync lane에서 즉시 1회 실행 |
 | `router backup` | `POST /backup` | SQLite online backup을 `<db dir>/backups/`에 저장 |
-| (웹 UI) | `GET/PUT /config`, `POST /check` | 설정 파일 조회·검증 후 저장(`.bak`, 재시작해야 적용), 저장된 설정으로 `router check` |
+| (웹 UI) | `GET/PUT /config`, `POST /config/apply`, `POST /check` | 설정 파일 조회, 검증 후 저장(`.bak`)과 즉시 적용, 손으로 고친 파일 적용, 저장된 설정으로 `router check` |
 
 ## 웹 UI와 셋업 모드 (ADR 0023)
 
 `router serve`는 `web/router-ui/`(빌드 없는 정적 HTML/JS)를 `/ui/`에서 서빙한다(`src/router/web-ui.ts`).
 화면은 대시보드(`/status`), 워커(5초 폴링, 페어링 코드, enable/disable/revoke), 설정 편집, Jira 점검이다.
-모두 admin token으로 위 관리 API만 호출한다. 설정 저장은 파일만 바꾸고, 적용은 Router 재시작 때 된다.
+모두 admin token으로 위 관리 API만 호출한다. 설정은 저장 즉시 `RouterDaemon.applyConfig`로 적용된다
+(sync/verify lane에서 직렬, ADR 0024). `http`, `db.path`, `jira.baseUrl`, `executionAgent.fieldId`만
+재시작해야 반영된다.
 
 설정 파일이 없거나 비밀정보가 불완전하면 `router serve`는 셋업 모드로 뜬다(`src/router/setup-server.ts`).
 DB와 루프 없이 `/ui/`와 `/api/v1/setup/*`만 제공하고, 콘솔에 찍힌 일회용 setup token으로 인증한다.

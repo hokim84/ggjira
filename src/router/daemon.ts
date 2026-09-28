@@ -77,6 +77,8 @@ export class RouterDaemon {
   private readonly now: () => string;
   private readonly nowMs: () => number;
   private readonly schedulerDeps: SchedulerDeps;
+  /** The applied config; replaced by `applyConfig` (ADR 0024). */
+  private config: RouterConfig;
   private readonly loops = new Map<string, Loop>();
   private lane: Promise<unknown> = Promise.resolve();
   private stopping = false;
@@ -86,6 +88,7 @@ export class RouterDaemon {
   constructor(private readonly deps: RouterDaemonDeps) {
     this.now = deps.now ?? (() => new Date().toISOString());
     this.nowMs = deps.nowMs ?? Date.now;
+    this.config = deps.config;
     this.schedulerDeps = {
       db: deps.db,
       jira: deps.jira,
@@ -105,6 +108,7 @@ export class RouterDaemon {
       config: deps.config,
       now: this.now,
       reconcileNow: () => this.reconcileNow(),
+      applyConfig: (config) => this.applyConfig(config),
       ...(deps.configPath ? { configPath: deps.configPath } : {}),
     });
     this.app = buildRouterServer({
@@ -121,18 +125,52 @@ export class RouterDaemon {
   /** Starts the background loops. The first sync runs right away when
    *  `reconciliation.startupFullSyncOnBoot` is set (§2 "Router 시작 시 전체 실행 후보를 재조회"). */
   start(): void {
-    const { reconciliation } = this.deps.config;
-    if (!reconciliation.startupFullSyncOnBoot) this.lastSyncAtMs = this.nowMs();
+    if (!this.config.reconciliation.startupFullSyncOnBoot) this.lastSyncAtMs = this.nowMs();
     const intervals = this.deps.intervals ?? {};
-    this.startLoop("sync", intervals.eventPollMs ?? EVENT_POLL_INTERVAL_MS, () => this.syncTick());
-    this.startLoop("verify", reconciliation.activeJobPollIntervalMs, async () => {
-      await this.verifyTick();
-    });
-    this.startLoop("reports", intervals.reportMs ?? REPORT_INTERVAL_MS, async () => {
-      await this.reportTick();
-    });
-    this.startLoop("leases", intervals.leaseSweepMs ?? LEASE_SWEEP_INTERVAL_MS, async () => {
-      this.leaseTick();
+    this.startLoop(
+      "sync",
+      () => intervals.eventPollMs ?? EVENT_POLL_INTERVAL_MS,
+      () => this.syncTick(),
+    );
+    this.startLoop(
+      "verify",
+      () => this.config.reconciliation.activeJobPollIntervalMs,
+      async () => {
+        await this.verifyTick();
+      },
+    );
+    this.startLoop(
+      "reports",
+      () => intervals.reportMs ?? REPORT_INTERVAL_MS,
+      async () => {
+        await this.reportTick();
+      },
+    );
+    this.startLoop(
+      "leases",
+      () => intervals.leaseSweepMs ?? LEASE_SWEEP_INTERVAL_MS,
+      async () => {
+        this.leaseTick();
+      },
+    );
+  }
+
+  /**
+   * Swaps a validated config into the running Router (ADR 0024). Runs on the sync/verify lane, so
+   * no reconcile or verify pass sees half of it. Worker API calls already in flight finish on the
+   * config they read. Connection settings (http, db, Jira client) stay as started.
+   */
+  applyConfig(config: RouterConfig): Promise<void> {
+    return this.exclusive(async () => {
+      this.config = config;
+      this.schedulerDeps.config = config;
+      this.schedulerDeps.decisionProvider = new RuleDecisionProvider(config.executionAgent);
+      this.workerService.setConfig(config);
+      this.adminService.setConfig(config);
+      this.deps.logger?.info(
+        { layer: "router", workers: config.workers.length, workspaces: config.workspaces.length },
+        "config applied",
+      );
     });
   }
 
@@ -164,7 +202,7 @@ export class RouterDaemon {
     }
     const intervalDue =
       this.lastSyncAtMs === undefined ||
-      nowMs - this.lastSyncAtMs >= this.deps.config.reconciliation.backgroundIntervalMs;
+      nowMs - this.lastSyncAtMs >= this.config.reconciliation.backgroundIntervalMs;
     if (!intervalDue && listUnprocessedEvents(this.deps.db).length === 0) return undefined;
     return this.reconcileNow();
   }
@@ -178,7 +216,7 @@ export class RouterDaemon {
       try {
         report = await reconcileCandidates(
           this.schedulerDeps,
-          buildWorkerAvailability(this.deps.db, this.deps.config, this.now()),
+          buildWorkerAvailability(this.deps.db, this.config, this.now()),
         );
       } catch (error) {
         this.lastSyncFailureAtMs = this.nowMs();
@@ -238,7 +276,7 @@ export class RouterDaemon {
     return run;
   }
 
-  private startLoop(name: string, intervalMs: number, fn: () => Promise<unknown>): void {
+  private startLoop(name: string, intervalMs: () => number, fn: () => Promise<unknown>): void {
     const loop: Loop = { timer: undefined, inFlight: undefined };
     this.loops.set(name, loop);
     const tick = (): void => {
@@ -250,7 +288,7 @@ export class RouterDaemon {
         })
         .finally(() => {
           loop.inFlight = undefined;
-          if (!this.stopping) loop.timer = setTimeout(tick, intervalMs);
+          if (!this.stopping) loop.timer = setTimeout(tick, intervalMs());
         });
     };
     loop.timer = setTimeout(tick, 0);

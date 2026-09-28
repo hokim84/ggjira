@@ -77,6 +77,10 @@ export class RouterHarness {
       reconcileNow: () => this.reconcile(),
       backupDir: path.join(this.dataDir, "backups"),
       ...(this.configPath ? { configPath: this.configPath } : {}),
+      applyConfig: async (config) => {
+        this.service.setConfig(config);
+        this.admin.setConfig(config);
+      },
     });
   }
 

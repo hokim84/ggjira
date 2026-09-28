@@ -137,6 +137,34 @@ describe("RouterDaemon", () => {
     expect(listUnprocessedEvents(db)).toEqual([]);
   });
 
+  it("applies a new config in place: new workers pair at once, intervals and scheduling follow", async () => {
+    expect(() => daemon.workerService.createPairingCode("worker-2")).toThrow(/not declared/);
+    expect(await daemon.syncTick()).toBeDefined();
+
+    await daemon.applyConfig({
+      ...config,
+      workers: [...config.workers, workerPolicy({ workerId: "worker-2" })],
+      reconciliation: { ...config.reconciliation, backgroundIntervalMs: 1_000 },
+    });
+
+    expect(daemon.workerService.createPairingCode("worker-2").workerId).toBe("worker-2");
+    expect(daemon.adminService.listWorkers().map((worker) => worker.workerId)).toEqual([
+      "worker-1",
+      "worker-2",
+    ]);
+    clock.advance(1_000);
+    expect(await daemon.syncTick()).toBeDefined();
+
+    await daemon.applyConfig({
+      ...config,
+      workspaces: config.workspaces.map((workspace) => ({ ...workspace, projectKeys: ["OTHER"] })),
+    });
+    seedRequest("KAN-9");
+    clock.advance(config.reconciliation.backgroundIntervalMs);
+    await daemon.syncTick();
+    expect(getOpenJobForIssue(db, "KAN-9")).toBeUndefined();
+  });
+
   it("serializes an admin reconcile with the timer-driven passes", async () => {
     seedRequest("KAN-1");
     const [a, b] = await Promise.all([daemon.reconcileNow(), daemon.adminService.reconcile("t")]);

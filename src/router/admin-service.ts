@@ -8,7 +8,9 @@ import { type CheckItem, runRouterCheck } from "./check.js";
 import type { RouterConfig, RouterConfigError } from "./config.js";
 import {
   type ConfigIssue,
+  canonicalJson,
   readRawRouterConfig,
+  restartOnlyChanges,
   validateRouterConfig,
   writeRouterConfig,
 } from "./config-store.js";
@@ -103,8 +105,11 @@ export interface AdminConfigView {
   path: string;
   /** The file's JSON as written; null when it no longer parses. */
   file: unknown;
-  /** The file no longer matches the config this Router started with. */
+  /** The file changes a connection setting (`restartFields`) that applies only on restart. */
   restartRequired: boolean;
+  restartFields: string[];
+  /** The file differs from the config the Router is running (e.g. edited by hand, not applied). */
+  pendingApply: boolean;
   /** Set when the file on disk is unreadable or invalid. */
   problem: string | null;
 }
@@ -126,21 +131,20 @@ export interface AdminServiceDeps {
   backupDir?: string;
   /** The config file this Router was started from. Enables the web UI's config and check calls. */
   configPath?: string;
+  /** Applies a validated config to the running Router (daemon: serialized with sync/verify, all
+   *  services swapped). Without it only this service's own view changes. */
+  applyConfig?: (config: RouterConfig) => Promise<void>;
+}
+
+export interface ConfigApplyResult extends AdminConfigView {
+  /** Connection settings saved but still waiting for a restart. */
+  appliedWithout: string[];
 }
 
 const MAX_PAGE_SIZE = 200;
 
 function elapsedMs(since: string | null, now: string): number | null {
   return since ? Math.max(0, Date.parse(now) - Date.parse(since)) : null;
-}
-
-/** JSON with object keys sorted, so key order never reads as a config change. */
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, node: unknown) =>
-    node && typeof node === "object" && !Array.isArray(node)
-      ? Object.fromEntries(Object.entries(node).sort(([a], [b]) => a.localeCompare(b)))
-      : node,
-  );
 }
 
 function backupFileName(now: string): string {
@@ -150,10 +154,20 @@ function backupFileName(now: string): string {
 export class AdminService {
   private readonly db: Database.Database;
   private readonly now: () => string;
+  /** The config currently applied (changes on every apply). */
+  private config: RouterConfig;
+  /** The config the process started with: its connection settings are the ones in effect. */
+  private readonly startedWith: RouterConfig;
 
   constructor(private readonly deps: AdminServiceDeps) {
     this.db = deps.db;
     this.now = deps.now ?? (() => new Date().toISOString());
+    this.config = deps.config;
+    this.startedWith = deps.config;
+  }
+
+  setConfig(config: RouterConfig): void {
+    this.config = config;
   }
 
   // --- workers -------------------------------------------------------------------------
@@ -161,10 +175,10 @@ export class AdminService {
   listWorkers(): AdminWorkerView[] {
     const now = this.now();
     const rows = new Map(listWorkers(this.db).map((worker) => [worker.id, worker]));
-    const ids = new Set([...this.deps.config.workers.map((w) => w.workerId), ...rows.keys()]);
+    const ids = new Set([...this.config.workers.map((w) => w.workerId), ...rows.keys()]);
     return [...ids].sort().map((workerId): AdminWorkerView => {
       const row = rows.get(workerId);
-      const policy = this.deps.config.workers.find((w) => w.workerId === workerId);
+      const policy = this.config.workers.find((w) => w.workerId === workerId);
       const active = row ? getActiveAttemptForWorker(this.db, workerId) : undefined;
       return {
         workerId,
@@ -175,7 +189,7 @@ export class AdminService {
         paired: Boolean(row),
         revokedAt: row?.revokedAt ?? null,
         lastHeartbeatAt: row?.lastHeartbeatAt ?? null,
-        online: row ? isWorkerDispatchable(row, this.deps.config, now) : false,
+        online: row ? isWorkerDispatchable(row, this.config, now) : false,
         reportedCapabilities: row?.reportedCapabilities ?? [],
         reportedRepositoryIds: row?.reportedRepositoryIds ?? [],
         activeAttempt: active
@@ -309,13 +323,13 @@ export class AdminService {
 
   async retryJob(jobId: string, actor: string): Promise<JobRow> {
     return retryJob(
-      { db: this.db, jira: this.deps.jira, config: this.deps.config, now: this.now },
+      { db: this.db, jira: this.deps.jira, config: this.config, now: this.now },
       { jobId, actor },
     );
   }
 
   resolveJob(jobId: string, actor: string): JobRow {
-    return resolveRecoveryJob(this.db, this.deps.config, { jobId, actor, now: this.now() });
+    return resolveRecoveryJob(this.db, this.config, { jobId, actor, now: this.now() });
   }
 
   // --- reports -------------------------------------------------------------------------
@@ -362,7 +376,7 @@ export class AdminService {
     const now = this.now();
     const dir =
       this.deps.backupDir ??
-      path.join(path.dirname(path.resolve(this.deps.config.db.path)), "backups");
+      path.join(path.dirname(path.resolve(this.startedWith.db.path)), "backups");
     mkdirSync(dir, { recursive: true });
     const target = path.join(dir, backupFileName(now));
     await this.db.backup(target);
@@ -378,7 +392,7 @@ export class AdminService {
 
   // --- config (web UI) -------------------------------------------------------------------
 
-  /** The config file as it is on disk now. Edits apply on the next Router start (ADR 0023). */
+  /** The config file as it is on disk now, compared with what the Router is running (ADR 0024). */
   readConfig(): AdminConfigView {
     const configPath = this.requireConfigPath();
     let file: unknown;
@@ -388,36 +402,81 @@ export class AdminService {
       return {
         path: configPath,
         file: null,
-        restartRequired: true,
+        restartRequired: false,
+        restartFields: [],
+        pendingApply: false,
         problem: (error as RouterConfigError).message,
       };
     }
     const validation = validateRouterConfig(file);
+    if (!validation.ok) {
+      return {
+        path: configPath,
+        file,
+        restartRequired: false,
+        restartFields: [],
+        pendingApply: false,
+        problem: validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "),
+      };
+    }
+    const restartFields = restartOnlyChanges(this.startedWith, validation.config);
     return {
       path: configPath,
       file,
-      restartRequired: !validation.ok || !this.matchesRunningConfig(validation.config),
-      problem: validation.ok
-        ? null
-        : validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "),
+      restartRequired: restartFields.length > 0,
+      restartFields,
+      pendingApply: canonicalJson(validation.config) !== canonicalJson(this.config),
+      problem: null,
     };
   }
 
-  updateConfig(raw: unknown, actor: string): AdminConfigView {
+  /** Validates, saves (keeping `.bak`) and applies to the running Router at once. */
+  async updateConfig(raw: unknown, actor: string): Promise<ConfigApplyResult> {
     const configPath = this.requireConfigPath();
     const validation = validateRouterConfig(raw);
     if (!validation.ok) {
       throw new AdminError(400, "invalid_config", "config is invalid", validation.issues);
     }
     writeRouterConfig(configPath, raw);
+    return this.apply(validation.config, actor, "config.updated", configPath);
+  }
+
+  /** Applies the file as it is on disk (after a hand edit) without changing it. */
+  async applyConfigFile(actor: string): Promise<ConfigApplyResult> {
+    const configPath = this.requireConfigPath();
+    let raw: unknown;
+    try {
+      raw = readRawRouterConfig(configPath);
+    } catch (error) {
+      throw new AdminError(409, "config_unreadable", (error as Error).message);
+    }
+    const validation = validateRouterConfig(raw);
+    if (!validation.ok) {
+      throw new AdminError(409, "invalid_config", "config file is invalid", validation.issues);
+    }
+    return this.apply(validation.config, actor, "config.applied", configPath);
+  }
+
+  private async apply(
+    config: RouterConfig,
+    actor: string,
+    action: string,
+    configPath: string,
+  ): Promise<ConfigApplyResult> {
+    if (this.deps.applyConfig) await this.deps.applyConfig(config);
+    else this.setConfig(config);
+    const appliedWithout = restartOnlyChanges(this.startedWith, config);
     appendAudit(this.db, {
       at: this.now(),
       actor,
-      action: "config.updated",
+      action,
       subject: "router-config",
-      detail: { path: configPath },
+      detail: {
+        path: configPath,
+        ...(appliedWithout.length ? { restartFields: appliedWithout } : {}),
+      },
     });
-    return this.readConfig();
+    return { ...this.readConfig(), appliedWithout };
   }
 
   /** `router check` against the config file on disk (saved edits included), read-only. */
@@ -439,7 +498,7 @@ export class AdminService {
       return { items: [{ level: "fail", message: (error as Error).message }] };
     }
     const items = await runRouterCheck(this.deps.jira, config, issueKey ? { issueKey } : {});
-    if (config.jira.baseUrl !== this.deps.config.jira.baseUrl) {
+    if (config.jira.baseUrl !== this.startedWith.jira.baseUrl) {
       items.unshift({
         level: "warn",
         message: "jira.baseUrl changed; this check used the running Router's Jira connection",
@@ -476,10 +535,6 @@ export class AdminService {
       throw new AdminError(409, "config_unavailable", "this Router instance has no config file");
     }
     return this.deps.configPath;
-  }
-
-  private matchesRunningConfig(config: RouterConfig): boolean {
-    return canonicalJson(config) === canonicalJson(this.deps.config);
   }
 
   private requireJob(jobId: string): JobRow {

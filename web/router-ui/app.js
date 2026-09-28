@@ -37,12 +37,33 @@ const ctx = {
     try {
       const view = await admin("GET", "/config");
       clear(banner);
+      if (view.pendingApply) {
+        const apply = h("button", { type: "button", class: "btn btn-small" }, "지금 적용");
+        apply.addEventListener("click", async () => {
+          apply.disabled = true;
+          try {
+            await admin("POST", "/config/apply");
+            await ctx.refreshBanner();
+          } catch (error) {
+            fill(banner, errorNotice(error));
+          }
+        });
+        banner.append(
+          notice(
+            "info",
+            h("strong", {}, "적용 대기: "),
+            "설정 파일이 실행 중인 설정과 다릅니다(파일을 직접 고친 경우). ",
+            apply,
+          ),
+        );
+      }
       if (view.restartRequired) {
         banner.append(
           notice(
             "warn",
             h("strong", {}, "재시작 필요: "),
-            "저장된 설정이 실행 중인 Router와 다릅니다. Router를 재시작해야 적용됩니다.",
+            h("code", {}, view.restartFields.join(", ")),
+            " 변경은 Router를 재시작해야 적용됩니다. 나머지 설정은 이미 적용됐습니다.",
           ),
         );
       }

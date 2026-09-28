@@ -121,7 +121,10 @@ describe("ggjira CLI", () => {
 
     it("admin commands need the admin token", async () => {
       const io = captureIo();
-      expect(await main(["router", "workers", "list", "--url", url], io)).toBe(2);
+      const secrets = path.join(dir, "absent-router.env");
+      expect(
+        await main(["router", "workers", "list", "--url", url, "--secrets", secrets], io),
+      ).toBe(2);
       expect(io.stderr.join("\n")).toContain("GGJIRA_ADMIN_TOKEN");
     });
 

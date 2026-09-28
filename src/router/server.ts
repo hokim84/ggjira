@@ -313,6 +313,7 @@ function registerAdminRoutes(
       scope.put("/config", async (request) =>
         admin.updateConfig((request.body as ParsedBody | undefined)?.parsed, actorOf(request)),
       );
+      scope.post("/config/apply", async (request) => admin.applyConfigFile(actorOf(request)));
       scope.post<{ Body: ParsedBody | undefined }>("/check", async (request) => {
         const issueKey = (request.body?.parsed as { issueKey?: unknown } | undefined)?.issueKey;
         return admin.check(typeof issueKey === "string" && issueKey ? issueKey : undefined);
