@@ -188,6 +188,23 @@ export const AdminAddWorkerRequestSchema = z.object({
 });
 export type AdminAddWorkerRequest = z.infer<typeof AdminAddWorkerRequestSchema>;
 
+/** `POST /api/v1/admin/jira/project` — the project's statuses and subtask issue types, for the
+ *  web UI's status and issue-type pickers. */
+export const AdminJiraProjectRequestSchema = z.object({ projectKey: z.string().min(1) });
+
+/** `POST /api/v1/admin/jira/workflow-check` — checks an (unsaved) status mapping against the
+ *  project's real transitions. */
+export const AdminWorkflowCheckRequestSchema = z.object({
+  projectKey: z.string().min(1),
+  workflow: z.object({
+    requestStatus: z.string().min(1),
+    inProgressStatus: z.string().min(1),
+    reviewStatus: z.string().min(1),
+    planningStatus: z.string().min(1).optional(),
+    needsDecisionStatus: z.string().min(1).optional(),
+  }),
+});
+
 /** `POST /api/v1/admin/pairing-codes` — admin-token authenticated. The code is bound to a
  *  `workerId` already declared in Router config's `workers[]` policy list. */
 export const AdminCreatePairingCodeRequestSchema = z.object({

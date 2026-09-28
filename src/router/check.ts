@@ -1,5 +1,6 @@
 import type { JiraGateway } from "../jira/gateway.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
+import { checkWorkflowHops } from "./workflow-check.js";
 
 /**
  * `ggjira router check`: confirms the Router config matches the real Jira before `serve`
@@ -65,6 +66,30 @@ async function checkProject(
             message: `${where}: ${label} "${status}" is not a status of this project (has: ${statuses.join(", ")})`,
           },
     );
+  }
+
+  try {
+    for (const hop of await checkWorkflowHops(jira, projectKey, workspace.workflow)) {
+      const move = `transition "${hop.from}" → "${hop.to}" (${hop.label})`;
+      if (hop.state === "ok") {
+        items.push({
+          level: "ok",
+          message: `${where}: ${move} is available${hop.sampleIssue ? ` (checked on ${hop.sampleIssue})` : ""}`,
+        });
+      } else if (hop.state === "missing") {
+        items.push({
+          level: "fail",
+          message: `${where}: no ${move} in the workflow (checked on ${hop.sampleIssue}; reachable: ${hop.reachable.join(", ") || "none"})`,
+        });
+      } else {
+        items.push({ level: "warn", message: `${where}: ${move} not verified — ${hop.reason}` });
+      }
+    }
+  } catch (error) {
+    items.push({
+      level: "warn",
+      message: `${where}: cannot check transitions (${errorText(error)})`,
+    });
   }
 
   if (workspace.workflow.planningStatus) {

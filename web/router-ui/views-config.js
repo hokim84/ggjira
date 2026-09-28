@@ -3,7 +3,33 @@
 import { admin } from "./api.js";
 import { clear, fill, errorNotice, field, h, notice, showFieldErrors } from "./dom.js";
 
-const FORM_KEYS = new Set(["configVersion", "jira", "repositories", "workspaces", "workers"]);
+const FORM_KEYS = new Set([
+  "configVersion",
+  "jira",
+  "repositories",
+  "workspaces",
+  "workers",
+  "planning",
+]);
+
+const STATUS_FIELDS = [
+  ["requestStatus", "요청 상태", "사람이 AI에게 맡길 때 옮기는 상태"],
+  ["inProgressStatus", "진행 상태", "워커가 시작하면 Router가 옮김"],
+  ["reviewStatus", "검토 상태", "작업이 끝나면 Router가 옮김. 사람이 확인 후 완료 처리"],
+  ["planningStatus", "계획 요청 상태", "비우면 PM 계획을 쓰지 않음", true],
+  [
+    "needsDecisionStatus",
+    "결정 필요 상태",
+    "계획이 사람의 결정을 요청할 때. 비우면 검토 상태",
+    true,
+  ],
+];
+
+const HOP_BADGES = {
+  ok: ["badge-ok", "연결됨"],
+  missing: ["badge-bad", "전이 없음"],
+  unknown: ["badge-warn", "확인 불가"],
+};
 
 function section(title, description, ...children) {
   return h(
@@ -56,7 +82,14 @@ function listEditor(state, key, render, blank, addLabel) {
     );
   };
   draw();
+  wrap.redraw = draw;
   return wrap;
+}
+
+function cleanPlanning(planning = {}) {
+  return Object.fromEntries(
+    Object.entries(planning).filter(([, value]) => value !== undefined && value !== ""),
+  );
 }
 
 export async function renderConfig(root, ctx) {
@@ -87,30 +120,207 @@ export async function renderConfig(root, ctx) {
     "저장소 추가",
   );
 
+  // Jira project info (statuses, subtask types) per project key, loaded on demand.
+  const jiraInfo = new Map();
+  const hopTimers = new Map();
+
+  async function loadJira(projectKey, force = false) {
+    if (!projectKey || (!force && jiraInfo.has(projectKey))) return;
+    jiraInfo.set(projectKey, { loading: true });
+    try {
+      jiraInfo.set(projectKey, await admin("POST", "/jira/project", { projectKey }));
+    } catch (error) {
+      if (error.status === 401) return ctx.logout();
+      jiraInfo.set(projectKey, { error: error.message });
+    }
+    workspaces.redraw();
+    planningFields.redraw();
+  }
+
+  function statusField(i, key, label, hint, optional) {
+    const ws = state.workspaces[i];
+    const info = jiraInfo.get(ws.projectKeys?.[0]);
+    const current = ws.workflow?.[key];
+    if (!info?.statuses) {
+      return field(state, `workspaces.${i}.workflow.${key}`, label, { optional, hint });
+    }
+    const unknown = current && !info.statuses.includes(current);
+    return field(state, `workspaces.${i}.workflow.${key}`, label, {
+      kind: "select",
+      options: info.statuses,
+      optional,
+      hint: unknown ? `"${current}"은(는) Jira 프로젝트에 없는 상태입니다` : hint,
+    });
+  }
+
+  function renderHops(el, result) {
+    if (result.loading) return fill(el, h("p", { class: "muted" }, "Jira 워크플로를 확인하는 중…"));
+    if (result.error) return fill(el, errorNotice({ message: result.error }));
+    fill(
+      el,
+      h(
+        "ul",
+        { class: "hop-list" },
+        result.hops.map((hop) => {
+          const [badge, text] = HOP_BADGES[hop.state];
+          return h(
+            "li",
+            {},
+            h("span", { class: `badge ${badge}` }, text),
+            h("span", { class: "hop-label" }, hop.label),
+            h("span", { class: "hop-move" }, `${hop.from} → ${hop.to}`),
+            hop.state === "missing"
+              ? h(
+                  "small",
+                  { class: "hint" },
+                  `${hop.sampleIssue}에서 갈 수 있는 상태: ${hop.reachable.join(", ") || "없음"} — Jira 워크플로에 전이를 추가하세요`,
+                )
+              : hop.state === "unknown"
+                ? h("small", { class: "hint" }, hop.reason)
+                : hop.sampleIssue
+                  ? h("small", { class: "hint" }, `${hop.sampleIssue}로 확인`)
+                  : null,
+          );
+        }),
+      ),
+    );
+  }
+
+  async function checkHops(i, el) {
+    const ws = state.workspaces[i];
+    const projectKey = ws?.projectKeys?.[0];
+    const workflow = ws?.workflow ?? {};
+    if (
+      !projectKey ||
+      !workflow.requestStatus ||
+      !workflow.inProgressStatus ||
+      !workflow.reviewStatus
+    ) {
+      fill(
+        el,
+        h(
+          "p",
+          { class: "muted" },
+          "프로젝트 키와 요청, 진행, 검토 상태를 정하면 전이를 확인합니다.",
+        ),
+      );
+      return;
+    }
+    renderHops(el, { loading: true });
+    try {
+      renderHops(el, await admin("POST", "/jira/workflow-check", { projectKey, workflow }));
+    } catch (error) {
+      if (error.status === 401) return ctx.logout();
+      renderHops(el, { error: error.message });
+    }
+  }
+
+  function scheduleHops(i, el) {
+    clearTimeout(hopTimers.get(i));
+    hopTimers.set(
+      i,
+      setTimeout(() => checkHops(i, el), 400),
+    );
+  }
+
+  function workflowBlock(i) {
+    const ws = state.workspaces[i];
+    ws.workflow ||= {};
+    const projectKey = ws.projectKeys?.[0];
+    const info = jiraInfo.get(projectKey);
+    const hopsEl = h("div", { class: "hops" });
+    const block = h(
+      "div",
+      { class: "full-row workflow-block" },
+      h(
+        "div",
+        { class: "workflow-head" },
+        h("h3", {}, "상태 흐름"),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn btn-small",
+            disabled: !projectKey,
+            onclick: () => loadJira(projectKey, true),
+          },
+          info?.statuses ? "Jira에서 다시 불러오기" : "Jira에서 상태 불러오기",
+        ),
+      ),
+      info?.loading ? h("p", { class: "muted" }, `${projectKey} 상태를 불러오는 중…`) : null,
+      info?.error ? errorNotice({ message: `${projectKey}: ${info.error}` }) : null,
+      h(
+        "div",
+        { class: "grid" },
+        STATUS_FIELDS.map(([key, label, hint, optional]) =>
+          statusField(i, key, label, hint, optional),
+        ),
+      ),
+      h("h3", {}, "Router가 하는 전이"),
+      hopsEl,
+    );
+    block.addEventListener("change", () => scheduleHops(i, hopsEl));
+    block.addEventListener("input", () => scheduleHops(i, hopsEl));
+    if (info?.statuses) scheduleHops(i, hopsEl);
+    else fill(hopsEl, h("p", { class: "muted" }, "Jira에서 상태를 불러오면 전이를 확인합니다."));
+    return block;
+  }
+
   const workspaces = listEditor(
     state,
     "workspaces",
-    (i) => [
-      field(state, `workspaces.${i}.id`, "workspace id"),
-      field(state, `workspaces.${i}.repositoryId`, "저장소 id"),
-      field(state, `workspaces.${i}.projectKeys`, "Jira 프로젝트 키", {
+    (i) => {
+      const repoIds = (state.repositories || []).map((repo) => repo.id).filter(Boolean);
+      const projectField = field(state, `workspaces.${i}.projectKeys`, "Jira 프로젝트 키", {
         kind: "list",
-        hint: "쉼표로 구분",
-      }),
-      field(state, `workspaces.${i}.workflow.requestStatus`, "요청 상태"),
-      field(state, `workspaces.${i}.workflow.inProgressStatus`, "진행 상태"),
-      field(state, `workspaces.${i}.workflow.reviewStatus`, "검토 상태"),
-      field(state, `workspaces.${i}.workflow.planningStatus`, "계획 요청 상태", {
-        optional: true,
-        hint: "비우면 PM 계획 사용 안 함",
-      }),
-      field(state, `workspaces.${i}.workflow.needsDecisionStatus`, "결정 필요 상태", {
-        optional: true,
-      }),
-    ],
+        hint: "쉼표로 구분. 상태 목록은 첫 번째 프로젝트 기준",
+      });
+      projectField.addEventListener("change", () => {
+        const key = state.workspaces[i]?.projectKeys?.[0];
+        if (key) loadJira(key);
+      });
+      return [
+        field(state, `workspaces.${i}.id`, "workspace id"),
+        field(state, `workspaces.${i}.repositoryId`, "저장소", {
+          kind: "select",
+          options: repoIds,
+        }),
+        projectField,
+        workflowBlock(i),
+      ];
+    },
     () => ({ id: "", repositoryId: "", projectKeys: [], workflow: {} }),
     "workspace 추가",
   );
+
+  state.planning ||= {};
+  const planningFields = h("div", { class: "grid" });
+  planningFields.redraw = () => {
+    const subtaskTypes = [
+      ...new Set([...jiraInfo.values()].flatMap((info) => info.subtaskIssueTypes ?? [])),
+    ];
+    fill(
+      planningFields,
+      field(state, "planning.subtaskIssueType", "하위 이슈 유형", {
+        kind: subtaskTypes.length ? "select" : "text",
+        options: subtaskTypes,
+        optional: true,
+        placeholder: "Sub-task",
+        hint: subtaskTypes.length
+          ? "계획으로 만드는 하위 이슈의 유형(Jira에서 불러옴)"
+          : "Jira에서 상태를 불러오면 목록에서 고를 수 있습니다. 비우면 Sub-task",
+      }),
+      field(state, "planning.maxTasksPerPlan", "계획당 최대 하위 이슈 수", {
+        kind: "number",
+        placeholder: "10",
+      }),
+    );
+  };
+  planningFields.redraw();
+
+  for (const ws of state.workspaces || []) {
+    if (ws.projectKeys?.[0]) loadJira(ws.projectKeys[0]);
+  }
 
   const workers = listEditor(
     state,
@@ -141,11 +351,16 @@ export async function renderConfig(root, ctx) {
       h("div", { class: "grid" }, field(state, "jira.baseUrl", "Jira 사이트 URL")),
     ),
     section("저장소", "워커가 로컬에 가지고 있어야 하는 저장소 식별자입니다.", repositories),
-    section("Workspace", "Jira 프로젝트와 저장소, 상태 흐름을 묶습니다.", workspaces),
+    section(
+      "Workspace",
+      "Jira 프로젝트와 저장소, 상태 흐름을 묶습니다. 상태 이름과 순서는 Jira 워크플로에 맞춰 자유롭게 정하면 되고, 아래에서 Router가 하는 전이가 워크플로에 있는지 바로 확인합니다.",
+      workspaces,
+    ),
+    section("계획(PM)", "계획 요청 상태를 쓸 때만 필요합니다.", planningFields),
     section("워커 정책", "워커별로 허용하는 capability와 저장소입니다.", workers),
     section(
       "고급 (JSON)",
-      "db, http, reconciliation, execution, planning, reporting, executionAgent",
+      "db, http, reconciliation, execution, reporting, executionAgent",
       h(
         "div",
         { class: "field", "data-path": "advanced" },
@@ -179,6 +394,9 @@ export async function renderConfig(root, ctx) {
       repositories: state.repositories,
       workspaces: state.workspaces,
       workers: state.workers,
+      ...(Object.keys(cleanPlanning(state.planning)).length
+        ? { planning: cleanPlanning(state.planning) }
+        : {}),
     };
     try {
       const result = await admin("PUT", "/config", body);

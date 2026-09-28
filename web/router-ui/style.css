@@ -557,3 +557,47 @@ textarea {
   gap: 0.4rem;
   flex-wrap: wrap;
 }
+
+.full-row {
+  grid-column: 1 / -1;
+}
+.workflow-block {
+  border-top: 1px dashed var(--border);
+  padding-top: 0.5rem;
+}
+.workflow-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.workflow-head h3 {
+  margin: 0.5rem 0;
+}
+.hop-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.hop-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.6rem;
+  background: var(--surface-2);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+}
+.hop-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.hop-move {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+.hop-list .hint {
+  flex-basis: 100%;
+}

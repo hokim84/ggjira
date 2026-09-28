@@ -6,7 +6,7 @@ import type { JobState } from "../contracts/job-state.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import { isWorkerDispatchable } from "./availability.js";
 import { type CheckItem, runRouterCheck } from "./check.js";
-import type { RouterConfig, RouterConfigError } from "./config.js";
+import type { RouterConfig, RouterConfigError, WorkspaceConfig } from "./config.js";
 import {
   type ConfigIssue,
   canonicalJson,
@@ -42,6 +42,12 @@ import {
 import { getWorker, listWorkers, revokeWorker, setWorkerEnabled } from "./db/workers.js";
 import { resolveRecoveryJob, retryJob, retryReportBatch } from "./recovery.js";
 import { cancelStaleJob, type SchedulerReport } from "./scheduler.js";
+import {
+  checkWorkflowHops,
+  inspectProjectWorkflow,
+  type ProjectWorkflowInfo,
+  type WorkflowHopResult,
+} from "./workflow-check.js";
 
 /**
  * The operations behind `/api/v1/admin/*` (docs/router-service-implementation-plan.md §4 "관리
@@ -52,7 +58,7 @@ import { cancelStaleJob, type SchedulerReport } from "./scheduler.js";
 
 export class AdminError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 404 | 409 | 502,
     readonly code: string,
     message: string,
     readonly issues?: ConfigIssue[],
@@ -530,6 +536,29 @@ export class AdminService {
       },
     });
     return { ...this.readConfig(), appliedWithout };
+  }
+
+  /** Statuses and subtask issue types of a Jira project, for the web UI pickers (read-only). */
+  async jiraProject(projectKey: string): Promise<ProjectWorkflowInfo> {
+    return this.callJira(() => inspectProjectWorkflow(this.deps.jira, projectKey));
+  }
+
+  /** Whether Router's own status moves exist in the project's workflow (read-only). */
+  async checkWorkflow(
+    projectKey: string,
+    workflow: WorkspaceConfig["workflow"],
+  ): Promise<{ hops: WorkflowHopResult[] }> {
+    return {
+      hops: await this.callJira(() => checkWorkflowHops(this.deps.jira, projectKey, workflow)),
+    };
+  }
+
+  private async callJira<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      throw new AdminError(502, "jira_error", (error as Error).message);
+    }
   }
 
   /** `router check` against the config file on disk (saved edits included), read-only. */

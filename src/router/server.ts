@@ -5,6 +5,8 @@ import type { z } from "zod";
 import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
+  AdminJiraProjectRequestSchema,
+  AdminWorkflowCheckRequestSchema,
   type ApiErrorResponse,
   JobAuthorizeRequestSchema,
   JobHeartbeatRequestSchema,
@@ -325,6 +327,21 @@ function registerAdminRoutes(
         admin.updateConfig((request.body as ParsedBody | undefined)?.parsed, actorOf(request)),
       );
       scope.post("/config/apply", async (request) => admin.applyConfigFile(actorOf(request)));
+      scope.post("/jira/project", async (request) =>
+        admin.jiraProject(parseBody(AdminJiraProjectRequestSchema, request.body).projectKey),
+      );
+      scope.post("/jira/workflow-check", async (request) => {
+        const body = parseBody(AdminWorkflowCheckRequestSchema, request.body);
+        return admin.checkWorkflow(body.projectKey, {
+          requestStatus: body.workflow.requestStatus,
+          inProgressStatus: body.workflow.inProgressStatus,
+          reviewStatus: body.workflow.reviewStatus,
+          ...(body.workflow.planningStatus ? { planningStatus: body.workflow.planningStatus } : {}),
+          ...(body.workflow.needsDecisionStatus
+            ? { needsDecisionStatus: body.workflow.needsDecisionStatus }
+            : {}),
+        });
+      });
       scope.post<{ Body: ParsedBody | undefined }>("/check", async (request) => {
         const issueKey = (request.body?.parsed as { issueKey?: unknown } | undefined)?.issueKey;
         return admin.check(typeof issueKey === "string" && issueKey ? issueKey : undefined);
