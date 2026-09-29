@@ -22,7 +22,9 @@ import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
 import type { JobPage, JobRow } from "./db/jobs.js";
 import {
+  JEV_API_KEY_ENV,
   loadRouterGithubSecrets,
+  loadRouterJevApiKey,
   loadRouterSecrets,
   parseEnvFile,
   type RouterEnvSecrets,
@@ -183,6 +185,7 @@ async function serve(parsed: ParsedArgs, io: CliIo): Promise<number> {
     },
   );
   const github = loadRouterGithubSecrets(io.env, secretsPath(parsed, io));
+  const jevApiKey = loadRouterJevApiKey(io.env, secretsPath(parsed, io));
   const daemon = new RouterDaemon({
     db,
     jira,
@@ -193,6 +196,11 @@ async function serve(parsed: ParsedArgs, io: CliIo): Promise<number> {
     configPath: configFile,
     logger,
     github: { webhookSecret: github.webhookSecret, token: github.token },
+    jev: {
+      apiKey: jevApiKey,
+      secretsPath: secretsPath(parsed, io),
+      fromEnvironment: Boolean(io.env[JEV_API_KEY_ENV]),
+    },
   });
 
   const host = stringOption(parsed, "host") ?? config.http.host;

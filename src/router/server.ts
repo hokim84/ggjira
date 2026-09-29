@@ -7,6 +7,7 @@ import {
   AdminCreatePairingCodeRequestSchema,
   AdminJiraProjectRequestSchema,
   AdminWorkflowCheckRequestSchema,
+  AdminJevKeyRequestSchema,
   type ApiErrorResponse,
   JobAuthorizeRequestSchema,
   JobHeartbeatRequestSchema,
@@ -343,6 +344,12 @@ function registerAdminRoutes(
             ...(cursor ? { cursor } : {}),
           });
         },
+      );
+      scope.put("/secrets/jev", async (request) =>
+        admin.setJevApiKey(
+          parseBody(AdminJevKeyRequestSchema, request.body).apiKey,
+          actorOf(request),
+        ),
       );
       scope.get<IdParams>("/jobs/:id", async (request) => admin.showJob(request.params.id));
       scope.post<IdParams>("/jobs/:id/cancel", async (request) =>

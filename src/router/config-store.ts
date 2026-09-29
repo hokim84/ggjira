@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -104,6 +105,26 @@ export function writeRouterSecretsFile(secretsPath: string, secrets: RouterEnvSe
     ),
   ];
   writeAtomic(secretsPath, `${lines.join("\n")}\n`, 0o600);
+}
+
+/**
+ * Sets (or with `null` removes) one `KEY=VALUE` line in the secrets file, keeping every other line
+ * and comment, and leaves the file owner-only (ADR 0031). The caller validates `value`.
+ */
+export function setSecretsFileValue(secretsPath: string, key: string, value: string | null): void {
+  const lines = existsSync(secretsPath)
+    ? readFileSync(secretsPath, "utf-8").replace(/\n$/, "").split(/\r?\n/)
+    : ["# GGJIRA Router secrets — keep this file private (mode 0600). Environment variables win."];
+  const isKeyLine = (line: string) => line.trim().startsWith(`${key}=`);
+  const kept = lines.filter((line) => !isKeyLine(line));
+  const index = lines.findIndex(isKeyLine);
+  if (value !== null) {
+    const entry = `${key}=${value}`;
+    if (index === -1) kept.push(entry);
+    else kept.splice(index, 0, entry);
+  }
+  writeAtomic(secretsPath, `${kept.join("\n")}\n`, 0o600);
+  chmodSync(secretsPath, 0o600);
 }
 
 /** Default secrets file: `router.env` next to the config file. */

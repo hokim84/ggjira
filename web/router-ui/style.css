@@ -655,3 +655,25 @@ textarea {
 .hop-list .hint {
   flex-basis: 100%;
 }
+
+.jev-key-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.jev-key-row input {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

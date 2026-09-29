@@ -290,3 +290,31 @@ v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 �
 - 끄려면 설정 > 고급 JSON에 `"scheduling": {"usage": {"skipExhausted": false, "deprioritizeAtPercent": 100}}`를
   넣는다.
 
+## 23. Jev 관찰 평가 (ADR 0030)
+
+켜기: 웹 UI > 설정 > "Jev 평가 (TypeSafe)"에 키를 넣고 저장한다. `router.env`에 저장되고 재시작 없이
+바로 켜진다(ADR 0031). `router.env`에 `TYPESAFE_API_KEY=<키>`를 직접 넣고 재시작해도 된다. 로그에
+`jev assessment pass`가 보이면 동작 중이다. 끄려면 같은 화면에서 삭제하거나, 설정 고급 JSON에
+`"jev": {"enabled": false}`를 넣는다.
+
+- 화면에 "설정됨 (환경변수)"로 나오고 바꿀 수 없음: Router 환경변수 `TYPESAFE_API_KEY`가 파일보다 우선한다.
+  환경변수를 바꾸고 재시작한다.
+- 저장 시 400: 키에 공백, 따옴표, `#`, 줄바꿈이 들어 있다. 복사할 때 앞뒤 공백이 붙었는지 확인한다.
+
+평가 결과 보기(관리 API·CLI가 생기기 전까지는 DB를 직접 읽는다):
+
+```
+sqlite3 data/router.sqlite3 "SELECT j.issue_key, j.kind, j.state, j.attempt_count,
+  json_extract(a.answers_json,'$.modelTier.choice') AS tier,
+  round(json_extract(a.answers_json,'$.modelTier.confidence'),2) AS tier_conf,
+  json_extract(a.answers_json,'$.readiness.choice') AS readiness,
+  round(json_extract(a.answers_json,'$.readiness.confidence'),2) AS readiness_conf,
+  a.latency_ms, a.error
+  FROM job_assessments a JOIN jobs j ON j.id = a.job_id ORDER BY j.created_at DESC LIMIT 30;"
+```
+
+진단:
+- `error`에 `401`: 키가 틀렸다. `429`: 요청 한도 초과다(3번 재시도 후 기록). `did not answer within`:
+  `jev.timeoutMs`를 늘린다.
+- 한 job은 최대 3번까지만 시도한다. 다시 평가하려면 그 job의 `job_assessments` 행을 지운다.
+

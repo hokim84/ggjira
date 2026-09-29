@@ -225,6 +225,11 @@ export const AdminAddWorkerRequestSchema = z.object({
 });
 export type AdminAddWorkerRequest = z.infer<typeof AdminAddWorkerRequestSchema>;
 
+/** `PUT /api/v1/admin/secrets/jev` — sets (string) or removes (null) the Jev API key in the
+ *  Router's secrets file and applies it at once (ADR 0031). The key is never returned. Its format
+ *  is checked by the Router (`JevApiKeySchema`). */
+export const AdminJevKeyRequestSchema = z.object({ apiKey: z.string().nullable() });
+
 /** `POST /api/v1/admin/jira/project` — the project's statuses and subtask issue types, for the
  *  web UI's status and issue-type pickers. */
 export const AdminJiraProjectRequestSchema = z.object({ projectKey: z.string().min(1) });

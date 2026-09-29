@@ -299,3 +299,22 @@ export const PROVIDER_USAGE_STATEMENTS: readonly string[] = [
     PRIMARY KEY (worker_id, provider_id)
   )`,
 ];
+
+/**
+ * Migration 7 (ADR 0030). What Jev said about each job, recorded but not acted on (shadow mode).
+ * `answers_json` is the raw `answers` map; `error`/`tries` keep failed calls from being retried
+ * forever.
+ */
+export const JOB_ASSESSMENT_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS job_assessments (
+    job_id TEXT PRIMARY KEY REFERENCES jobs (id),
+    model TEXT,
+    answers_json TEXT,
+    error TEXT,
+    tries INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER,
+    latency_ms INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+];

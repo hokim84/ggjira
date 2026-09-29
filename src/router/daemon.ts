@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { Logger } from "../logger.js";
 import { AdminService } from "./admin-service.js";
+import { type AssessmentPassReport, assessPendingJobs } from "./assessment.js";
 import { buildWorkerAvailability } from "./availability.js";
 import type { RouterConfig } from "./config.js";
 import { listUnprocessedEvents, markEventProcessed } from "./db/events.js";
@@ -21,6 +22,7 @@ import {
   type PullRequestPollReport,
   pollPullRequests,
 } from "./github.js";
+import { JevClient } from "./jev.js";
 import { buildRouterServer } from "./server.js";
 import { WorkerService } from "./worker-service.js";
 
@@ -32,6 +34,8 @@ export const REPORT_INTERVAL_MS = 2_000;
 export const LEASE_SWEEP_INTERVAL_MS = 5_000;
 /** After a failed reconcile, webhook-triggered passes wait this long before trying Jira again. */
 export const SYNC_FAILURE_BACKOFF_MS = 10_000;
+/** How often new jobs are handed to Jev for a shadow assessment (ADR 0030). */
+export const ASSESS_INTERVAL_MS = 2_000;
 
 export interface RouterDaemonDeps {
   db: Database.Database;
@@ -53,6 +57,15 @@ export interface RouterDaemonDeps {
   /** GitHub integration (ADR 0027): webhook secret enables `/webhooks/github`; the token (optional)
    *  authenticates the pull-request poll. */
   github?: { webhookSecret?: string | undefined; token?: string | undefined; fetch?: FetchLike };
+  /** Jev API key (ADR 0030); the assess loop runs only with one and `config.jev.enabled`. With
+   *  `secretsPath` the web UI can replace it at runtime, unless it came from the environment
+   *  (ADR 0031). */
+  jev?: {
+    apiKey?: string | undefined;
+    fetch?: FetchLike;
+    secretsPath?: string;
+    fromEnvironment?: boolean;
+  };
 }
 
 interface Loop {
@@ -93,11 +106,13 @@ export class RouterDaemon {
   private stopping = false;
   private lastSyncAtMs: number | undefined;
   private lastSyncFailureAtMs: number | undefined;
+  private jevApiKey: string | undefined;
 
   constructor(private readonly deps: RouterDaemonDeps) {
     this.now = deps.now ?? (() => new Date().toISOString());
     this.nowMs = deps.nowMs ?? Date.now;
     this.config = deps.config;
+    this.jevApiKey = deps.jev?.apiKey;
     this.schedulerDeps = {
       db: deps.db,
       jira: deps.jira,
@@ -119,6 +134,14 @@ export class RouterDaemon {
       reconcileNow: () => this.reconcileNow(),
       applyConfig: (config) => this.applyConfig(config),
       github: { webhook: Boolean(deps.github?.webhookSecret), token: Boolean(deps.github?.token) },
+      jev: {
+        ...(deps.jev?.secretsPath ? { secretsPath: deps.jev.secretsPath } : {}),
+        fromEnvironment: deps.jev?.fromEnvironment ?? false,
+        isSet: () => Boolean(this.jevApiKey),
+        apply: (apiKey) => {
+          this.jevApiKey = apiKey;
+        },
+      },
       ...(deps.configPath ? { configPath: deps.configPath } : {}),
     });
     this.app = buildRouterServer({
@@ -170,6 +193,13 @@ export class RouterDaemon {
       () => this.config.github.pollIntervalMs,
       async () => {
         await this.githubTick();
+      },
+    );
+    this.startLoop(
+      "assess",
+      () => ASSESS_INTERVAL_MS,
+      async () => {
+        await this.assessTick();
       },
     );
     this.startLoop(
@@ -299,6 +329,27 @@ export class RouterDaemon {
       this.deps.logger?.info(
         { layer: "router", closed: report.closed, errors: report.errors },
         "pull request poll",
+      );
+    }
+    return report;
+  }
+
+  /** Shadow-assesses new jobs with Jev. Off (undefined) without an API key or with
+   *  `jev.enabled: false`; the client follows the applied config's model and timeout. */
+  async assessTick(): Promise<AssessmentPassReport | undefined> {
+    const apiKey = this.jevApiKey;
+    if (!apiKey || !this.config.jev.enabled) return undefined;
+    const jev = new JevClient({
+      apiKey,
+      model: this.config.jev.model,
+      timeoutMs: this.config.jev.timeoutMs,
+      ...(this.deps.jev?.fetch ? { fetch: this.deps.jev.fetch } : {}),
+    });
+    const report = await assessPendingJobs({ db: this.deps.db, jev, now: this.now });
+    if (report.assessed.length || report.failed.length) {
+      this.deps.logger?.info(
+        { layer: "router", assessed: report.assessed, failed: report.failed },
+        "jev assessment pass",
       );
     }
     return report;

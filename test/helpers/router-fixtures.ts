@@ -48,6 +48,7 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
     reporting: { failureLabel: "ggjira-failed" },
     github: { pollIntervalMs: 300_000 },
     scheduling: { usage: { deprioritizeAtPercent: 90, skipExhausted: true } },
+    jev: { enabled: true, model: "jev-latest", timeoutMs: 5_000 },
     ...overrides,
   };
 }

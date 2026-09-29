@@ -125,3 +125,26 @@ export function loadRouterGithubSecrets(
     ...(token ? { token } : {}),
   };
 }
+
+export const JEV_API_KEY_ENV = "TYPESAFE_API_KEY";
+
+/** What the web UI accepts as a Jev key: one token of URL-safe characters. Anything that could
+ *  break the `KEY=VALUE` line (whitespace, newlines, quotes, `#`) is refused (ADR 0031). */
+export const JevApiKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9._~+/=:-]{8,512}$/, "8-512 characters: letters, digits and ._~+/=:-");
+
+/** `TYPESAFE_API_KEY` for Jev (ADR 0030), environment first, then the secrets file. Optional:
+ *  without it the Jev assessment is off. */
+export function loadRouterJevApiKey(
+  env: NodeJS.ProcessEnv,
+  secretsPath: string | undefined,
+): string | undefined {
+  if (env.TYPESAFE_API_KEY) return env.TYPESAFE_API_KEY;
+  if (!secretsPath) return undefined;
+  try {
+    return parseEnvFile(readFileSync(secretsPath, "utf-8")).TYPESAFE_API_KEY || undefined;
+  } catch {
+    return undefined;
+  }
+}

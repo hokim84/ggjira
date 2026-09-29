@@ -59,6 +59,8 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
    `scheduling.usage`). `jobs/next`에서는 요청한 워커만 받을 수 있고, 여유가 더 많은 유휴 워커가
    있으면 양보한다.
 5. 관리자 hold: `jobs cancel`을 한 승인은 다시 배정하지 않는다(`admin_holds`, ADR 0022).
+6. Jev 관찰 평가(ADR 0030): `TYPESAFE_API_KEY`가 있으면 `assess` 루프가 새 job마다 모델 등급과
+   준비 상태를 Jev에 묻고 `job_assessments`에 기록한다. 아직 어떤 결정에도 쓰지 않는다.
 
 ## Worker API (`/api/v1`, `src/router/worker-service.ts`)
 
@@ -127,7 +129,8 @@ push 직전에 `authorize`(stage `push`)로 권한을 다시 확인한다(ADR 00
 `router serve`는 `web/router-ui/`(빌드 없는 정적 HTML/JS)를 `/ui/`에서 서빙한다(`src/router/web-ui.ts`).
 화면은 대시보드(`/status`), 워커(5초 폴링, 페어링 코드, enable/disable/revoke, LLM 플랜 사용량),
 설정 편집, Jira 점검이다.
-모두 admin token으로 위 관리 API만 호출한다. 설정은 저장 즉시 `RouterDaemon.applyConfig`로 적용된다
+모두 admin token으로 위 관리 API만 호출한다. Jev API 키는 입력만 받고 되돌려주지 않는 칸으로 설정한다
+(`PUT /secrets/jev`, `router.env`에 기록, ADR 0031). 설정은 저장 즉시 `RouterDaemon.applyConfig`로 적용된다
 (sync/verify lane에서 직렬, ADR 0024). `http`, `db.path`, `jira.baseUrl`, `executionAgent.fieldId`만
 재시작해야 반영된다.
 

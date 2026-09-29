@@ -167,6 +167,14 @@ const SchedulingConfigSchema = z.object({
     .default({}),
 });
 
+/** Jev (TypeSafe System One) shadow assessment (ADR 0030). Active only when `TYPESAFE_API_KEY`
+ *  is set; `enabled: false` turns it off with the key in place. */
+const JevConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  model: z.string().min(1).default("jev-latest"),
+  timeoutMs: z.number().int().positive().default(5_000),
+});
+
 export const RouterConfigSchema = z
   .object({
     configVersion: z.literal(5),
@@ -183,6 +191,7 @@ export const RouterConfigSchema = z
     reporting: ReportingConfigSchema.default({}),
     github: GithubConfigSchema.default({}),
     scheduling: SchedulingConfigSchema.default({}),
+    jev: JevConfigSchema.default({}),
   })
   .superRefine((config, ctx) => {
     const repositoryIds = new Set(config.repositories.map((repo) => repo.id));

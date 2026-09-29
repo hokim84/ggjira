@@ -12,9 +12,11 @@ import {
   canonicalJson,
   readRawRouterConfig,
   restartOnlyChanges,
+  setSecretsFileValue,
   validateRouterConfig,
   writeRouterConfig,
 } from "./config-store.js";
+import { JEV_API_KEY_ENV, JevApiKeySchema } from "./secrets.js";
 import {
   type AttemptRow,
   getActiveAttemptForWorker,
@@ -128,6 +130,15 @@ export interface AdminConfigView {
   problem: string | null;
   /** Which GitHub secrets the running Router has (ADR 0027); values are never returned. */
   github: { webhook: boolean; token: boolean };
+  /** Whether the Router has a Jev API key and where it comes from (ADR 0031); never the value. */
+  jev: JevKeyInfo;
+}
+
+export interface JevKeyInfo {
+  apiKey: boolean;
+  /** `environment` wins over the secrets file, so the web UI cannot change it. */
+  source: "environment" | "file" | null;
+  editable: boolean;
 }
 
 export interface BackupResult {
@@ -152,6 +163,14 @@ export interface AdminServiceDeps {
   applyConfig?: (config: RouterConfig) => Promise<void>;
   /** Whether the GitHub webhook secret / poll token are set, for the settings screen. */
   github?: { webhook: boolean; token: boolean };
+  /** The Jev key's current state and how to replace it (ADR 0031). Without it the key is not
+   *  editable. */
+  jev?: {
+    secretsPath?: string;
+    fromEnvironment: boolean;
+    isSet: () => boolean;
+    apply: (apiKey: string | undefined) => void;
+  };
 }
 
 export interface AdminAddWorkerResult {
@@ -438,6 +457,7 @@ export class AdminService {
         pendingApply: false,
         problem: (error as RouterConfigError).message,
         github: this.githubInfo(),
+        jev: this.jevInfo(),
       };
     }
     const validation = validateRouterConfig(file);
@@ -450,6 +470,7 @@ export class AdminService {
         pendingApply: false,
         problem: validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "),
         github: this.githubInfo(),
+        jev: this.jevInfo(),
       };
     }
     const restartFields = restartOnlyChanges(this.startedWith, validation.config);
@@ -461,6 +482,7 @@ export class AdminService {
       pendingApply: canonicalJson(validation.config) !== canonicalJson(this.config),
       problem: null,
       github: this.githubInfo(),
+      jev: this.jevInfo(),
     };
   }
 
@@ -631,6 +653,56 @@ export class AdminService {
   }
 
   // --- helpers -------------------------------------------------------------------------
+
+  jevInfo(): JevKeyInfo {
+    const jev = this.deps.jev;
+    if (!jev) return { apiKey: false, source: null, editable: false };
+    const apiKey = jev.isSet();
+    return {
+      apiKey,
+      source: jev.fromEnvironment ? "environment" : apiKey ? "file" : null,
+      editable: !jev.fromEnvironment && Boolean(jev.secretsPath),
+    };
+  }
+
+  /**
+   * Web UI "Jev API 키": writes (or removes) `TYPESAFE_API_KEY` in the secrets file and hands it to
+   * the running Router, so the next assess pass uses it without a restart. The audit entry records
+   * that it changed, never the value (ADR 0031).
+   */
+  setJevApiKey(apiKey: string | null, actor: string): JevKeyInfo {
+    const jev = this.deps.jev;
+    if (!jev?.secretsPath) {
+      throw new AdminError(409, "not_editable", "this Router has no secrets file to write to");
+    }
+    if (jev.fromEnvironment) {
+      throw new AdminError(
+        409,
+        "set_by_environment",
+        `${JEV_API_KEY_ENV} is set in the Router's environment, which wins over the secrets file; change it there`,
+      );
+    }
+    if (apiKey !== null) {
+      const parsed = JevApiKeySchema.safeParse(apiKey);
+      if (!parsed.success) {
+        throw new AdminError(
+          400,
+          "invalid_request",
+          parsed.error.issues[0]?.message ?? "invalid key",
+          [{ path: "apiKey", message: parsed.error.issues[0]?.message ?? "invalid key" }],
+        );
+      }
+    }
+    setSecretsFileValue(jev.secretsPath, JEV_API_KEY_ENV, apiKey);
+    jev.apply(apiKey ?? undefined);
+    appendAudit(this.db, {
+      at: this.now(),
+      actor,
+      action: apiKey === null ? "secret.jev.removed" : "secret.jev.set",
+      subject: JEV_API_KEY_ENV,
+    });
+    return this.jevInfo();
+  }
 
   private githubInfo(): { webhook: boolean; token: boolean } {
     return this.deps.github ?? { webhook: false, token: false };

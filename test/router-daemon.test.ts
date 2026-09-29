@@ -83,6 +83,47 @@ describe("RouterDaemon", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("runs the Jev assessment only with an API key and jev.enabled (ADR 0030)", async () => {
+    seedRequest("KAN-1");
+    const calls: string[] = [];
+    const jevFetch = async (url: string) => {
+      calls.push(url);
+      return new Response(
+        JSON.stringify({
+          model: "jev-1.13.0",
+          answers: {
+            modelTier: { type: "choice", choice: "small", probabilities: {}, confidence: 0.9 },
+          },
+          usage: {},
+        }),
+      );
+    };
+    const withKey = (apiKey: string | undefined, cfg: RouterConfig) =>
+      new RouterDaemon({
+        db,
+        jira,
+        config: cfg,
+        webhookSecret: WEBHOOK_SECRET,
+        adminToken: ADMIN_TOKEN,
+        siteId: "site-1",
+        now: clock.now,
+        nowMs: () => Date.parse(clock.now()),
+        jev: { apiKey, fetch: jevFetch },
+      });
+
+    daemon = withKey(undefined, config);
+    await daemon.reconcileNow();
+    expect(await daemon.assessTick()).toBeUndefined();
+    expect(
+      await withKey("k", { ...config, jev: { ...config.jev, enabled: false } }).assessTick(),
+    ).toBeUndefined();
+    expect(calls).toHaveLength(0);
+
+    const report = await withKey("k", config).assessTick();
+    expect(report?.assessed).toEqual([getOpenJobForIssue(db, "KAN-1")?.id]);
+    expect(calls).toEqual(["https://api.typesafe.ai/v1/systemone"]);
+  });
+
   it("syncs on the first tick, then only when the interval passes or a webhook arrives", async () => {
     seedRequest("KAN-1");
     expect(await daemon.syncTick()).toBeDefined();

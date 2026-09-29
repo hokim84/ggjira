@@ -138,6 +138,101 @@ function githubSection(github) {
   );
 }
 
+// Jev API key (ADR 0031): write-only. The Router answers only whether a key is set and where it
+// comes from; the value never comes back. Kept outside the config form so Enter here never
+// submits the config.
+function jevSection(initial, ctx) {
+  let info = initial;
+  const wrap = h("div", { class: "jev-key" });
+  const message = h("div", {});
+
+  async function send(apiKey) {
+    clear(message);
+    try {
+      info = await admin("PUT", "/secrets/jev", { apiKey });
+      draw();
+      message.append(
+        notice(
+          "ok",
+          apiKey === null ? "키를 삭제했습니다. 평가가 꺼집니다." : "저장하고 바로 적용했습니다.",
+        ),
+      );
+    } catch (error) {
+      if (error.status === 401) return ctx.logout();
+      message.append(errorNotice(error));
+    }
+  }
+
+  function draw() {
+    const status = info.apiKey
+      ? h(
+          "span",
+          { class: "badge badge-ok" },
+          info.source === "environment" ? "설정됨 (환경변수)" : "설정됨",
+        )
+      : h("span", { class: "badge badge-muted" }, "없음");
+    if (!info.editable) {
+      fill(
+        wrap,
+        h("p", {}, status),
+        h(
+          "small",
+          { class: "hint" },
+          info.source === "environment"
+            ? "Router 환경변수 TYPESAFE_API_KEY가 설정 파일보다 우선하므로 여기서 바꿀 수 없습니다. 환경변수를 바꾸고 Router를 재시작하세요."
+            : "이 Router는 비밀정보 파일 경로가 없어 여기서 바꿀 수 없습니다.",
+        ),
+      );
+      return;
+    }
+    const input = h("input", {
+      id: "jev-api-key",
+      type: "password",
+      autocomplete: "off",
+      spellcheck: "false",
+      placeholder: info.apiKey ? "새 키로 교체" : "TypeSafe API 키",
+    });
+    const save = () => {
+      const value = input.value.trim();
+      input.value = "";
+      if (value) send(value);
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        save();
+      }
+    });
+    fill(
+      wrap,
+      h("p", {}, status),
+      h(
+        "div",
+        { class: "jev-key-row" },
+        h("label", { for: "jev-api-key", class: "visually-hidden" }, "Jev API 키"),
+        input,
+        h(
+          "button",
+          { type: "button", class: "btn btn-primary", onclick: save },
+          info.apiKey ? "교체" : "저장",
+        ),
+        info.apiKey
+          ? h("button", { type: "button", class: "btn", onclick: () => send(null) }, "삭제")
+          : null,
+      ),
+      h(
+        "small",
+        { class: "hint" },
+        "키는 router.env에만 저장되고 다시 표시되지 않습니다. 이슈 제목과 설명이 TypeSafe로 전송됩니다. 원격에서는 HTTPS로만 여세요.",
+      ),
+      message,
+    );
+  }
+
+  draw();
+  return wrap;
+}
+
 function cleanPlanning(planning = {}) {
   return Object.fromEntries(
     Object.entries(planning).filter(([, value]) => value !== undefined && value !== ""),
@@ -489,6 +584,11 @@ export async function renderConfig(root, ctx) {
     view.problem ? notice("warn", `현재 파일 문제: ${view.problem}`) : null,
     messageEl,
     form,
+    section(
+      "Jev 평가 (TypeSafe)",
+      "새 job마다 모델 등급과 준비 상태를 Jev에 묻고 기록만 합니다(관찰 모드). 키를 넣으면 재시작 없이 켜집니다.",
+      jevSection(view.jev ?? { apiKey: false, source: null, editable: false }, ctx),
+    ),
   );
 }
 
