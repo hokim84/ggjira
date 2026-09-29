@@ -40,6 +40,7 @@ import {
   type ReportStepRow,
 } from "./db/report-steps.js";
 import { listProviderUsage } from "./db/provider-usage.js";
+import { type UsagePressure, usagePressure } from "./usage-routing.js";
 import { getWorker, listWorkers, revokeWorker, setWorkerEnabled } from "./db/workers.js";
 import { resolveRecoveryJob, retryJob, retryReportBatch } from "./recovery.js";
 import { cancelStaleJob, type SchedulerReport } from "./scheduler.js";
@@ -87,6 +88,8 @@ export interface AdminWorkerView {
   activeAttempt: { attemptId: string; jobId: string; state: string } | null;
   /** The worker's latest reported plan usage per provider (ADR 0028). */
   providerUsage: ProviderUsage[];
+  /** How that usage affects assignment for the provider Router names in its jobs (ADR 0029). */
+  usagePressure: UsagePressure;
 }
 
 export interface AdminJobDetail {
@@ -218,6 +221,11 @@ export class AdminService {
           ? { attemptId: active.id, jobId: active.jobId, state: active.state }
           : null,
         providerUsage: usage.get(workerId) ?? [],
+        usagePressure: usagePressure(
+          usage.get(workerId)?.find((entry) => entry.providerId === (policy?.providerId ?? "")),
+          now,
+          this.config.scheduling.usage.deprioritizeAtPercent,
+        ),
       };
     });
   }

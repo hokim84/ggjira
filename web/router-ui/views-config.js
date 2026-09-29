@@ -417,7 +417,7 @@ export async function renderConfig(root, ctx) {
     section("워커 정책", "워커별로 허용하는 capability와 저장소입니다.", workers),
     section(
       "고급 (JSON)",
-      "db, http, reconciliation, execution, reporting, executionAgent, github",
+      "db, http, reconciliation, execution, reporting, executionAgent, github, scheduling",
       h(
         "div",
         { class: "field", "data-path": "advanced" },

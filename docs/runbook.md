@@ -280,3 +280,13 @@ v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 �
 - **Codex에 "app-server ... without an answer"/"did not answer in time"**: `codex --version`이 app-server를
   지원하는지(0.158 이상에서 확인), `codex login status`가 로그인 상태인지 본다.
 
+### 사용량에 따른 배정 (ADR 0029)
+
+- 워커 카드의 **"LLM 한도 — 배정 제외"**: 해당 워커 provider의 한도 창 하나가 100%다. 표시된 리셋 시각까지
+  새 작업을 받지 않는다. 한도를 늘렸거나 값이 틀렸다고 보면 워커를 재시작해 다시 보고하게 한다.
+- **"LLM 한도 임박 — 후순위"**: 창 하나가 `scheduling.usage.deprioritizeAtPercent`(기본 90%) 이상이다.
+  여유 있는 다른 유휴 워커가 있으면 그쪽이 먼저 받고, 없으면 이 워커가 받는다.
+- 모든 워커가 배정 제외면 작업은 `queued`로 남는다. 대시보드 큐 대기 시간이 늘어나면 워커 카드를 확인한다.
+- 끄려면 설정 > 고급 JSON에 `"scheduling": {"usage": {"skipExhausted": false, "deprioritizeAtPercent": 100}}`를
+  넣는다.
+

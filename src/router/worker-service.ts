@@ -24,7 +24,7 @@ import type {
 import type { AttemptState } from "../contracts/attempt-state.js";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
 import type { JobState } from "../contracts/job-state.js";
-import { isWorkerDispatchable, toWorkerAvailability } from "./availability.js";
+import { buildWorkerAvailability, isWorkerDispatchable } from "./availability.js";
 import type { RouterConfig } from "./config.js";
 import { getApproval } from "./db/approvals.js";
 import {
@@ -320,9 +320,13 @@ export class WorkerService {
 
       const worker = getWorker(this.db, workerId);
       if (!worker || !isWorkerDispatchable(worker, this.config, now)) return undefined;
+      // Every online worker is passed so this one can step aside for a worker with more LLM plan
+      // headroom; only this one can be leased a job here (ADR 0029).
       const [assignment] = assignQueuedJobs(
         { db: this.db, config: this.config, now: () => now, genId: this.genId },
-        [toWorkerAvailability(worker)],
+        buildWorkerAvailability(this.db, this.config, now),
+        undefined,
+        { requesterId: workerId },
       );
       if (!assignment) return undefined;
       bindAttemptToRequest(this.db, assignment.attemptId, sessionId, requestId);

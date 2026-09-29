@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { canHandle } from "../issue/capability.js";
+import { listProviderUsage } from "./db/provider-usage.js";
+import { pressureRank, usagePressure } from "./usage-routing.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PlanMetadataError } from "../pm/metadata.js";
@@ -306,19 +308,39 @@ export interface Assignment {
 }
 
 /**
- * Leases `queued` jobs (oldest first) to matching workers. Exported so `jobs/next` can call it
- * with just the requesting worker's availability. Each lease also stamps that worker's
+ * Leases `queued` jobs (oldest first) to matching workers. Each lease also stamps that worker's
  * `last_assigned_at` (a no-op for workers not registered in the `workers` table), which is what
  * `buildWorkerAvailability` feeds back as `lastAssignedAt` for the next pass's fairness order.
+ *
+ * Reported LLM plan usage (ADR 0029): a worker whose provider is at its limit is skipped until the
+ * window resets, and one near its limit sorts after every worker that is not.
+ *
+ * With `requesterId` (`jobs/next`) only that worker can be leased a job; the others in
+ * `availableWorkers` are there so it can step aside when an idle, matching worker has more
+ * headroom — that one takes the job on its own next poll.
  */
 export function assignQueuedJobs(
   deps: AssignDeps,
   availableWorkers: WorkerAvailability[],
   report?: SchedulerReport,
+  options: { requesterId?: string } = {},
 ): Assignment[] {
   const genId = deps.genId ?? randomUUID;
   const claimedWorkerIds = new Set<string>();
   const assignments: Assignment[] = [];
+  const usagePolicy = deps.config.scheduling.usage;
+  const usageByWorker = listProviderUsage(deps.db);
+  const now = deps.now();
+  const pressureOf = new Map(
+    availableWorkers.map((worker) => {
+      const policy = deps.config.workers.find((w) => w.workerId === worker.workerId);
+      const usage = usageByWorker
+        .get(worker.workerId)
+        ?.find((entry) => entry.providerId === policy?.providerId);
+      return [worker.workerId, usagePressure(usage, now, usagePolicy.deprioritizeAtPercent)];
+    }),
+  );
+  const rank = (workerId: string) => pressureRank(pressureOf.get(workerId) ?? "ok");
 
   for (const job of getQueuedJobs(deps.db)) {
     const candidates = availableWorkers
@@ -333,18 +355,33 @@ export function assignQueuedJobs(
           worker.capabilities.includes(capability),
         );
         if (!canHandle(effectiveCapabilities, job.requiredCapabilities).ok) return false;
+        if (usagePolicy.skipExhausted && pressureOf.get(worker.workerId) === "exhausted") {
+          return false;
+        }
         return !getActiveAttemptForWorker(deps.db, worker.workerId);
       })
       .sort((a, b) => {
+        const byPressure = rank(a.workerId) - rank(b.workerId);
+        if (byPressure !== 0) return byPressure;
         const aTime = a.lastAssignedAt ?? "";
         const bTime = b.lastAssignedAt ?? "";
         return aTime !== bTime ? aTime.localeCompare(bTime) : a.workerId.localeCompare(b.workerId);
       });
 
-    const chosen = candidates[0];
+    let chosen = candidates[0];
+    if (options.requesterId) {
+      // Only usage headroom makes the requester step aside, not fairness order: it is the one
+      // asking right now, and handing it the job is what keeps latency low.
+      const requester = candidates.find((worker) => worker.workerId === options.requesterId);
+      if (!requester) continue;
+      if (chosen && rank(chosen.workerId) < rank(requester.workerId)) {
+        claimedWorkerIds.add(chosen.workerId);
+        continue;
+      }
+      chosen = requester;
+    }
     if (!chosen) continue;
 
-    const now = deps.now();
     const leaseExpiresAt = new Date(new Date(now).getTime() + LEASE_DURATION_MS).toISOString();
     const attemptId = genId();
     const lease = deps.db.transaction(() => {

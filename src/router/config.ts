@@ -154,6 +154,19 @@ const ReportingConfigSchema = z.object({
   failureLabel: z.string().min(1).default("ggjira-failed"),
 });
 
+/** How reported LLM plan usage affects assignment (ADR 0029). */
+const SchedulingConfigSchema = z.object({
+  usage: z
+    .object({
+      /** A worker whose provider has a window at or above this percent (not yet reset) is offered
+       *  a job only when no other matching idle worker is below it. */
+      deprioritizeAtPercent: z.number().min(1).max(100).default(90),
+      /** Skip a worker whose provider has a window at 100% until that window resets. */
+      skipExhausted: z.boolean().default(true),
+    })
+    .default({}),
+});
+
 export const RouterConfigSchema = z
   .object({
     configVersion: z.literal(5),
@@ -169,6 +182,7 @@ export const RouterConfigSchema = z
     planning: PlanningConfigSchema.default({}),
     reporting: ReportingConfigSchema.default({}),
     github: GithubConfigSchema.default({}),
+    scheduling: SchedulingConfigSchema.default({}),
   })
   .superRefine((config, ctx) => {
     const repositoryIds = new Set(config.repositories.map((repo) => repo.id));

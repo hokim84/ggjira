@@ -404,7 +404,30 @@ export function renderWorkers(root, ctx) {
           h("strong", {}, worker.workerId),
           worker.name ? h("span", { class: "muted" }, ` · ${worker.name}`) : null,
         ),
-        h("span", { class: `badge badge-${tone}` }, label),
+        h(
+          "div",
+          { class: "worker-badges" },
+          worker.usagePressure === "exhausted"
+            ? h(
+                "span",
+                {
+                  class: "badge badge-bad",
+                  title: "한도 창이 리셋될 때까지 새 작업을 배정하지 않습니다",
+                },
+                "LLM 한도 — 배정 제외",
+              )
+            : worker.usagePressure === "high"
+              ? h(
+                  "span",
+                  {
+                    class: "badge badge-warn",
+                    title: "여유 있는 다른 워커가 있으면 그쪽에 먼저 배정합니다",
+                  },
+                  "LLM 한도 임박 — 후순위",
+                )
+              : null,
+          h("span", { class: `badge badge-${tone}` }, label),
+        ),
       ),
       h(
         "dl",

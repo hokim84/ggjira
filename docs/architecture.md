@@ -53,8 +53,11 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
    capability·의존성·계획 버전으로 만든다.
 3. `RuleDecisionProvider`: 인간 Assignee, 계획 버전(부모의 현재 계획일 때만), 의존성, 실행-Agent
    필드 고정을 본다. 결과는 `planning | implementation | wait | human | ignore`다.
-4. 배정: queued job을 생성 순서대로 처리한다. 워커는 가장 오래 배정받지 않은 순으로 고른다. 조건은
-   관리자 정책(`workers[]`)과 워커가 보고한 capability·저장소의 교집합이다. 워커당 동시 1개다.
+4. 배정: queued job을 생성 순서대로 처리한다. 조건은 관리자 정책(`workers[]`)과 워커가 보고한
+   capability·저장소의 교집합이다. 워커당 동시 1개다. 후보는 LLM 플랜 여유가 많은 순, 그다음 가장 오래
+   배정받지 않은 순이다. 리셋 전 100%인 한도 창이 있는 워커는 건너뛴다(ADR 0029,
+   `scheduling.usage`). `jobs/next`에서는 요청한 워커만 받을 수 있고, 여유가 더 많은 유휴 워커가
+   있으면 양보한다.
 5. 관리자 hold: `jobs cancel`을 한 승인은 다시 배정하지 않는다(`admin_holds`, ADR 0022).
 
 ## Worker API (`/api/v1`, `src/router/worker-service.ts`)

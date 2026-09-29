@@ -6,6 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { PROTOCOL_VERSION } from "../../src/contracts/protocol.js";
 import { FakeJiraGateway } from "../../src/jira/fake.js";
 import { AdminService } from "../../src/router/admin-service.js";
+import { buildWorkerAvailability } from "../../src/router/availability.js";
 import type { RouterConfig } from "../../src/router/config.js";
 import { openRouterDb } from "../../src/router/db/connection.js";
 import { RuleDecisionProvider } from "../../src/router/decision.js";
@@ -153,6 +154,21 @@ export class RouterHarness {
       ],
     );
     await this.reconcile();
+  }
+
+  /** Seeds a job and runs one background pass with every online worker, as the daemon does. */
+  async seedQueuedJobAndAssign(key = "KAN-1") {
+    await this.seedQueuedJob(key);
+    return reconcileCandidates(
+      {
+        db: this.db,
+        jira: this.jira,
+        config: this.config,
+        decisionProvider: new RuleDecisionProvider(this.config.executionAgent),
+        now: this.clock.now,
+      },
+      buildWorkerAvailability(this.db, this.config, this.clock.now()),
+    );
   }
 
   reconcile() {
