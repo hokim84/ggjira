@@ -26,6 +26,9 @@ import {
   type WorkerSessionRequest,
   type WorkerSessionResponse,
   WorkerSessionResponseSchema,
+  type WorkerUsageReportRequest,
+  type WorkerUsageReportResponse,
+  WorkerUsageReportResponseSchema,
 } from "../contracts/api.js";
 
 /** A non-2xx answer from Router, with the `/api/v1` error body when there was one. */
@@ -85,6 +88,10 @@ export class RouterClient {
 
   heartbeat(body: WorkerHeartbeatRequest): Promise<WorkerHeartbeatResponse> {
     return this.call("/api/v1/workers/heartbeat", body, WorkerHeartbeatResponseSchema);
+  }
+
+  reportUsage(body: WorkerUsageReportRequest): Promise<WorkerUsageReportResponse> {
+    return this.call("/api/v1/workers/usage", body, WorkerUsageReportResponseSchema);
   }
 
   /** `null` on 204 (the long poll ended with nothing to do). */

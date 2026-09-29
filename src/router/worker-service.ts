@@ -18,6 +18,8 @@ import type {
   WorkerRegisterResponse,
   WorkerSessionRequest,
   WorkerSessionResponse,
+  WorkerUsageReportRequest,
+  WorkerUsageReportResponse,
 } from "../contracts/api.js";
 import type { AttemptState } from "../contracts/attempt-state.js";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
@@ -38,6 +40,7 @@ import {
 import { getJob, type JobRow, transitionJobState } from "./db/jobs.js";
 import { consumePairingCode, createPairingCode, PairingCodeRejectedError } from "./db/pairing.js";
 import { appendAudit } from "./db/audit.js";
+import { saveProviderUsage } from "./db/provider-usage.js";
 import { recordPullRequest } from "./db/pull-requests.js";
 import { insertReportBatch } from "./db/report-steps.js";
 import { recordResult, ResultConflictError } from "./db/results.js";
@@ -246,6 +249,15 @@ export class WorkerService {
     return {
       cancelAttemptIds: active?.state === "cancel_requested" ? [active.id] : [],
     };
+  }
+
+  /** `workers/usage`: the plan usage a worker read on connect or after a job (ADR 0028). Stored
+   *  for the admin workers view only; it does not affect routing. */
+  reportUsage(worker: WorkerRow, request: WorkerUsageReportRequest): WorkerUsageReportResponse {
+    this.assertSameWorker(worker, request.workerId);
+    this.assertCurrentSession(worker.id, request.sessionId);
+    saveProviderUsage(this.db, { workerId: worker.id, usage: request.usage, now: this.now() });
+    return { accepted: true };
   }
 
   // --- jobs/next -----------------------------------------------------------------------

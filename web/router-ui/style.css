@@ -217,6 +217,54 @@ main {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.usage-list {
+  display: grid;
+  gap: 0.5rem;
+}
+.usage {
+  display: grid;
+  gap: 0.2rem;
+}
+.usage-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.usage-window {
+  display: grid;
+  grid-template-columns: 3.2rem minmax(4rem, 10rem) 3.2rem auto;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+.usage-bar {
+  height: 0.5rem;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.usage-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+.usage-ok {
+  background: var(--ok);
+}
+.usage-warn {
+  background: var(--warn);
+}
+.usage-bad {
+  background: var(--bad);
+}
+.usage-percent {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.usage-reset {
+  min-width: 0;
+}
 .worker-actions {
   display: flex;
   gap: 0.4rem;

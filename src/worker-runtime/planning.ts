@@ -3,7 +3,7 @@ import path from "node:path";
 import type { JobEnvelope } from "../contracts/envelope.js";
 import { PLAN_JSON_SCHEMA, parsePlan } from "../pm/plan.js";
 import { buildPlanningPrompt } from "../pm/prompt.js";
-import type { WorkerProvider, WorkerResult } from "../worker/provider.js";
+import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provider.js";
 import { createWorktree, isGitRepository } from "../worker/worktree.js";
 import type { WorkerRepositoryConfig } from "./config.js";
 import type { ExecutionOutcome } from "./executor.js";
@@ -27,6 +27,7 @@ export async function executePlanningEnvelope(
     worktreesRoot: string;
     logPath: string;
     signal: AbortSignal;
+    onUsage?: (usage: UsageReading) => void;
   },
 ): Promise<ExecutionOutcome> {
   const issue = envelope.issueSnapshot;
@@ -74,7 +75,11 @@ export async function executePlanningEnvelope(
         outputSchema: PLAN_JSON_SCHEMA,
         readOnly: true,
       },
-      { signal: deps.signal, onEvent: (line) => appendFileSync(logFile, `${line}\n`) },
+      {
+        signal: deps.signal,
+        onEvent: (line) => appendFileSync(logFile, `${line}\n`),
+        ...(deps.onUsage ? { onUsage: deps.onUsage } : {}),
+      },
     );
   } catch (error) {
     return { status: "failed", summary: "Provider crashed.", failureReason: errorMessage(error) };

@@ -100,6 +100,43 @@ export const WorkerHeartbeatResponseSchema = z.object({
 });
 export type WorkerHeartbeatResponse = z.infer<typeof WorkerHeartbeatResponseSchema>;
 
+/** One quota window of a provider's plan: Claude Code's 5-hour/weekly limits, Codex's
+ *  primary/secondary windows. `id` is `five_hour`/`seven_day` when the window matches one of
+ *  those, otherwise what the CLI called it. */
+export const ProviderUsageWindowSchema = z.object({
+  id: z.string().min(1),
+  usedPercent: z.number().min(0),
+  resetsAt: z.string().optional(),
+  windowMinutes: z.number().int().positive().optional(),
+});
+export type ProviderUsageWindow = z.infer<typeof ProviderUsageWindowSchema>;
+
+/** What a worker last saw of one provider's plan usage (ADR 0028). Read on connect (`probe`) and
+ *  after each job (`job`) — never on a timer. */
+export const ProviderUsageSchema = z.object({
+  providerId: z.string().min(1),
+  providerType: z.enum(["claude-code", "codex"]),
+  observedAt: z.string(),
+  source: z.enum(["probe", "job"]),
+  /** Claude Code's `allowed` / `allowed_warning` / `rejected`. */
+  status: z.string().optional(),
+  planType: z.string().optional(),
+  windows: z.array(ProviderUsageWindowSchema).default([]),
+  /** Why no windows could be read (probe failed, CLI not logged in, ...). */
+  error: z.string().optional(),
+});
+export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
+
+export const WorkerUsageReportRequestSchema = z.object({
+  sessionId: z.string().min(1),
+  workerId: z.string().min(1),
+  usage: z.array(ProviderUsageSchema).min(1),
+});
+export type WorkerUsageReportRequest = z.infer<typeof WorkerUsageReportRequestSchema>;
+
+export const WorkerUsageReportResponseSchema = z.object({ accepted: z.boolean() });
+export type WorkerUsageReportResponse = z.infer<typeof WorkerUsageReportResponseSchema>;
+
 export const JobsNextRequestSchema = z.object({
   sessionId: z.string().min(1),
   workerId: z.string().min(1),

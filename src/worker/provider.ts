@@ -1,3 +1,5 @@
+import type { ProviderUsageWindow } from "../contracts/api.js";
+
 export interface WorkerRequest {
   /** The task instruction passed to the CLI as its prompt. */
   prompt: string;
@@ -31,8 +33,20 @@ export interface WorkerRunHooks {
   signal?: AbortSignal;
   /** Called with each raw stdout line as it arrives (for logging to worker.jsonl). */
   onEvent?: (rawLine: string) => void;
+  /** Called with the plan usage the CLI reported during (or right after) the run. */
+  onUsage?: (usage: UsageReading) => void;
+}
+
+/** A provider's plan usage as its CLI reports it (ADR 0028). */
+export interface UsageReading {
+  status?: string;
+  planType?: string;
+  windows: ProviderUsageWindow[];
+  error?: string;
 }
 
 export interface WorkerProvider {
   run(request: WorkerRequest, hooks?: WorkerRunHooks): Promise<WorkerResult>;
+  /** Reads plan usage outside a job, for the worker's first connection. Never throws. */
+  readUsage?(): Promise<UsageReading>;
 }

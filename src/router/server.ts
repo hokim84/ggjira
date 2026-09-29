@@ -16,6 +16,7 @@ import {
   WorkerHeartbeatRequestSchema,
   WorkerRegisterRequestSchema,
   WorkerSessionRequestSchema,
+  WorkerUsageReportRequestSchema,
 } from "../contracts/api.js";
 import { JOB_STATES } from "../contracts/job-state.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
@@ -217,6 +218,10 @@ function registerWorkerRoutes(app: FastifyInstance, service: WorkerService): voi
 
   app.post("/api/v1/workers/heartbeat", async (request) =>
     service.heartbeat(worker(request), parseBody(WorkerHeartbeatRequestSchema, request.body)),
+  );
+
+  app.post("/api/v1/workers/usage", async (request) =>
+    service.reportUsage(worker(request), parseBody(WorkerUsageReportRequestSchema, request.body)),
   );
 
   app.post("/api/v1/jobs/next", async (request, reply) => {

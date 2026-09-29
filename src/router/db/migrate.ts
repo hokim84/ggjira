@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import {
   ADMIN_OPERATIONS_STATEMENTS,
   GITHUB_STATEMENTS,
+  PROVIDER_USAGE_STATEMENTS,
   REPORT_JOURNAL_STATEMENTS,
   SCHEMA_STATEMENTS,
   WORKER_PROTOCOL_STATEMENTS,
@@ -54,6 +55,13 @@ const MIGRATIONS: readonly Migration[] = [
     description: "GitHub pull requests: pull_requests, github_deliveries (ADR 0027)",
     up(db) {
       for (const statement of GITHUB_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 6,
+    description: "worker plan usage: worker_provider_usage (ADR 0028)",
+    up(db) {
+      for (const statement of PROVIDER_USAGE_STATEMENTS) db.exec(statement);
     },
   },
 ];

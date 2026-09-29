@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
+import type { ProviderUsage } from "../contracts/api.js";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import type { WorkerProviderConfig } from "../contracts/provider.js";
 import type { Logger } from "../logger.js";
-import type { WorkerProvider } from "../worker/provider.js";
+import type { UsageReading, WorkerProvider } from "../worker/provider.js";
 import { RouterApiError, type RouterClient } from "./client.js";
 import type { WorkerConfig } from "./config.js";
 import { type ExecutionOutcome, executeEnvelope } from "./executor.js";
@@ -55,6 +56,7 @@ export class WorkerRunner {
   private readonly genId: () => string;
   private readonly heartbeatIntervalMs: number;
   private readonly leaseLossMs: number;
+  private usageProbe: Promise<void> | undefined;
 
   constructor(private readonly deps: WorkerRunnerDeps) {
     this.nowMs = deps.nowMs ?? Date.now;
@@ -90,6 +92,14 @@ export class WorkerRunner {
       });
     }
     await this.flushSpool();
+    // Once per process, in the background: a Claude Code probe takes seconds and must not hold up
+    // the first poll (ADR 0028).
+    this.usageProbe ??= this.probeUsage();
+  }
+
+  /** Settles once the connect-time usage probe has been reported (or has failed). */
+  usageProbeSettled(): Promise<void> {
+    return this.usageProbe ?? Promise.resolve();
   }
 
   /** Runs until `signal` aborts. Transient Router errors back off and retry; a 409 on the
@@ -176,10 +186,13 @@ export class WorkerRunner {
       }
     })();
 
+    const usage = new Map<string, ProviderUsage>();
     let outcome: ExecutionOutcome;
     try {
       outcome = await executeEnvelope(envelope, {
         config: this.deps.config,
+        onUsage: (provider, reading) =>
+          usage.set(provider.id, this.usageEntry(provider, "job", reading)),
         createProvider: this.deps.createProvider,
         worktreesRoot: this.deps.worktreesRoot,
         signal: abort.signal,
@@ -211,6 +224,55 @@ export class WorkerRunner {
       resultId: this.genId(),
       ...outcome,
     });
+    await this.reportUsage([...usage.values()]);
+  }
+
+  private async probeUsage(): Promise<void> {
+    const readings = await Promise.all(
+      this.deps.config.providers.map(async (config) => {
+        try {
+          const provider = this.deps.createProvider(config);
+          if (!provider.readUsage) return undefined;
+          return this.usageEntry(config, "probe", await provider.readUsage());
+        } catch (error) {
+          return this.usageEntry(config, "probe", {
+            windows: [],
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }),
+    );
+    await this.reportUsage(readings.filter((entry) => entry !== undefined));
+  }
+
+  private usageEntry(
+    provider: WorkerProviderConfig,
+    source: ProviderUsage["source"],
+    reading: UsageReading,
+  ): ProviderUsage {
+    return {
+      providerId: provider.id,
+      providerType: provider.type,
+      observedAt: new Date(this.nowMs()).toISOString(),
+      source,
+      ...reading,
+    };
+  }
+
+  /** Best-effort: usage is informational, so a failed report is logged and dropped. */
+  private async reportUsage(usage: ProviderUsage[], retried = false): Promise<void> {
+    const sessionId = this.sessionId;
+    if (usage.length === 0 || !sessionId) return;
+    try {
+      await this.deps.client.reportUsage({ sessionId, workerId: this.deps.workerId, usage });
+    } catch (error) {
+      // A reconnect while the probe was running superseded the session it was sent under.
+      const stale = error instanceof RouterApiError && error.body?.error === "stale_session";
+      if (stale && !retried && this.sessionId !== sessionId) {
+        return this.reportUsage(usage, true);
+      }
+      this.deps.logger?.warn({ err: error, layer: "worker-runtime" }, "usage report failed");
+    }
   }
 
   /** Spool first, then submit; ack (delete) only once Router has answered. A failed submit

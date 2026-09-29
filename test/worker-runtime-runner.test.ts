@@ -6,6 +6,7 @@ import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { WorkerProviderConfigSchema } from "../src/contracts/provider.js";
 import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
 import type {
+  UsageReading,
   WorkerProvider,
   WorkerRequest,
   WorkerResult,
@@ -18,6 +19,25 @@ import { WorkerRunner } from "../src/worker-runtime/runner.js";
 import { ResultSpool } from "../src/worker-runtime/spool.js";
 import { issueDescription, PLANNING_STATUS, workerPolicy } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
+
+/** Reports plan usage both ways a real provider does: on demand and during a run. */
+class UsageProvider extends FakeWorkerProvider {
+  probes = 0;
+
+  constructor(private readonly jobUsage: UsageReading) {
+    super(fakeSuccessResult());
+  }
+
+  async readUsage(): Promise<UsageReading> {
+    this.probes += 1;
+    return { planType: "pro", windows: [{ id: "five_hour", usedPercent: 11 }] };
+  }
+
+  override async run(request: WorkerRequest, hooks: WorkerRunHooks = {}): Promise<WorkerResult> {
+    hooks.onUsage?.(this.jobUsage);
+    return super.run(request, hooks);
+  }
+}
 
 /** Blocks until aborted, like a long-running CLI that only stops when killed. */
 class BlockingProvider implements WorkerProvider {
@@ -133,6 +153,67 @@ describe("WorkerRunner against a live Router", () => {
 
     expect(getJob(router.db, jobId)?.state).toBe("succeeded");
     expect(spool.listPending()).toEqual([]);
+  });
+
+  it("reports plan usage once on connect and again after each job (ADR 0028)", async () => {
+    await router.seedQueuedJob();
+    const provider = new UsageProvider({
+      status: "allowed_warning",
+      windows: [
+        { id: "five_hour", usedPercent: 42, resetsAt: "2026-09-29T18:00:00.000Z" },
+        { id: "seven_day", usedPercent: 17 },
+      ],
+    });
+    const { runner } = await makeRunner(provider);
+
+    await runner.connect();
+    await runner.connect(); // a reconnect does not probe again
+    await runner.usageProbeSettled();
+    expect(provider.probes).toBe(1);
+    let [usage] = router.admin.listWorkers().find((w) => w.workerId === "worker-1")
+      ?.providerUsage ?? [undefined];
+    expect(usage).toMatchObject({
+      providerId: "default",
+      providerType: "claude-code",
+      source: "probe",
+      planType: "pro",
+      windows: [{ id: "five_hour", usedPercent: 11 }],
+    });
+
+    expect(await runner.pollOnce()).toBe("executed");
+    [usage] = router.admin.listWorkers().find((w) => w.workerId === "worker-1")?.providerUsage ?? [
+      undefined,
+    ];
+    expect(usage).toMatchObject({
+      providerId: "default",
+      source: "job",
+      status: "allowed_warning",
+      windows: [
+        { id: "five_hour", usedPercent: 42, resetsAt: "2026-09-29T18:00:00.000Z" },
+        { id: "seven_day", usedPercent: 17 },
+      ],
+    });
+  });
+
+  it("refuses a usage report from a superseded session", async () => {
+    const { runner, token } = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()));
+    await runner.connect();
+    const client = new RouterClient({ routerUrl, workerToken: token });
+    await expect(
+      client.reportUsage({
+        sessionId: "not-the-session",
+        workerId: "worker-1",
+        usage: [
+          {
+            providerId: "default",
+            providerType: "claude-code",
+            observedAt: new Date().toISOString(),
+            source: "probe",
+            windows: [],
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ status: 409 });
   });
 
   it("answers idle when there is no work", async () => {

@@ -64,6 +64,7 @@ Worker                                   Router (SQLite)
   workers/register (pairing code) ───▶   token 발급(hash만 저장)
   workers/session ───────────────────▶   현재 세션 교체, 미확정 attempt 반환
   workers/heartbeat (5s) ────────────▶   가용성 기록, 취소 지시
+  workers/usage (연결 시·작업 직후) ───▶   provider별 LLM 플랜 사용량 저장(ADR 0028)
   jobs/next (≤25s) ──────────────────▶   queued job 임대(30s) → envelope
   jobs/{id}/start ───────────────────▶   승인 재확인 → running, start 보고 단계 기록
   jobs/{id}/heartbeat (5s) ──────────▶   임대 갱신, 승인 변경 시 cancel
@@ -121,7 +122,8 @@ push 직전에 `authorize`(stage `push`)로 권한을 다시 확인한다(ADR 00
 ## 웹 UI와 셋업 모드 (ADR 0023)
 
 `router serve`는 `web/router-ui/`(빌드 없는 정적 HTML/JS)를 `/ui/`에서 서빙한다(`src/router/web-ui.ts`).
-화면은 대시보드(`/status`), 워커(5초 폴링, 페어링 코드, enable/disable/revoke), 설정 편집, Jira 점검이다.
+화면은 대시보드(`/status`), 워커(5초 폴링, 페어링 코드, enable/disable/revoke, LLM 플랜 사용량),
+설정 편집, Jira 점검이다.
 모두 admin token으로 위 관리 API만 호출한다. 설정은 저장 즉시 `RouterDaemon.applyConfig`로 적용된다
 (sync/verify lane에서 직렬, ADR 0024). `http`, `db.path`, `jira.baseUrl`, `executionAgent.fieldId`만
 재시작해야 반영된다.

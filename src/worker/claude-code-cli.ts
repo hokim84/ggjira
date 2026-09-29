@@ -1,6 +1,14 @@
+import { tmpdir } from "node:os";
 import type { Logger } from "../logger.js";
-import type { WorkerProvider, WorkerRequest, WorkerResult, WorkerRunHooks } from "./provider.js";
+import type {
+  UsageReading,
+  WorkerProvider,
+  WorkerRequest,
+  WorkerResult,
+  WorkerRunHooks,
+} from "./provider.js";
 import { runProcessWithTimeout } from "./spawn.js";
+import { parseClaudeRateLimitEvent } from "./usage.js";
 
 export type ClaudeCodeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ClaudeCodePermissionMode =
@@ -51,6 +59,11 @@ function extractJsonBlock(text: string): unknown {
     return undefined;
   }
 }
+
+/** Claude Code has no command that reports plan usage without a model call, so the connect-time
+ *  probe is the smallest possible prompt on the cheapest model, with no tools (ADR 0028). */
+const USAGE_PROBE_MODEL = "haiku";
+const USAGE_PROBE_TIMEOUT_MS = 60_000;
 
 const DEFAULT_ALLOWED_TOOLS = ["Edit", "Write", "Read", "Glob", "Grep"];
 const READ_ONLY_TOOLS = ["Read", "Glob", "Grep"];
@@ -120,6 +133,8 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
           if (isRawResultEvent(parsed)) {
             finalResult = parsed;
           }
+          const usage = parseClaudeRateLimitEvent(parsed);
+          if (usage) hooks.onUsage?.(usage);
         } catch {
           this.logger?.warn({ layer: "worker", line }, "failed to parse stream-json line");
         }
@@ -177,5 +192,65 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
       ...(finalResult?.num_turns !== undefined ? { numTurns: finalResult.num_turns } : {}),
       ...(structuredOutput !== undefined ? { structuredOutput } : {}),
     };
+  }
+
+  async readUsage(): Promise<UsageReading> {
+    let usage: UsageReading | undefined;
+    const probe = await runProcessWithTimeout({
+      command: this.command,
+      args: [
+        "-p",
+        "Reply with OK.",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--no-session-persistence",
+        "--model",
+        USAGE_PROBE_MODEL,
+        "--tools",
+        "",
+        "--permission-mode",
+        "dontAsk",
+      ],
+      cwd: tmpdir(),
+      timeoutMs: USAGE_PROBE_TIMEOUT_MS,
+      onLine: (line) => {
+        try {
+          usage = parseClaudeRateLimitEvent(JSON.parse(line)) ?? usage;
+        } catch {
+          // not JSON; ignore
+        }
+      },
+    });
+    const planType = await this.readPlanType();
+    const withPlan = planType ? { planType } : {};
+    if (usage) return { ...usage, ...withPlan };
+    const why = probe.spawnError
+      ? `could not run ${this.command}: ${probe.spawnError.message}`
+      : probe.timedOut
+        ? "usage probe timed out"
+        : probe.code !== 0
+          ? `usage probe exited with code ${probe.code}. ${probe.stderrTail}`.trim()
+          : "Claude Code reported no plan usage (API key billing has no plan limits)";
+    return { windows: [], error: why, ...withPlan };
+  }
+
+  /** `claude auth status` prints JSON with `subscriptionType` (pro, max, ...). */
+  private async readPlanType(): Promise<string | undefined> {
+    const lines: string[] = [];
+    const result = await runProcessWithTimeout({
+      command: this.command,
+      args: ["auth", "status"],
+      cwd: tmpdir(),
+      timeoutMs: 15_000,
+      onLine: (line) => lines.push(line),
+    });
+    if (result.spawnError || result.code !== 0) return undefined;
+    try {
+      const status = JSON.parse(lines.join("\n")) as { subscriptionType?: unknown };
+      return typeof status.subscriptionType === "string" ? status.subscriptionType : undefined;
+    } catch {
+      return undefined;
+    }
   }
 }

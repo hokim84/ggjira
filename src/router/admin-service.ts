@@ -1,7 +1,7 @@
 import { mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
-import type { AdminAddWorkerRequest } from "../contracts/api.js";
+import type { AdminAddWorkerRequest, ProviderUsage } from "../contracts/api.js";
 import type { JobState } from "../contracts/job-state.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import { isWorkerDispatchable } from "./availability.js";
@@ -39,6 +39,7 @@ import {
   listJobReportSteps,
   type ReportStepRow,
 } from "./db/report-steps.js";
+import { listProviderUsage } from "./db/provider-usage.js";
 import { getWorker, listWorkers, revokeWorker, setWorkerEnabled } from "./db/workers.js";
 import { resolveRecoveryJob, retryJob, retryReportBatch } from "./recovery.js";
 import { cancelStaleJob, type SchedulerReport } from "./scheduler.js";
@@ -84,6 +85,8 @@ export interface AdminWorkerView {
   reportedCapabilities: string[];
   reportedRepositoryIds: string[];
   activeAttempt: { attemptId: string; jobId: string; state: string } | null;
+  /** The worker's latest reported plan usage per provider (ADR 0028). */
+  providerUsage: ProviderUsage[];
 }
 
 export interface AdminJobDetail {
@@ -193,6 +196,7 @@ export class AdminService {
   listWorkers(): AdminWorkerView[] {
     const now = this.now();
     const rows = new Map(listWorkers(this.db).map((worker) => [worker.id, worker]));
+    const usage = listProviderUsage(this.db);
     const ids = new Set([...this.config.workers.map((w) => w.workerId), ...rows.keys()]);
     return [...ids].sort().map((workerId): AdminWorkerView => {
       const row = rows.get(workerId);
@@ -213,6 +217,7 @@ export class AdminService {
         activeAttempt: active
           ? { attemptId: active.id, jobId: active.jobId, state: active.state }
           : null,
+        providerUsage: usage.get(workerId) ?? [],
       };
     });
   }

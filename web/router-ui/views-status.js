@@ -75,6 +75,86 @@ function workerBadge(worker) {
   return ["오프라인", "bad"];
 }
 
+const USAGE_WINDOW_LABELS = { five_hour: "5시간", seven_day: "주간" };
+
+function untilTime(iso) {
+  if (!iso) return "";
+  const minutes = Math.round((Date.parse(iso) - Date.now()) / 60000);
+  if (minutes <= 0) return "리셋됨";
+  if (minutes < 60) return `${minutes}분 후 리셋`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}시간 ${minutes % 60}분 후 리셋`;
+  return `${Math.floor(minutes / 1440)}일 ${Math.floor((minutes % 1440) / 60)}시간 후 리셋`;
+}
+
+function usageWindow(window) {
+  const percent = Math.min(100, Math.max(0, window.usedPercent));
+  const tone = percent >= 90 ? "bad" : percent >= 70 ? "warn" : "ok";
+  const label =
+    USAGE_WINDOW_LABELS[window.id] ||
+    (window.windowMinutes ? `${window.windowMinutes}분` : window.id);
+  // CSP (style-src 'self') blocks style attributes; CSSOM writes are allowed.
+  const fillEl = h("span", { class: `usage-fill usage-${tone}` });
+  fillEl.style.width = `${percent}%`;
+  return h(
+    "div",
+    { class: "usage-window", title: window.resetsAt || "" },
+    h("span", { class: "usage-label" }, label),
+    h(
+      "span",
+      {
+        class: "usage-bar",
+        role: "meter",
+        "aria-valuemin": "0",
+        "aria-valuemax": "100",
+        "aria-valuenow": String(percent),
+        "aria-label": `${label} 사용량`,
+      },
+      fillEl,
+    ),
+    h("span", { class: "usage-percent" }, `${window.usedPercent}%`),
+    h("span", { class: "muted usage-reset" }, untilTime(window.resetsAt)),
+  );
+}
+
+// Plan usage per provider, as the worker last reported it on connect or after a job (ADR 0028).
+function providerUsage(list) {
+  if (!list.length) return h("span", { class: "muted" }, "보고 없음 (워커 연결 시 갱신)");
+  return h(
+    "div",
+    { class: "usage-list" },
+    list.map((usage) =>
+      h(
+        "div",
+        { class: "usage" },
+        h(
+          "div",
+          { class: "usage-head" },
+          h("span", { class: "tag" }, usage.providerId),
+          h(
+            "span",
+            { class: "muted" },
+            [usage.providerType, usage.planType].filter(Boolean).join(" · "),
+          ),
+          usage.status && usage.status !== "allowed"
+            ? h(
+                "span",
+                { class: `badge badge-${usage.status === "rejected" ? "bad" : "warn"}` },
+                usage.status === "rejected" ? "한도 도달" : "한도 임박",
+              )
+            : null,
+          h(
+            "small",
+            { class: "muted", title: usage.observedAt },
+            `${relativeTime(usage.observedAt)} · ${usage.source === "job" ? "작업 후" : "연결 시"}`,
+          ),
+        ),
+        usage.windows.map(usageWindow),
+        usage.error ? h("div", { class: "muted" }, usage.error) : null,
+      ),
+    ),
+  );
+}
+
 function tags(items) {
   if (!items.length) return h("span", { class: "muted" }, "없음");
   return h(
@@ -343,6 +423,8 @@ export function renderWorkers(root, ctx) {
         h("dd", {}, tags(worker.reportedCapabilities)),
         h("dt", {}, "저장소"),
         h("dd", {}, tags(worker.reportedRepositoryIds)),
+        h("dt", {}, "LLM 사용량"),
+        h("dd", {}, providerUsage(worker.providerUsage || [])),
       ),
       actions.length ? h("div", { class: "worker-actions" }, actions) : null,
     );

@@ -4,7 +4,7 @@ import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
 import type { WorkerProviderConfig } from "../contracts/provider.js";
 import { runValidateCommand } from "../worker/validate.js";
 import { type CreatePullRequest, createPullRequest } from "../worker/github.js";
-import type { WorkerProvider, WorkerResult } from "../worker/provider.js";
+import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provider.js";
 import { buildImplementPrompt } from "../worker/prompt.js";
 import {
   changedFilesSince,
@@ -37,6 +37,8 @@ export interface ExecutorDeps {
   authorize: (stage: "commit" | "validate" | "push") => Promise<boolean>;
   /** Opens the pull request after a push; tests pass a fake. */
   createPullRequest?: CreatePullRequest;
+  /** Plan usage the provider reported while running this job (ADR 0028). */
+  onUsage?: (provider: WorkerProviderConfig, usage: UsageReading) => void;
 }
 
 function errorMessage(error: unknown): string {
@@ -78,6 +80,10 @@ export async function executeEnvelope(
     };
   }
 
+  const onUsage = deps.onUsage
+    ? (usage: UsageReading) => deps.onUsage?.(providerConfig, usage)
+    : undefined;
+
   if (envelope.kind === "planning") {
     return executePlanningEnvelope(envelope, {
       repository,
@@ -85,6 +91,7 @@ export async function executeEnvelope(
       worktreesRoot: deps.worktreesRoot,
       logPath: deps.config.logPath,
       signal: deps.signal,
+      ...(onUsage ? { onUsage } : {}),
     });
   }
 
@@ -119,7 +126,11 @@ export async function executeEnvelope(
         timeoutMs: envelope.timeoutMs,
         systemPrompt: envelope.systemPrompt,
       },
-      { signal: deps.signal, onEvent: (line) => appendFileSync(logFile, `${line}\n`) },
+      {
+        signal: deps.signal,
+        onEvent: (line) => appendFileSync(logFile, `${line}\n`),
+        ...(onUsage ? { onUsage } : {}),
+      },
     );
   } catch (error) {
     return {

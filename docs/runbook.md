@@ -265,3 +265,18 @@ v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 �
 - Jira 댓글에 `pull request failed`가 있으면 워커 머신의 `gh auth status`를 확인한다. 이 경우 PR은 추적되지
   않는다. 사람이 직접 PR을 만들어 머지한 뒤 이슈를 손으로 완료 처리한다.
 - 웹훅 401: secret이 서로 다르다. GitHub 웹훅 화면의 Recent Deliveries에서 응답을 볼 수 있다.
+
+## 22. 워커 LLM 사용량 (ADR 0028)
+
+웹 UI > 워커 카드의 "LLM 사용량"은 워커가 **연결할 때**와 **작업을 마친 직후**에만 갱신된다. 주기적으로
+조회하지 않으니, 최신 값이 필요하면 워커를 재시작한다.
+
+- **"보고 없음"**: 새 워커가 아직 연결하지 않았거나 Router가 이 기능 이전 버전이다(워커 로그
+  `usage report failed`, 404). Router를 업데이트하고 워커를 재시작한다.
+- **Claude Code에 "reported no plan usage"**: API 키 과금이라 플랜 한도가 없다. 구독 계정이면 워커
+  머신에서 `claude auth status`로 `authMethod: "claude.ai"`인지 확인한다.
+- **Claude Code에 "usage probe exited/timed out"**: 워커 머신에서 직접 확인한다.
+  `claude -p "Reply with OK." --output-format stream-json --verbose --model haiku --tools "" | grep rate_limit_event`
+- **Codex에 "app-server ... without an answer"/"did not answer in time"**: `codex --version`이 app-server를
+  지원하는지(0.158 이상에서 확인), `codex login status`가 로그인 상태인지 본다.
+

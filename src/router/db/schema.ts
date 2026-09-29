@@ -285,3 +285,17 @@ export const GITHUB_STATEMENTS: readonly string[] = [
     received_at TEXT NOT NULL
   )`,
 ];
+
+/**
+ * Migration 6 (ADR 0028). The latest plan usage each worker reported per provider, as the
+ * `ProviderUsage` JSON the worker sent. Overwritten on every report; no history.
+ */
+export const PROVIDER_USAGE_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS worker_provider_usage (
+    worker_id TEXT NOT NULL REFERENCES workers (id),
+    provider_id TEXT NOT NULL,
+    usage_json TEXT NOT NULL,
+    reported_at TEXT NOT NULL,
+    PRIMARY KEY (worker_id, provider_id)
+  )`,
+];
