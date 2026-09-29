@@ -4,7 +4,11 @@ import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { listAudit } from "../src/router/db/audit.js";
 import { getPullRequest } from "../src/router/db/pull-requests.js";
-import { parsePullRequestClosed, pollPullRequests } from "../src/router/github.js";
+import {
+  parsePullRequestClosed,
+  pollErrorMessage,
+  pollPullRequests,
+} from "../src/router/github.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import {
   IN_PROGRESS_STATUS,
@@ -232,6 +236,46 @@ describe("GitHub pull request → Jira done", () => {
       },
     });
     expect(again.checked).toBe(0);
+  });
+
+  it("records each poll's outcome and says a private repository needs a token (ADR 0032)", async () => {
+    await finishWithPullRequest();
+    const answer = (status: number, body: unknown) => async () =>
+      new Response(JSON.stringify(body), { status });
+
+    const failed = await pollPullRequests({
+      db: router.db,
+      config: router.config,
+      now: router.clock.now,
+      fetch: answer(404, { message: "Not Found" }),
+    });
+    expect(failed.errors[0]?.error).toMatch(/private repository needs GITHUB_TOKEN/);
+    let row = getPullRequest(router.db, "acme/app", 12);
+    expect(row?.state).toBe("open");
+    expect(row?.lastCheckedAt).toBe(router.clock.now());
+    expect(row?.lastError).toMatch(/404.*needs GITHUB_TOKEN/);
+
+    await pollPullRequests({
+      db: router.db,
+      config: router.config,
+      token: "read-token",
+      now: router.clock.now,
+      fetch: answer(200, { state: "open", merged: false }),
+    });
+    row = getPullRequest(router.db, "acme/app", 12);
+    expect(row?.lastError).toBeNull();
+    expect(row?.state).toBe("open");
+  });
+});
+
+describe("pollErrorMessage", () => {
+  const pr = { repo: "acme/app", number: 1 };
+  it("explains the usual failures", () => {
+    expect(pollErrorMessage(404, pr, false)).toMatch(/private repository needs GITHUB_TOKEN/);
+    expect(pollErrorMessage(404, pr, true)).toMatch(/token cannot see this repository/);
+    expect(pollErrorMessage(401, pr, true)).toMatch(/invalid or expired/);
+    expect(pollErrorMessage(403, pr, false)).toMatch(/rate limited.*raises the limit/);
+    expect(pollErrorMessage(500, pr, true)).toBe("GitHub answered 500 for acme/app#1");
   });
 });
 

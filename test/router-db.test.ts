@@ -46,13 +46,13 @@ describe("Router SQLite store", () => {
     });
 
     it("applies every migration and records it in schema_migrations", () => {
-      expect(currentSchemaVersion(db)).toBe(8);
+      expect(currentSchemaVersion(db)).toBe(9);
     });
 
     it("is idempotent: reopening an existing database does not re-run migrations", () => {
       db.close();
       const reopened = openRouterDb(dbPath);
-      expect(currentSchemaVersion(reopened)).toBe(8);
+      expect(currentSchemaVersion(reopened)).toBe(9);
       reopened.close();
       // Reopen once more so the outer afterEach's db.close() has a live handle.
       db = openRouterDb(dbPath);

@@ -1,7 +1,17 @@
 // Config editor and Jira check views (router mode).
 
 import { admin } from "./api.js";
-import { clear, copyButton, errorNotice, field, fill, h, notice, showFieldErrors } from "./dom.js";
+import {
+  clear,
+  copyButton,
+  errorNotice,
+  field,
+  fill,
+  h,
+  notice,
+  relativeTime,
+  showFieldErrors,
+} from "./dom.js";
 
 const FORM_KEYS = new Set([
   "configVersion",
@@ -92,8 +102,190 @@ function listEditor(state, key, render, blank, addLabel) {
   return wrap;
 }
 
-function githubSection(github) {
+const NO_SECRET = { set: false, source: null, editable: false };
+
+// A write-only secret (ADR 0031, 0032): the Router answers only whether it is set and where it
+// comes from, never the value. Lives inside the config form, so Enter here saves this secret and
+// never submits the config.
+function secretInput(opts) {
+  let info = opts.info;
+  const wrap = h("div", {});
+  const message = h("div", {});
+
+  async function send(value) {
+    clear(message);
+    try {
+      info = await admin("PUT", opts.endpoint, { value });
+      draw();
+      message.append(
+        notice("ok", value === null ? opts.removedText : "저장하고 바로 적용했습니다."),
+      );
+      opts.onSaved?.();
+    } catch (error) {
+      if (error.status === 401) return opts.ctx.logout();
+      message.append(errorNotice(error));
+    }
+  }
+
+  function draw() {
+    const status = h(
+      "p",
+      {},
+      h(
+        "span",
+        { class: `badge ${info.set ? "badge-ok" : opts.missingTone || "badge-muted"}` },
+        info.set ? `${opts.noun} 있음` : `${opts.noun} 없음`,
+      ),
+      " ",
+      info.set ? opts.setText : opts.unsetText,
+    );
+    if (!info.editable) {
+      fill(
+        wrap,
+        status,
+        h(
+          "small",
+          { class: "hint" },
+          info.source === "environment"
+            ? `Router 환경변수 ${opts.envKey}가 router.env보다 우선하므로 여기서 바꿀 수 없습니다. 환경변수를 바꾸고 Router를 재시작하세요.`
+            : "이 Router는 비밀정보 파일 경로가 없어 여기서 바꿀 수 없습니다.",
+        ),
+      );
+      return;
+    }
+    const input = h("input", {
+      id: opts.id,
+      type: "password",
+      class: "secret-value",
+      autocomplete: "off",
+      spellcheck: "false",
+      placeholder: info.set ? opts.replacePlaceholder : opts.placeholder,
+    });
+    const save = () => {
+      const value = input.value.trim();
+      input.value = "";
+      if (value) send(value);
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        save();
+      }
+    });
+    fill(
+      wrap,
+      status,
+      h(
+        "div",
+        { class: "secret-row" },
+        h("label", { for: opts.id, class: "secret-label" }, opts.label),
+        input,
+        h(
+          "span",
+          { class: "secret-actions" },
+          h(
+            "button",
+            { type: "button", class: "btn", onclick: save },
+            info.set ? `${opts.noun} 교체` : `${opts.noun} 저장`,
+          ),
+          info.set
+            ? h(
+                "button",
+                { type: "button", class: "btn", onclick: () => send(null) },
+                `${opts.noun} 삭제`,
+              )
+            : null,
+        ),
+      ),
+      message,
+    );
+  }
+
+  draw();
+  return wrap;
+}
+
+const PR_STATE = {
+  open: ["열림", "badge-muted"],
+  merged: ["머지됨", "badge-ok"],
+  closed: ["닫힘", "badge-muted"],
+};
+
+// Tracked pull requests and each one's last GitHub poll (ADR 0032), with "지금 확인".
+function pullRequestList(initial, ctx) {
+  let prs = initial;
+  const wrap = h("div", { class: "pr-status" });
+  const message = h("div", {});
+
+  async function pollNow(button) {
+    button.disabled = true;
+    clear(message);
+    try {
+      const result = await admin("POST", "/github/poll");
+      prs = result.pullRequests;
+      const { checked, closed, errors } = result.report;
+      message.append(
+        notice(
+          errors.length ? "warn" : "ok",
+          `열린 PR ${checked}개 확인: 머지·닫힘 ${closed.length}개, 오류 ${errors.length}개.`,
+        ),
+      );
+      draw();
+    } catch (error) {
+      if (error.status === 401) return ctx.logout();
+      message.append(errorNotice(error));
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function row(pr) {
+    const [label, tone] = PR_STATE[pr.state] || [pr.state, "badge-muted"];
+    return h(
+      "li",
+      { class: "pr-row" },
+      h("a", { href: pr.url, target: "_blank", rel: "noopener" }, `${pr.repo}#${pr.number}`),
+      h("span", { class: "tag" }, pr.issueKey),
+      h(
+        "span",
+        { class: `badge ${pr.lastError ? "badge-bad" : tone}` },
+        pr.lastError ? "확인 실패" : label,
+      ),
+      h(
+        "small",
+        { class: "muted", title: pr.lastCheckedAt || "" },
+        pr.state === "open"
+          ? pr.lastCheckedAt
+            ? `${relativeTime(pr.lastCheckedAt)} 확인`
+            : "아직 확인 안 함"
+          : pr.closedBy
+            ? `by ${pr.closedBy}`
+            : "",
+      ),
+      pr.lastError ? h("div", { class: "pr-error" }, pr.lastError) : null,
+    );
+  }
+
+  function draw() {
+    const button = h("button", { type: "button", class: "btn btn-small" }, "지금 확인");
+    button.addEventListener("click", () => pollNow(button));
+    fill(
+      wrap,
+      h("div", { class: "pr-status-head" }, h("strong", {}, "추적 중인 PR"), button),
+      prs.length
+        ? h("ul", { class: "pr-list" }, prs.map(row))
+        : h("p", { class: "muted" }, "아직 워커가 연 PR이 없습니다."),
+      message,
+    );
+  }
+
+  draw();
+  return wrap;
+}
+
+function githubSection(github, ctx) {
   const webhookUrl = `${location.origin}/webhooks/github`;
+  const prs = pullRequestList(github.pullRequests || [], ctx);
   return h(
     "div",
     { class: "github-setup" },
@@ -117,130 +309,57 @@ function githubSection(github) {
         ? "GitHub 저장소 Settings > Webhooks에 위 URL, Content type application/json, Secret(router.env의 GGJIRA_GITHUB_WEBHOOK_SECRET), 이벤트 Pull requests로 등록하세요."
         : "router.env에 GGJIRA_GITHUB_WEBHOOK_SECRET(16자 이상)을 넣고 Router를 재시작하면 켜집니다. 꺼져 있어도 폴링으로 동작합니다.",
     ),
-    h(
-      "p",
-      {},
-      h(
-        "span",
-        { class: `badge ${github.token ? "badge-ok" : "badge-muted"}` },
-        github.token ? "토큰 있음" : "토큰 없음",
-      ),
-      " ",
-      github.token
-        ? "열린 PR을 GitHub API로 주기적으로 확인합니다(고급 JSON의 github.pollIntervalMs, 기본 5분)."
-        : "토큰 없이도 공개 저장소는 확인합니다. 비공개 저장소면 router.env에 GITHUB_TOKEN(읽기 권한)을 넣으세요.",
-    ),
+    secretInput({
+      ctx,
+      info: github.token || NO_SECRET,
+      endpoint: "/secrets/github-token",
+      id: "github-token",
+      label: "GitHub 토큰",
+      noun: "토큰",
+      envKey: "GITHUB_TOKEN",
+      placeholder: "github_pat_… (Pull requests: read)",
+      replacePlaceholder: "새 토큰을 넣으면 교체합니다",
+      setText:
+        "열린 PR을 이 토큰으로 주기적으로 확인합니다(기본 5분, 고급 JSON의 github.pollIntervalMs).",
+      unsetText:
+        "공개 저장소만 확인할 수 있습니다. 비공개 저장소는 토큰이 없으면 확인에 실패합니다(아래 목록에 표시).",
+      removedText: "토큰을 삭제했습니다. 이제 공개 저장소만 확인합니다.",
+      // Saving a token re-checks open PRs at once; show the outcome shortly after.
+      onSaved: () => setTimeout(() => prs.querySelector("button")?.click(), 1500),
+    }),
+    prs,
     h(
       "small",
       { class: "hint" },
-      "로컬(127.0.0.1)에서는 GitHub이 Router에 닿지 않으므로 폴링이나 gh webhook forward를 씁니다(runbook §21).",
+      "토큰은 해당 저장소의 Pull requests 읽기 권한만 준 fine-grained 토큰을 권장합니다. 로컬(127.0.0.1)에서는 GitHub 웹훅이 닿지 않으므로 폴링이나 gh webhook forward를 씁니다(runbook §21).",
     ),
   );
 }
 
-// Jev API key (ADR 0031): write-only. The Router answers only whether a key is set and where it
-// comes from; the value never comes back. Kept outside the config form so Enter here never
-// submits the config.
-function jevSection(initial, ctx) {
-  let info = initial;
-  const wrap = h("div", { class: "jev-key" });
-  const message = h("div", {});
-
-  async function send(apiKey) {
-    clear(message);
-    try {
-      info = await admin("PUT", "/secrets/jev", { apiKey });
-      draw();
-      message.append(
-        notice(
-          "ok",
-          apiKey === null ? "키를 삭제했습니다. 평가가 꺼집니다." : "저장하고 바로 적용했습니다.",
-        ),
-      );
-    } catch (error) {
-      if (error.status === 401) return ctx.logout();
-      message.append(errorNotice(error));
-    }
-  }
-
-  function draw() {
-    const status = h(
-      "p",
-      {},
-      info.apiKey
-        ? h("span", { class: "badge badge-ok" }, "키 있음")
-        : h("span", { class: "badge badge-muted" }, "키 없음"),
-      " ",
-      info.apiKey
-        ? "새 job마다 Jev 평가를 기록합니다. 이슈 제목과 설명이 TypeSafe로 전송됩니다."
-        : "키를 넣으면 재시작 없이 평가가 켜집니다. 없으면 평가하지 않습니다.",
-    );
-    if (!info.editable) {
-      fill(
-        wrap,
-        status,
-        h(
-          "small",
-          { class: "hint" },
-          info.source === "environment"
-            ? "Router 환경변수 TYPESAFE_API_KEY가 router.env보다 우선하므로 여기서 바꿀 수 없습니다. 환경변수를 바꾸고 Router를 재시작하세요."
-            : "이 Router는 비밀정보 파일 경로가 없어 여기서 바꿀 수 없습니다.",
-        ),
-      );
-      return;
-    }
-    const input = h("input", {
+function jevSection(info, ctx) {
+  return h(
+    "div",
+    {},
+    secretInput({
+      ctx,
+      info,
+      endpoint: "/secrets/jev",
       id: "jev-api-key",
-      type: "password",
-      class: "secret-value",
-      autocomplete: "off",
-      spellcheck: "false",
-      placeholder: info.apiKey ? "새 키를 넣으면 교체합니다" : "TypeSafe API 키",
-    });
-    const save = () => {
-      const value = input.value.trim();
-      input.value = "";
-      if (value) send(value);
-    };
-    // Inside the config form: Enter here saves the key, never the config.
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        save();
-      }
-    });
-    fill(
-      wrap,
-      status,
-      h(
-        "div",
-        { class: "secret-row" },
-        h("label", { for: "jev-api-key", class: "secret-label" }, "API 키"),
-        input,
-        h(
-          "span",
-          { class: "jev-key-actions" },
-          h(
-            "button",
-            { type: "button", class: "btn", onclick: save },
-            info.apiKey ? "키 교체" : "키 저장",
-          ),
-          info.apiKey
-            ? h("button", { type: "button", class: "btn", onclick: () => send(null) }, "키 삭제")
-            : null,
-        ),
-      ),
-      message,
-      h(
-        "small",
-        { class: "hint" },
-        "키는 router.env에만 저장되고 화면에 다시 표시되지 않습니다. 원격에서는 HTTPS로만 여세요. 평가 결과 보기와 끄기는 runbook §23.",
-      ),
-    );
-  }
-
-  draw();
-  return wrap;
+      label: "API 키",
+      noun: "키",
+      envKey: "TYPESAFE_API_KEY",
+      placeholder: "TypeSafe API 키",
+      replacePlaceholder: "새 키를 넣으면 교체합니다",
+      setText: "새 job마다 Jev 평가를 기록합니다. 이슈 제목과 설명이 TypeSafe로 전송됩니다.",
+      unsetText: "키를 넣으면 재시작 없이 평가가 켜집니다. 없으면 평가하지 않습니다.",
+      removedText: "키를 삭제했습니다. 평가가 꺼집니다.",
+    }),
+    h(
+      "small",
+      { class: "hint" },
+      "키는 router.env에만 저장되고 화면에 다시 표시되지 않습니다. 원격에서는 HTTPS로만 여세요. 평가 결과 보기와 끄기는 runbook §23.",
+    ),
+  );
 }
 
 function cleanPlanning(planning = {}) {
@@ -517,12 +636,12 @@ export async function renderConfig(root, ctx) {
     section(
       "GitHub PR 머지 → 완료",
       "워커가 연 PR이 머지되면 이슈를 검토 상태에서 '완료 상태'로 옮깁니다. 웹훅으로 바로 알고, 놓친 것은 주기적으로 GitHub에 확인합니다.",
-      githubSection(view.github ?? { webhook: false, token: false }),
+      githubSection(view.github ?? { webhook: false, token: NO_SECRET, pullRequests: [] }, ctx),
     ),
     section(
       "Jev 평가 (TypeSafe)",
       "새 job마다 모델 등급과 준비 상태를 Jev에 묻고 기록만 합니다(관찰 모드). 이 영역은 위아래 '저장'과 따로 즉시 적용됩니다.",
-      jevSection(view.jev ?? { apiKey: false, source: null, editable: false }, ctx),
+      jevSection(view.jev ?? NO_SECRET, ctx),
     ),
     section("워커 정책", "워커별로 허용하는 capability와 저장소입니다.", workers),
     section(

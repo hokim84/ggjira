@@ -23,6 +23,7 @@ import {
   pollPullRequests,
 } from "./github.js";
 import { JevClient } from "./jev.js";
+import { GITHUB_TOKEN_ENV, JEV_API_KEY_ENV } from "./secrets.js";
 import { buildRouterServer } from "./server.js";
 import { WorkerService } from "./worker-service.js";
 
@@ -55,17 +56,18 @@ export interface RouterDaemonDeps {
   /** `jobs/next` long-poll length; defaults to the protocol's 25s. */
   longPollMs?: number;
   /** GitHub integration (ADR 0027): webhook secret enables `/webhooks/github`; the token (optional)
-   *  authenticates the pull-request poll. */
-  github?: { webhookSecret?: string | undefined; token?: string | undefined; fetch?: FetchLike };
-  /** Jev API key (ADR 0030); the assess loop runs only with one and `config.jev.enabled`. With
-   *  `secretsPath` the web UI can replace it at runtime, unless it came from the environment
-   *  (ADR 0031). */
-  jev?: {
-    apiKey?: string | undefined;
+   *  authenticates the pull-request poll and can be replaced from the web UI (ADR 0032). */
+  github?: {
+    webhookSecret?: string | undefined;
+    token?: string | undefined;
+    tokenFromEnvironment?: boolean;
     fetch?: FetchLike;
-    secretsPath?: string;
-    fromEnvironment?: boolean;
   };
+  /** Jev API key (ADR 0030); the assess loop runs only with one and `config.jev.enabled`. */
+  jev?: { apiKey?: string | undefined; fromEnvironment?: boolean; fetch?: FetchLike };
+  /** The secrets file (`router.env`) the web UI writes replaced secrets to (ADR 0031). Without it
+   *  secrets are read-only in the UI. A secret set in the environment stays read-only. */
+  secretsPath?: string;
 }
 
 interface Loop {
@@ -107,12 +109,14 @@ export class RouterDaemon {
   private lastSyncAtMs: number | undefined;
   private lastSyncFailureAtMs: number | undefined;
   private jevApiKey: string | undefined;
+  private githubToken: string | undefined;
 
   constructor(private readonly deps: RouterDaemonDeps) {
     this.now = deps.now ?? (() => new Date().toISOString());
     this.nowMs = deps.nowMs ?? Date.now;
     this.config = deps.config;
     this.jevApiKey = deps.jev?.apiKey;
+    this.githubToken = deps.github?.token;
     this.schedulerDeps = {
       db: deps.db,
       jira: deps.jira,
@@ -133,15 +137,36 @@ export class RouterDaemon {
       now: this.now,
       reconcileNow: () => this.reconcileNow(),
       applyConfig: (config) => this.applyConfig(config),
-      github: { webhook: Boolean(deps.github?.webhookSecret), token: Boolean(deps.github?.token) },
-      jev: {
-        ...(deps.jev?.secretsPath ? { secretsPath: deps.jev.secretsPath } : {}),
-        fromEnvironment: deps.jev?.fromEnvironment ?? false,
-        isSet: () => Boolean(this.jevApiKey),
-        apply: (apiKey) => {
-          this.jevApiKey = apiKey;
+      github: { webhook: Boolean(deps.github?.webhookSecret) },
+      secrets: {
+        ...(deps.secretsPath ? { secretsPath: deps.secretsPath } : {}),
+        slots: {
+          jev: {
+            envKey: JEV_API_KEY_ENV,
+            fromEnvironment: deps.jev?.fromEnvironment ?? false,
+            isSet: () => Boolean(this.jevApiKey),
+            apply: (value) => {
+              this.jevApiKey = value;
+            },
+          },
+          githubToken: {
+            envKey: GITHUB_TOKEN_ENV,
+            fromEnvironment: deps.github?.tokenFromEnvironment ?? false,
+            isSet: () => Boolean(this.githubToken),
+            apply: (value) => {
+              this.githubToken = value;
+              // Re-check open PRs with the new token now rather than in up to 5 minutes.
+              this.githubTick().catch((error: unknown) =>
+                this.deps.logger?.error(
+                  { layer: "router", err: error },
+                  "pull request poll failed",
+                ),
+              );
+            },
+          },
         },
       },
+      pollGithub: () => this.githubTick(),
       ...(deps.configPath ? { configPath: deps.configPath } : {}),
     });
     this.app = buildRouterServer({
@@ -321,7 +346,7 @@ export class RouterDaemon {
     const report = await pollPullRequests({
       db: this.deps.db,
       config: this.config,
-      token: this.deps.github?.token,
+      token: this.githubToken,
       ...(this.deps.github?.fetch ? { fetch: this.deps.github.fetch } : {}),
       now: this.now,
     });

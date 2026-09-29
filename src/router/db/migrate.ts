@@ -4,6 +4,7 @@ import {
   GITHUB_STATEMENTS,
   JOB_ASSESSMENT_STATEMENTS,
   PROVIDER_USAGE_STATEMENTS,
+  PULL_REQUEST_CHECK_STATEMENTS,
   REPORT_JOURNAL_STATEMENTS,
   WORKER_REPOSITORY_PATH_STATEMENTS,
   SCHEMA_STATEMENTS,
@@ -78,6 +79,13 @@ const MIGRATIONS: readonly Migration[] = [
     description: "workers.reported_repository_paths (local paths shown in the admin view)",
     up(db) {
       for (const statement of WORKER_REPOSITORY_PATH_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 9,
+    description: "pull_requests.last_checked_at/last_error (GitHub poll status, ADR 0032)",
+    up(db) {
+      for (const statement of PULL_REQUEST_CHECK_STATEMENTS) db.exec(statement);
     },
   },
 ];

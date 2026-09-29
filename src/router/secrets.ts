@@ -127,10 +127,12 @@ export function loadRouterGithubSecrets(
 }
 
 export const JEV_API_KEY_ENV = "TYPESAFE_API_KEY";
+export const GITHUB_TOKEN_ENV = "GITHUB_TOKEN";
 
-/** What the web UI accepts as a Jev key: one token of URL-safe characters. Anything that could
- *  break the `KEY=VALUE` line (whitespace, newlines, quotes, `#`) is refused (ADR 0031). */
-export const JevApiKeySchema = z
+/** What the web UI accepts as a secret (Jev key, GitHub token): one token of URL-safe characters.
+ *  Anything that could break the `KEY=VALUE` line (whitespace, newlines, quotes, `#`) is refused
+ *  (ADR 0031). */
+export const SecretValueSchema = z
   .string()
   .regex(/^[A-Za-z0-9._~+/=:-]{8,512}$/, "8-512 characters: letters, digits and ._~+/=:-");
 

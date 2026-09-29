@@ -130,7 +130,8 @@ push 직전에 `authorize`(stage `push`)로 권한을 다시 확인한다(ADR 00
 화면은 대시보드(`/status`), 워커(5초 폴링, 페어링 코드, enable/disable/revoke, LLM 플랜 사용량),
 설정 편집, Jira 점검이다.
 모두 admin token으로 위 관리 API만 호출한다. Jev API 키는 입력만 받고 되돌려주지 않는 칸으로 설정한다
-(`PUT /secrets/jev`, `router.env`에 기록, ADR 0031). 설정은 저장 즉시 `RouterDaemon.applyConfig`로 적용된다
+(`PUT /secrets/jev`, `router.env`에 기록, ADR 0031). GitHub 토큰도 같은 방식이고(`PUT /secrets/github-token`),
+GitHub 영역은 추적 중인 PR과 마지막 확인 결과, "지금 확인"(`POST /github/poll`)을 보여 준다(ADR 0032). 설정은 저장 즉시 `RouterDaemon.applyConfig`로 적용된다
 (sync/verify lane에서 직렬, ADR 0024). `http`, `db.path`, `jira.baseUrl`, `executionAgent.fieldId`만
 재시작해야 반영된다.
 

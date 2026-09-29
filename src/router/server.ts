@@ -7,7 +7,7 @@ import {
   AdminCreatePairingCodeRequestSchema,
   AdminJiraProjectRequestSchema,
   AdminWorkflowCheckRequestSchema,
-  AdminJevKeyRequestSchema,
+  AdminSecretRequestSchema,
   type ApiErrorResponse,
   JobAuthorizeRequestSchema,
   JobHeartbeatRequestSchema,
@@ -346,11 +346,20 @@ function registerAdminRoutes(
         },
       );
       scope.put("/secrets/jev", async (request) =>
-        admin.setJevApiKey(
-          parseBody(AdminJevKeyRequestSchema, request.body).apiKey,
+        admin.setSecret(
+          "jev",
+          parseBody(AdminSecretRequestSchema, request.body).value,
           actorOf(request),
         ),
       );
+      scope.put("/secrets/github-token", async (request) =>
+        admin.setSecret(
+          "githubToken",
+          parseBody(AdminSecretRequestSchema, request.body).value,
+          actorOf(request),
+        ),
+      );
+      scope.post("/github/poll", async () => admin.pollGithubNow());
       scope.get<IdParams>("/jobs/:id", async (request) => admin.showJob(request.params.id));
       scope.post<IdParams>("/jobs/:id/cancel", async (request) =>
         admin.cancelJob(request.params.id, actorOf(request)),

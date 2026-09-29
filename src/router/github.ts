@@ -8,6 +8,7 @@ import {
   getPullRequest,
   listOpenPullRequests,
   type PullRequestRow,
+  recordPullRequestCheck,
 } from "./db/pull-requests.js";
 import { insertReportBatch } from "./db/report-steps.js";
 import { buildPullRequestClosedSteps, pullRequestBatchId } from "./report-journal.js";
@@ -140,6 +141,12 @@ export async function pollPullRequests(deps: {
     report.checked += 1;
     try {
       const state = await fetchPullRequestState(fetchImpl, pr, deps.token);
+      recordPullRequestCheck(deps.db, {
+        repo: pr.repo,
+        number: pr.number,
+        error: null,
+        now: deps.now(),
+      });
       if (!state.closed) continue;
       const outcome = handlePullRequestClosed(
         deps.db,
@@ -151,14 +158,37 @@ export async function pollPullRequests(deps: {
         report.closed.push({ repo: pr.repo, number: pr.number, merged: state.merged });
       }
     } catch (error) {
-      report.errors.push({
+      const message = error instanceof Error ? error.message : String(error);
+      recordPullRequestCheck(deps.db, {
         repo: pr.repo,
         number: pr.number,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
+        now: deps.now(),
       });
+      report.errors.push({ repo: pr.repo, number: pr.number, error: message });
     }
   }
   return report;
+}
+
+/** Says what to do about a failed poll, not just the status: GitHub answers 404 for a private
+ *  repository it won't show without (or with an insufficient) token (ADR 0032). */
+export function pollErrorMessage(
+  status: number,
+  pr: { repo: string; number: number },
+  hasToken: boolean,
+): string {
+  const where = `${pr.repo}#${pr.number}`;
+  if (status === 404) {
+    return hasToken
+      ? `GitHub answered 404 for ${where}: the token cannot see this repository (give it Pull requests: read on ${pr.repo})`
+      : `GitHub answered 404 for ${where}: a private repository needs GITHUB_TOKEN`;
+  }
+  if (status === 401) return `GitHub answered 401 for ${where}: GITHUB_TOKEN is invalid or expired`;
+  if (status === 403 || status === 429) {
+    return `GitHub answered ${status} for ${where}: rate limited or forbidden${hasToken ? "" : " (a GITHUB_TOKEN raises the limit)"}`;
+  }
+  return `GitHub answered ${status} for ${where}`;
 }
 
 async function fetchPullRequestState(
@@ -175,8 +205,7 @@ async function fetchPullRequestState(
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
   });
-  if (!response.ok)
-    throw new Error(`GitHub answered ${response.status} for ${pr.repo}#${pr.number}`);
+  if (!response.ok) throw new Error(pollErrorMessage(response.status, pr, Boolean(token)));
   const body = (await response.json()) as {
     state?: string;
     merged?: boolean;

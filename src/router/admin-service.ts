@@ -16,7 +16,9 @@ import {
   validateRouterConfig,
   writeRouterConfig,
 } from "./config-store.js";
-import { JEV_API_KEY_ENV, JevApiKeySchema } from "./secrets.js";
+import { listRecentPullRequests, type PullRequestRow } from "./db/pull-requests.js";
+import type { PullRequestPollReport } from "./github.js";
+import { SecretValueSchema } from "./secrets.js";
 import {
   type AttemptRow,
   getActiveAttemptForWorker,
@@ -130,18 +132,42 @@ export interface AdminConfigView {
   pendingApply: boolean;
   /** Set when the file on disk is unreadable or invalid. */
   problem: string | null;
-  /** Which GitHub secrets the running Router has (ADR 0027); values are never returned. */
-  github: { webhook: boolean; token: boolean };
+  /** GitHub integration state (ADR 0027, 0032); secret values are never returned. */
+  github: AdminGithubView;
   /** Whether the Router has a Jev API key and where it comes from (ADR 0031); never the value. */
-  jev: JevKeyInfo;
+  jev: SecretInfo;
 }
 
-export interface JevKeyInfo {
-  apiKey: boolean;
+export interface AdminGithubView {
+  webhook: boolean;
+  token: SecretInfo;
+  /** Open PRs first, then recently closed, with each one's last poll result. */
+  pullRequests: PullRequestRow[];
+}
+
+/** A secret the web UI can set without seeing it (ADR 0031). */
+export interface SecretInfo {
+  set: boolean;
   /** `environment` wins over the secrets file, so the web UI cannot change it. */
   source: "environment" | "file" | null;
   editable: boolean;
 }
+
+export type SecretSlotId = "jev" | "githubToken";
+
+export interface SecretSlot {
+  /** The `router.env` / environment variable name. */
+  envKey: string;
+  fromEnvironment: boolean;
+  isSet: () => boolean;
+  /** Hands the new value to the running Router. */
+  apply: (value: string | undefined) => void;
+}
+
+const SECRET_AUDIT_NAMES: Record<SecretSlotId, string> = {
+  jev: "jev",
+  githubToken: "github-token",
+};
 
 export interface BackupResult {
   path: string;
@@ -163,16 +189,13 @@ export interface AdminServiceDeps {
   /** Applies a validated config to the running Router (daemon: serialized with sync/verify, all
    *  services swapped). Without it only this service's own view changes. */
   applyConfig?: (config: RouterConfig) => Promise<void>;
-  /** Whether the GitHub webhook secret / poll token are set, for the settings screen. */
-  github?: { webhook: boolean; token: boolean };
-  /** The Jev key's current state and how to replace it (ADR 0031). Without it the key is not
-   *  editable. */
-  jev?: {
-    secretsPath?: string;
-    fromEnvironment: boolean;
-    isSet: () => boolean;
-    apply: (apiKey: string | undefined) => void;
-  };
+  /** Whether the GitHub webhook secret is set (it only changes on restart). */
+  github?: { webhook: boolean };
+  /** Secrets the web UI can replace, written to `secretsPath` (ADR 0031, 0032). A slot left out
+   *  shows as unset and not editable. */
+  secrets?: { secretsPath?: string; slots: Partial<Record<SecretSlotId, SecretSlot>> };
+  /** Runs one GitHub pull-request poll now ("지금 확인"). */
+  pollGithub?: () => Promise<PullRequestPollReport>;
 }
 
 export interface AdminAddWorkerResult {
@@ -460,7 +483,7 @@ export class AdminService {
         pendingApply: false,
         problem: (error as RouterConfigError).message,
         github: this.githubInfo(),
-        jev: this.jevInfo(),
+        jev: this.secretInfo("jev"),
       };
     }
     const validation = validateRouterConfig(file);
@@ -473,7 +496,7 @@ export class AdminService {
         pendingApply: false,
         problem: validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "),
         github: this.githubInfo(),
-        jev: this.jevInfo(),
+        jev: this.secretInfo("jev"),
       };
     }
     const restartFields = restartOnlyChanges(this.startedWith, validation.config);
@@ -485,7 +508,7 @@ export class AdminService {
       pendingApply: canonicalJson(validation.config) !== canonicalJson(this.config),
       problem: null,
       github: this.githubInfo(),
-      jev: this.jevInfo(),
+      jev: this.secretInfo("jev"),
     };
   }
 
@@ -657,58 +680,68 @@ export class AdminService {
 
   // --- helpers -------------------------------------------------------------------------
 
-  jevInfo(): JevKeyInfo {
-    const jev = this.deps.jev;
-    if (!jev) return { apiKey: false, source: null, editable: false };
-    const apiKey = jev.isSet();
+  secretInfo(id: SecretSlotId): SecretInfo {
+    const slot = this.deps.secrets?.slots[id];
+    if (!slot) return { set: false, source: null, editable: false };
+    const set = slot.isSet();
     return {
-      apiKey,
-      source: jev.fromEnvironment ? "environment" : apiKey ? "file" : null,
-      editable: !jev.fromEnvironment && Boolean(jev.secretsPath),
+      set,
+      source: slot.fromEnvironment ? "environment" : set ? "file" : null,
+      editable: !slot.fromEnvironment && Boolean(this.deps.secrets?.secretsPath),
     };
   }
 
   /**
-   * Web UI "Jev API 키": writes (or removes) `TYPESAFE_API_KEY` in the secrets file and hands it to
-   * the running Router, so the next assess pass uses it without a restart. The audit entry records
-   * that it changed, never the value (ADR 0031).
+   * Web UI secret input: writes (or with `null` removes) the slot's line in the secrets file and
+   * hands the value to the running Router, so it applies without a restart. The audit entry
+   * records that it changed, never the value (ADR 0031).
    */
-  setJevApiKey(apiKey: string | null, actor: string): JevKeyInfo {
-    const jev = this.deps.jev;
-    if (!jev?.secretsPath) {
+  setSecret(id: SecretSlotId, value: string | null, actor: string): SecretInfo {
+    const slot = this.deps.secrets?.slots[id];
+    const secretsPath = this.deps.secrets?.secretsPath;
+    if (!slot || !secretsPath) {
       throw new AdminError(409, "not_editable", "this Router has no secrets file to write to");
     }
-    if (jev.fromEnvironment) {
+    if (slot.fromEnvironment) {
       throw new AdminError(
         409,
         "set_by_environment",
-        `${JEV_API_KEY_ENV} is set in the Router's environment, which wins over the secrets file; change it there`,
+        `${slot.envKey} is set in the Router's environment, which wins over the secrets file; change it there`,
       );
     }
-    if (apiKey !== null) {
-      const parsed = JevApiKeySchema.safeParse(apiKey);
+    if (value !== null) {
+      const parsed = SecretValueSchema.safeParse(value);
       if (!parsed.success) {
-        throw new AdminError(
-          400,
-          "invalid_request",
-          parsed.error.issues[0]?.message ?? "invalid key",
-          [{ path: "apiKey", message: parsed.error.issues[0]?.message ?? "invalid key" }],
-        );
+        const message = parsed.error.issues[0]?.message ?? "invalid value";
+        throw new AdminError(400, "invalid_request", message, [{ path: "value", message }]);
       }
     }
-    setSecretsFileValue(jev.secretsPath, JEV_API_KEY_ENV, apiKey);
-    jev.apply(apiKey ?? undefined);
+    setSecretsFileValue(secretsPath, slot.envKey, value);
+    slot.apply(value ?? undefined);
     appendAudit(this.db, {
       at: this.now(),
       actor,
-      action: apiKey === null ? "secret.jev.removed" : "secret.jev.set",
-      subject: JEV_API_KEY_ENV,
+      action: `secret.${SECRET_AUDIT_NAMES[id]}.${value === null ? "removed" : "set"}`,
+      subject: slot.envKey,
     });
-    return this.jevInfo();
+    return this.secretInfo(id);
   }
 
-  private githubInfo(): { webhook: boolean; token: boolean } {
-    return this.deps.github ?? { webhook: false, token: false };
+  /** "지금 확인": one pull-request poll on demand, then the refreshed GitHub view. */
+  async pollGithubNow(): Promise<AdminGithubView & { report: PullRequestPollReport }> {
+    if (!this.deps.pollGithub) {
+      throw new AdminError(409, "not_available", "GitHub polling is not running in this Router");
+    }
+    const report = await this.deps.pollGithub();
+    return { ...this.githubInfo(), report };
+  }
+
+  private githubInfo(): AdminGithubView {
+    return {
+      webhook: this.deps.github?.webhook ?? false,
+      token: this.secretInfo("githubToken"),
+      pullRequests: listRecentPullRequests(this.db, 20),
+    };
   }
 
   private requireConfigPath(): string {

@@ -674,7 +674,7 @@ textarea {
   flex-basis: 100%;
 }
 
-.jev-key-actions {
+.secret-actions {
   display: inline-flex;
   gap: 0.4rem;
 }
@@ -688,4 +688,33 @@ textarea {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+
+.pr-status {
+  margin: 0.75rem 0 0.5rem;
+}
+.pr-status-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.pr-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.pr-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.pr-error {
+  flex-basis: 100%;
+  color: var(--bad);
+  font-size: 0.8rem;
 }

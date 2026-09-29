@@ -22,6 +22,7 @@ import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
 import type { JobPage, JobRow } from "./db/jobs.js";
 import {
+  GITHUB_TOKEN_ENV,
   JEV_API_KEY_ENV,
   loadRouterGithubSecrets,
   loadRouterJevApiKey,
@@ -195,12 +196,13 @@ async function serve(parsed: ParsedArgs, io: CliIo): Promise<number> {
     siteId: new URL(config.jira.baseUrl).host,
     configPath: configFile,
     logger,
-    github: { webhookSecret: github.webhookSecret, token: github.token },
-    jev: {
-      apiKey: jevApiKey,
-      secretsPath: secretsPath(parsed, io),
-      fromEnvironment: Boolean(io.env[JEV_API_KEY_ENV]),
+    github: {
+      webhookSecret: github.webhookSecret,
+      token: github.token,
+      tokenFromEnvironment: Boolean(io.env[GITHUB_TOKEN_ENV]),
     },
+    jev: { apiKey: jevApiKey, fromEnvironment: Boolean(io.env[JEV_API_KEY_ENV]) },
+    secretsPath: secretsPath(parsed, io),
   });
 
   const host = stringOption(parsed, "host") ?? config.http.host;

@@ -324,3 +324,9 @@ export const JOB_ASSESSMENT_STATEMENTS: readonly string[] = [
 export const WORKER_REPOSITORY_PATH_STATEMENTS: readonly string[] = [
   "ALTER TABLE workers ADD COLUMN reported_repository_paths TEXT NOT NULL DEFAULT '{}'",
 ];
+
+/** Migration 9 (ADR 0032). The last GitHub poll result per pull request, for the settings screen. */
+export const PULL_REQUEST_CHECK_STATEMENTS: readonly string[] = [
+  "ALTER TABLE pull_requests ADD COLUMN last_checked_at TEXT",
+  "ALTER TABLE pull_requests ADD COLUMN last_error TEXT",
+];

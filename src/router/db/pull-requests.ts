@@ -13,6 +13,9 @@ export interface PullRequestRow {
   closedBy: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Last GitHub poll of this PR and what went wrong, if anything (ADR 0032). */
+  lastCheckedAt: string | null;
+  lastError: string | null;
 }
 
 function toRow(row: Record<string, unknown>): PullRequestRow {
@@ -27,6 +30,8 @@ function toRow(row: Record<string, unknown>): PullRequestRow {
     closedBy: (row.closed_by as string | null) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
+    lastCheckedAt: (row.last_checked_at as string | null | undefined) ?? null,
+    lastError: (row.last_error as string | null | undefined) ?? null,
   };
 }
 
@@ -112,4 +117,26 @@ export function recordGithubDelivery(
       .prepare("INSERT OR IGNORE INTO github_deliveries (id, event, received_at) VALUES (?, ?, ?)")
       .run(input.id, input.event, input.now).changes === 1
   );
+}
+
+/** Records one poll of a PR: `error` null means GitHub answered. */
+export function recordPullRequestCheck(
+  db: Database.Database,
+  input: { repo: string; number: number; error: string | null; now: string },
+): void {
+  db.prepare(
+    "UPDATE pull_requests SET last_checked_at = ?, last_error = ? WHERE lower(repo) = ? AND number = ?",
+  ).run(input.now, input.error, normalizeRepo(input.repo), input.number);
+}
+
+/** Open PRs first, then the most recently closed, for the settings screen. */
+export function listRecentPullRequests(db: Database.Database, limit: number): PullRequestRow[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM pull_requests
+       ORDER BY CASE state WHEN 'open' THEN 0 ELSE 1 END, updated_at DESC
+       LIMIT ?`,
+    )
+    .all(limit) as Record<string, unknown>[];
+  return rows.map(toRow);
 }

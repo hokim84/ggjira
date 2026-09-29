@@ -259,7 +259,15 @@ v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 �
      `gh extension install cli/gh-webhook` 후 다음 명령을 켜 둔다.
      `gh webhook forward --repo <owner>/<repo> --events pull_request --url http://127.0.0.1:8787/webhooks/github --secret <같은 secret>`
 
+토큰은 웹 UI > 설정 > GitHub 영역의 "GitHub 토큰"에 넣어도 된다. `router.env`에 저장되고 재시작 없이
+적용되며, 저장하면 곧바로 열린 PR을 다시 확인한다(ADR 0032).
+
 진단:
+- 먼저 설정 > GitHub 영역의 **추적 중인 PR** 목록을 본다. "지금 확인"으로 바로 다시 확인할 수 있다.
+  - "확인 실패 — private repository needs GITHUB_TOKEN": 비공개 저장소인데 토큰이 없다. 토큰을 넣는다.
+  - "token cannot see this repository": 토큰에 그 저장소의 Pull requests 읽기 권한이 없다.
+  - "invalid or expired": 토큰을 새로 발급해 교체한다.
+  - 목록에 PR이 없다: 워커가 PR을 만들지 못했거나(Jira 댓글의 `pull request failed`) 결과에 PR이 없었다.
 - 머지했는데 완료로 안 감: `router reports list`에 막힌 단계가 있는지 본다. 댓글에 "a human moved it"이면
   이슈가 이미 검토 상태가 아니었다(의도된 동작). 전이 실패면 설정 화면의 "PR 머지 후 완료" 전이를 확인한다.
 - Jira 댓글에 `pull request failed`가 있으면 워커 머신의 `gh auth status`를 확인한다. 이 경우 PR은 추적되지
