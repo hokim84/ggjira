@@ -195,6 +195,20 @@ describe("WorkerRunner against a live Router", () => {
     });
   });
 
+  it("reports its local repository paths on connect; a session without them keeps the last", async () => {
+    const { runner, token } = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()));
+    await runner.connect();
+    const view = () => router.admin.listWorkers().find((w) => w.workerId === "worker-1");
+    expect(view()?.repositoryPaths).toEqual({ repo1: path.resolve(workDir) });
+
+    // An older worker opens a session without `repositories`.
+    await new RouterClient({ routerUrl, workerToken: token }).openSession({
+      protocolVersion: PROTOCOL_VERSION,
+      workerId: "worker-1",
+    });
+    expect(view()?.repositoryPaths).toEqual({ repo1: path.resolve(workDir) });
+  });
+
   it("refuses a usage report from a superseded session", async () => {
     const { runner, token } = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()));
     await runner.connect();

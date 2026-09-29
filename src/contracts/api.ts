@@ -65,6 +65,12 @@ export type WorkerRegisterResponse = z.infer<typeof WorkerRegisterResponseSchema
 export const WorkerSessionRequestSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),
   workerId: z.string().min(1),
+  /** Where each configured repository lives on the worker machine, for the admin workers view
+   *  only — Router never uses a path to decide or run anything. Optional: older workers omit it. */
+  repositories: z
+    .array(z.object({ id: z.string().min(1), path: z.string().min(1).max(1024) }))
+    .max(200)
+    .optional(),
 });
 export type WorkerSessionRequest = z.infer<typeof WorkerSessionRequestSchema>;
 

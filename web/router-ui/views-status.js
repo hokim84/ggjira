@@ -75,6 +75,27 @@ function workerBadge(worker) {
   return ["오프라인", "bad"];
 }
 
+// Repository ids the worker reports, each with its local path when the worker sent one (on
+// session open; older workers don't).
+function repositories(ids, paths) {
+  if (!ids.length) return h("span", { class: "muted" }, "없음");
+  return h(
+    "div",
+    { class: "repo-list" },
+    ids.map((id) =>
+      h(
+        "div",
+        { class: "repo-row" },
+        h("span", { class: "tag" }, id),
+        paths[id]
+          ? h("code", { class: "repo-path", title: paths[id] }, paths[id])
+          : h("span", { class: "muted" }, "경로 미보고"),
+        paths[id] ? copyButton(paths[id]) : null,
+      ),
+    ),
+  );
+}
+
 const USAGE_WINDOW_LABELS = { five_hour: "5시간", seven_day: "주간" };
 
 function untilTime(iso) {
@@ -445,7 +466,7 @@ export function renderWorkers(root, ctx) {
         h("dt", {}, "capabilities"),
         h("dd", {}, tags(worker.reportedCapabilities)),
         h("dt", {}, "저장소"),
-        h("dd", {}, tags(worker.reportedRepositoryIds)),
+        h("dd", {}, repositories(worker.reportedRepositoryIds, worker.repositoryPaths || {})),
         h("dt", {}, "LLM 사용량"),
         h("dd", {}, providerUsage(worker.providerUsage || [])),
       ),

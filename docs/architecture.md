@@ -67,7 +67,7 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 ```
 Worker                                   Router (SQLite)
   workers/register (pairing code) ───▶   token 발급(hash만 저장)
-  workers/session ───────────────────▶   현재 세션 교체, 미확정 attempt 반환
+  workers/session ───────────────────▶   현재 세션 교체, 미확정 attempt 반환, 로컬 저장소 경로 기록(표시용)
   workers/heartbeat (5s) ────────────▶   가용성 기록, 취소 지시
   workers/usage (연결 시·작업 직후) ───▶   provider별 LLM 플랜 사용량 저장(ADR 0028)
   jobs/next (≤25s) ──────────────────▶   queued job 임대(30s) → envelope

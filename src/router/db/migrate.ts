@@ -5,6 +5,7 @@ import {
   JOB_ASSESSMENT_STATEMENTS,
   PROVIDER_USAGE_STATEMENTS,
   REPORT_JOURNAL_STATEMENTS,
+  WORKER_REPOSITORY_PATH_STATEMENTS,
   SCHEMA_STATEMENTS,
   WORKER_PROTOCOL_STATEMENTS,
 } from "./schema.js";
@@ -70,6 +71,13 @@ const MIGRATIONS: readonly Migration[] = [
     description: "Jev shadow assessments: job_assessments (ADR 0030)",
     up(db) {
       for (const statement of JOB_ASSESSMENT_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 8,
+    description: "workers.reported_repository_paths (local paths shown in the admin view)",
+    up(db) {
+      for (const statement of WORKER_REPOSITORY_PATH_STATEMENTS) db.exec(statement);
     },
   },
 ];

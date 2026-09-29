@@ -318,3 +318,9 @@ export const JOB_ASSESSMENT_STATEMENTS: readonly string[] = [
     updated_at TEXT NOT NULL
   )`,
 ];
+
+/** Migration 8. Local repository paths a worker reported when it opened its session (display
+ *  only), as a JSON `{repositoryId: path}` map. */
+export const WORKER_REPOSITORY_PATH_STATEMENTS: readonly string[] = [
+  "ALTER TABLE workers ADD COLUMN reported_repository_paths TEXT NOT NULL DEFAULT '{}'",
+];

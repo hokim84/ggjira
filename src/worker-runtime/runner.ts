@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { ProviderUsage } from "../contracts/api.js";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
@@ -71,6 +72,10 @@ export class WorkerRunner {
     const session = await this.deps.client.openSession({
       protocolVersion: PROTOCOL_VERSION,
       workerId: this.deps.workerId,
+      repositories: this.deps.config.repositories.map((repo) => ({
+        id: repo.id,
+        path: path.resolve(repo.path),
+      })),
     });
     this.sessionId = session.sessionId;
     await this.flushSpool();

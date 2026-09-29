@@ -164,22 +164,26 @@ function jevSection(initial, ctx) {
   }
 
   function draw() {
-    const status = info.apiKey
-      ? h(
-          "span",
-          { class: "badge badge-ok" },
-          info.source === "environment" ? "설정됨 (환경변수)" : "설정됨",
-        )
-      : h("span", { class: "badge badge-muted" }, "없음");
+    const status = h(
+      "p",
+      {},
+      info.apiKey
+        ? h("span", { class: "badge badge-ok" }, "키 있음")
+        : h("span", { class: "badge badge-muted" }, "키 없음"),
+      " ",
+      info.apiKey
+        ? "새 job마다 Jev 평가를 기록합니다. 이슈 제목과 설명이 TypeSafe로 전송됩니다."
+        : "키를 넣으면 재시작 없이 평가가 켜집니다. 없으면 평가하지 않습니다.",
+    );
     if (!info.editable) {
       fill(
         wrap,
-        h("p", {}, status),
+        status,
         h(
           "small",
           { class: "hint" },
           info.source === "environment"
-            ? "Router 환경변수 TYPESAFE_API_KEY가 설정 파일보다 우선하므로 여기서 바꿀 수 없습니다. 환경변수를 바꾸고 Router를 재시작하세요."
+            ? "Router 환경변수 TYPESAFE_API_KEY가 router.env보다 우선하므로 여기서 바꿀 수 없습니다. 환경변수를 바꾸고 Router를 재시작하세요."
             : "이 Router는 비밀정보 파일 경로가 없어 여기서 바꿀 수 없습니다.",
         ),
       );
@@ -188,15 +192,17 @@ function jevSection(initial, ctx) {
     const input = h("input", {
       id: "jev-api-key",
       type: "password",
+      class: "secret-value",
       autocomplete: "off",
       spellcheck: "false",
-      placeholder: info.apiKey ? "새 키로 교체" : "TypeSafe API 키",
+      placeholder: info.apiKey ? "새 키를 넣으면 교체합니다" : "TypeSafe API 키",
     });
     const save = () => {
       const value = input.value.trim();
       input.value = "";
       if (value) send(value);
     };
+    // Inside the config form: Enter here saves the key, never the config.
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -205,27 +211,31 @@ function jevSection(initial, ctx) {
     });
     fill(
       wrap,
-      h("p", {}, status),
+      status,
       h(
         "div",
-        { class: "jev-key-row" },
-        h("label", { for: "jev-api-key", class: "visually-hidden" }, "Jev API 키"),
+        { class: "secret-row" },
+        h("label", { for: "jev-api-key", class: "secret-label" }, "API 키"),
         input,
         h(
-          "button",
-          { type: "button", class: "btn btn-primary", onclick: save },
-          info.apiKey ? "교체" : "저장",
+          "span",
+          { class: "jev-key-actions" },
+          h(
+            "button",
+            { type: "button", class: "btn", onclick: save },
+            info.apiKey ? "키 교체" : "키 저장",
+          ),
+          info.apiKey
+            ? h("button", { type: "button", class: "btn", onclick: () => send(null) }, "키 삭제")
+            : null,
         ),
-        info.apiKey
-          ? h("button", { type: "button", class: "btn", onclick: () => send(null) }, "삭제")
-          : null,
       ),
+      message,
       h(
         "small",
         { class: "hint" },
-        "키는 router.env에만 저장되고 다시 표시되지 않습니다. 이슈 제목과 설명이 TypeSafe로 전송됩니다. 원격에서는 HTTPS로만 여세요.",
+        "키는 router.env에만 저장되고 화면에 다시 표시되지 않습니다. 원격에서는 HTTPS로만 여세요. 평가 결과 보기와 끄기는 runbook §23.",
       ),
-      message,
     );
   }
 
@@ -509,6 +519,11 @@ export async function renderConfig(root, ctx) {
       "워커가 연 PR이 머지되면 이슈를 검토 상태에서 '완료 상태'로 옮깁니다. 웹훅으로 바로 알고, 놓친 것은 주기적으로 GitHub에 확인합니다.",
       githubSection(view.github ?? { webhook: false, token: false }),
     ),
+    section(
+      "Jev 평가 (TypeSafe)",
+      "새 job마다 모델 등급과 준비 상태를 Jev에 묻고 기록만 합니다(관찰 모드). 이 영역은 위아래 '저장'과 따로 즉시 적용됩니다.",
+      jevSection(view.jev ?? { apiKey: false, source: null, editable: false }, ctx),
+    ),
     section("워커 정책", "워커별로 허용하는 capability와 저장소입니다.", workers),
     section(
       "고급 (JSON)",
@@ -584,11 +599,6 @@ export async function renderConfig(root, ctx) {
     view.problem ? notice("warn", `현재 파일 문제: ${view.problem}`) : null,
     messageEl,
     form,
-    section(
-      "Jev 평가 (TypeSafe)",
-      "새 job마다 모델 등급과 준비 상태를 Jev에 묻고 기록만 합니다(관찰 모드). 키를 넣으면 재시작 없이 켜집니다.",
-      jevSection(view.jev ?? { apiKey: false, source: null, editable: false }, ctx),
-    ),
   );
 }
 

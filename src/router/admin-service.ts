@@ -87,6 +87,8 @@ export interface AdminWorkerView {
   online: boolean;
   reportedCapabilities: string[];
   reportedRepositoryIds: string[];
+  /** repositoryId → local path on the worker machine (display only). */
+  repositoryPaths: Record<string, string>;
   activeAttempt: { attemptId: string; jobId: string; state: string } | null;
   /** The worker's latest reported plan usage per provider (ADR 0028). */
   providerUsage: ProviderUsage[];
@@ -236,6 +238,7 @@ export class AdminService {
         online: row ? isWorkerDispatchable(row, this.config, now) : false,
         reportedCapabilities: row?.reportedCapabilities ?? [],
         reportedRepositoryIds: row?.reportedRepositoryIds ?? [],
+        repositoryPaths: row?.reportedRepositoryPaths ?? {},
         activeAttempt: active
           ? { attemptId: active.id, jobId: active.jobId, state: active.state }
           : null,

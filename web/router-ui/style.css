@@ -223,6 +223,24 @@ main {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.repo-list {
+  display: grid;
+  gap: 0.3rem;
+}
+.repo-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.repo-path {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .usage-list {
   display: grid;
   gap: 0.5rem;
@@ -656,15 +674,9 @@ textarea {
   flex-basis: 100%;
 }
 
-.jev-key-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-}
-.jev-key-row input {
-  flex: 1 1 16rem;
-  min-width: 0;
+.jev-key-actions {
+  display: inline-flex;
+  gap: 0.4rem;
 }
 .visually-hidden {
   position: absolute;

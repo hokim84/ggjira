@@ -10,6 +10,8 @@ export interface WorkerRow {
   revokedAt: string | null;
   reportedCapabilities: string[];
   reportedRepositoryIds: string[];
+  /** repositoryId → local path, as reported on the last session open (display only). */
+  reportedRepositoryPaths: Record<string, string>;
   lastHeartbeatAt: string | null;
   lastAssignedAt: string | null;
   currentSessionId: string | null;
@@ -32,6 +34,9 @@ function toWorkerRow(row: Record<string, unknown>): WorkerRow {
     revokedAt: (row.revoked_at as string | null) ?? null,
     reportedCapabilities: JSON.parse(row.reported_capabilities as string) as string[],
     reportedRepositoryIds: JSON.parse(row.reported_repository_ids as string) as string[],
+    reportedRepositoryPaths: JSON.parse(
+      (row.reported_repository_paths as string | undefined) ?? "{}",
+    ) as Record<string, string>,
     lastHeartbeatAt: (row.last_heartbeat_at as string | null) ?? null,
     lastAssignedAt: (row.last_assigned_at as string | null) ?? null,
     currentSessionId: (row.current_session_id as string | null) ?? null,
@@ -100,7 +105,13 @@ export function listWorkers(db: Database.Database): WorkerRow[] {
 /** Opens a new session for the worker, superseding every earlier one in the same transaction. */
 export function startWorkerSession(
   db: Database.Database,
-  input: { sessionId: string; workerId: string; now: string },
+  input: {
+    sessionId: string;
+    workerId: string;
+    now: string;
+    /** Replaces the stored paths when given; an older worker that sends none keeps the last. */
+    repositoryPaths?: Record<string, string>;
+  },
 ): void {
   const run = db.transaction(() => {
     db.prepare(
@@ -114,6 +125,12 @@ export function startWorkerSession(
       input.now,
       input.workerId,
     );
+    if (input.repositoryPaths) {
+      db.prepare("UPDATE workers SET reported_repository_paths = ? WHERE id = ?").run(
+        JSON.stringify(input.repositoryPaths),
+        input.workerId,
+      );
+    }
   });
   run();
 }

@@ -224,7 +224,18 @@ export class WorkerService {
     const now = this.now();
     expireLeases(this.db, now);
     const sessionId = this.genId();
-    startWorkerSession(this.db, { sessionId, workerId: worker.id, now });
+    startWorkerSession(this.db, {
+      sessionId,
+      workerId: worker.id,
+      now,
+      ...(request.repositories
+        ? {
+            repositoryPaths: Object.fromEntries(
+              request.repositories.map((repo) => [repo.id, repo.path]),
+            ),
+          }
+        : {}),
+    });
     const active = getActiveAttemptForWorker(this.db, worker.id);
     return {
       sessionId,
