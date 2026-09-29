@@ -18,6 +18,10 @@ Jira ──Webhook──▶ Caddy (HTTPS) ──▶ Router (ggjira router serve)
                          로컬 저장소 · worktree · 결과 spool
 ```
 
+HTTPS 앞단은 둘 중 하나다. `docker-compose.yml`은 Caddy가 80/443을 받고 인증서를 발급한다.
+`docker-compose.cloudflare.yml`은 `cloudflared` 터널이 밖으로 연결하고 Cloudflare가 TLS를 맡아서, 서버에
+여는 포트가 없다(ADR 0033, runbook §16-1).
+
 ## 책임 분리
 
 | 구성요소 | 디렉터리 | 하는 일 | 하지 않는 일 |

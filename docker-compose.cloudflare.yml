@@ -1,0 +1,41 @@
+# Router behind a Cloudflare Tunnel — docs/runbook.md "Router 배포 (Cloudflare Tunnel)".
+# No inbound ports: cloudflared dials out to Cloudflare, which terminates TLS for the public host
+# name and forwards to http://router:8787. Use this file instead of docker-compose.yml (Caddy).
+#
+# Before `docker compose -f docker-compose.cloudflare.yml up -d --build`:
+#   1. mkdir -p deploy/config deploy/data && sudo chown 1000:1000 deploy/config deploy/data
+#      (the container's `node` user writes config, secrets and the SQLite database there)
+#   2. Router config and secrets: web setup wizard, or copy deploy/router.config.example.json and
+#      deploy/router.env.example into deploy/config/ (db.path "/data/router.sqlite3").
+#   3. Cloudflare Zero Trust > Networks > Tunnels: create a tunnel (cloudflared), add a public
+#      hostname whose service is http://router:8787, and put its token in
+#      deploy/config/cloudflared.env as TUNNEL_TOKEN=... (chmod 600).
+services:
+  router:
+    build:
+      context: .
+      target: runtime
+    image: ggjira-router:local
+    restart: unless-stopped
+    environment:
+      GGJIRA_ROUTER_CONFIG: /config/router.config.json
+      GGJIRA_ROUTER_SECRETS: /config/router.env
+    volumes:
+      # Read-write: the web UI saves config edits and secrets here (atomic rename + .bak, 0600).
+      - ./deploy/config:/config
+      # A host directory rather than a named volume, so moving a database in and copying
+      # `router backup` files off the host are plain file operations.
+      - ./deploy/data:/data
+    # Reachable only from cloudflared on this compose network; nothing is published on the host.
+    expose:
+      - "8787"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      - router
+    command: ["tunnel", "--no-autoupdate", "run"]
+    # TUNNEL_TOKEN only; kept out of router.env so the Router process never sees it.
+    env_file:
+      - ./deploy/config/cloudflared.env

@@ -5,6 +5,7 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  realpathSync,
   renameSync,
   statSync,
   writeSync,
@@ -341,6 +342,14 @@ export interface PruneOutcome {
  * commits on them) stay — only the working directory goes (§1 "작업 디렉터리와 Git 브랜치는 삭제하지
  * 않는다" applies to automatic cleanup; this is an explicit operator command).
  */
+function realPathOrSelf(p: string): string {
+  try {
+    return realpathSync(path.resolve(p));
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 export async function pruneWorktrees(
   config: WorkerConfig,
   opts: { olderThanMs: number; dryRun?: boolean; nowMs?: number },
@@ -348,11 +357,14 @@ export async function pruneWorktrees(
   const root = workerWorktreesRoot(config);
   const outcome: PruneOutcome = { removed: [], kept: [], failed: [] };
   const nowMs = opts.nowMs ?? Date.now();
+  // git lists worktrees by their real path, so compare real paths: otherwise a data directory
+  // under a symlink (macOS /tmp and /var point into /private) never matches and nothing is pruned.
+  const realRoot = realPathOrSelf(root);
+  const underRoot = (p: string) =>
+    realPathOrSelf(p).startsWith(`${realRoot}${path.sep}`) || p.startsWith(`${root}${path.sep}`);
   for (const repo of config.repositories) {
     if (!(await isGitRepository(repo.path))) continue;
-    const paths = (await listRepositoryWorktreePaths(repo.path)).filter((p) =>
-      p.startsWith(`${root}${path.sep}`),
-    );
+    const paths = (await listRepositoryWorktreePaths(repo.path)).filter(underRoot);
     for (const worktreePath of paths) {
       const ageMs = existsSync(worktreePath)
         ? nowMs - statSync(worktreePath).mtimeMs

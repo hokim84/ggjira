@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -62,13 +62,16 @@ describe("worker operations", () => {
     const tenDaysAgo = (Date.now() - 10 * 86_400_000) / 1000;
     utimesSync(old.path, tenDaysAgo, tenDaysAgo);
 
+    // git reports real paths (on macOS the temp dir sits behind the /var -> /private/var symlink).
+    const oldPath = realpathSync(old.path);
+    const freshPath = realpathSync(fresh.path);
     const dryRun = await pruneWorktrees(config, { olderThanMs: 7 * 86_400_000, dryRun: true });
-    expect(dryRun.removed).toEqual([path.resolve(old.path)]);
+    expect(dryRun.removed).toEqual([oldPath]);
     expect(git(["worktree", "list"], repo)).toContain("KAN-1-old");
 
     const outcome = await pruneWorktrees(config, { olderThanMs: 7 * 86_400_000 });
-    expect(outcome.removed).toEqual([path.resolve(old.path)]);
-    expect(outcome.kept).toEqual([path.resolve(fresh.path)]);
+    expect(outcome.removed).toEqual([oldPath]);
+    expect(outcome.kept).toEqual([freshPath]);
     const worktrees = git(["worktree", "list"], repo);
     expect(worktrees).not.toContain("KAN-1-old");
     expect(worktrees).toContain("KAN-2-new");

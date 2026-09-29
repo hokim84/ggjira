@@ -115,6 +115,67 @@ docker compose logs -f router
   계속 진행된다. Caddy 로그와 Jira 웹훅 화면의 전달 기록을 본다. `401 invalid signature`면 secret이
   서로 다르다.
 
+## 16-1. Router 배포 (Cloudflare Tunnel)
+
+`docker-compose.cloudflare.yml`은 Router와 `cloudflared`만 띄운다. 서버에 여는 포트가 없고, TLS는
+Cloudflare가 맡는다. Caddy 구성(§16) 대신 쓴다. 준비물: Cloudflare에 연결된 도메인, Docker Engine + Compose.
+
+**1. 터널 만들기** (Cloudflare 대시보드)
+1. Zero Trust > Networks > Tunnels > Create a tunnel(Cloudflared)에서 이름을 정하고 토큰을 복사한다.
+2. Public Hostname을 추가한다. 예: `router.example.com`, Service `HTTP` / `router:8787`.
+
+**2. 서버에서 띄우기**
+```bash
+git clone https://github.com/hokim84/ggjira.git && cd ggjira
+mkdir -p deploy/config deploy/data && sudo chown 1000:1000 deploy/config deploy/data
+printf 'TUNNEL_TOKEN=%s\n' '<터널 토큰>' > deploy/config/cloudflared.env && chmod 600 deploy/config/cloudflared.env
+# 설정: DB를 옮겨 올 거면 아래 4번을 먼저 한다. 새로 시작하면 웹 셋업(§20)이나 예시 파일 복사:
+#   cp deploy/router.config.example.json deploy/config/router.config.json   # db.path "/data/router.sqlite3"
+#   cp deploy/router.env.example deploy/config/router.env && chmod 600 deploy/config/router.env
+docker compose -f docker-compose.cloudflare.yml up -d --build
+docker compose -f docker-compose.cloudflare.yml logs -f router cloudflared
+curl -s https://router.example.com/health                          # {"status":"ok","mode":"router"}
+```
+관리 명령은 `docker compose -f docker-compose.cloudflare.yml exec router node dist/cli.js router <명령>`로 실행한다.
+
+**3. Cloudflare 설정** (빠뜨리면 웹훅과 워커가 막힌다)
+- **봇 차단 예외**: Bot Fight Mode나 Browser Integrity Check는 브라우저가 아닌 요청을 막거나 확인
+  페이지(HTML)를 돌려준다. 이 호스트에서 끄거나, Security > WAF > Custom rules에 다음 경로에 대해
+  *Skip*(Bot Fight Mode, Browser Integrity Check, Security Level) 규칙을 둔다.
+  `/webhooks/`, `/api/v1/workers/`, `/api/v1/jobs/`, `/health`.
+  - 증상: 워커 로그에 403이나 `Router … answered 403`이 찍히고, Jira 웹훅 전달 기록이 403이다.
+- **Access(권장)**: Zero Trust > Access > Applications에서 같은 호스트의 `/ui/*`와 `/api/v1/admin/*`에만
+  로그인 정책을 건다. `/webhooks/*`, `/api/v1/workers/*`, `/api/v1/jobs/*`, `/health`에는 걸지 않는다(서명과
+  토큰으로 따로 보호된다). Access를 걸면 서버 밖에서 관리 CLI(`--url`)를 쓸 수 없고, 서버 안의
+  `docker compose exec`는 그대로 된다.
+- **처음 띄울 때**: 설정이 없으면 셋업 마법사가 공개 주소로 열린다. Access를 먼저 걸거나, 설정 파일을
+  넣고 시작한다.
+
+**4. 로컬 Router에서 옮겨 오기**
+두 Router를 동시에 켜 두지 않는다. 같은 Jira에 쓰므로 같은 이슈를 두 번 배정하고 댓글도 두 번 단다.
+1. 로컬: `npm run dev -- router backup`을 실행하고 로컬 Router를 멈춘다. 백업은 `data/backups/`에 생긴다.
+2. 서버로 복사한다. `deploy/data/router.sqlite3`(백업 파일), `deploy/config/router.config.json`,
+   `deploy/config/router.env`. 설정의 `db.path`는 `/data/router.sqlite3`, `http.host`는 `0.0.0.0`으로
+   고친다. 복사한 뒤 `sudo chown 1000:1000 deploy/data/* deploy/config/*`, `chmod 600 deploy/config/router.env`.
+3. `docker compose -f docker-compose.cloudflare.yml up -d --build`. migration은 시작할 때 자동으로 된다.
+4. 각 워커의 `worker.config.json`에서 `routerUrl`을 `https://router.example.com`으로 바꾸고 재시작한다.
+   DB를 옮겼으면 워커 토큰이 그대로라 다시 페어링하지 않아도 된다. 새 DB로 시작했으면 웹 UI > 워커에서
+   재페어링 코드를 받아 `worker setup --pairing-code … --force`를 실행한다.
+5. 확인: 웹 UI의 워커가 "온라인"인지, 설정 > GitHub의 추적 중인 PR이 "확인 실패" 없이 보이는지.
+
+**5. 웹훅 켜기** (공개 주소가 생겼으므로)
+- Jira: URL `https://router.example.com/webhooks/jira`, secret은 `GGJIRA_WEBHOOK_SECRET`(§16과 같음).
+- GitHub: `router.env`에 `GGJIRA_GITHUB_WEBHOOK_SECRET`을 넣고 재시작한 뒤 저장소 Webhooks에 등록한다(§21).
+  폴링만으로도 5분 안에 반영된다.
+
+**6. 운영**
+- 백업: `router backup`은 `deploy/data/backups/`에 쓴다. 서버 밖으로 주기적으로 복사한다
+  (예: `rsync`, cron). 이 디렉터리가 서버에만 있으면 서버와 함께 잃는다.
+- 업데이트: `git pull && docker compose -f docker-compose.cloudflare.yml up -d --build`. 화면이 이상하면
+  Cloudflare 캐시를 비운다(UI는 `cache-control: no-cache`라 보통 필요 없다).
+- 비밀정보 파일(`router.env`, `cloudflared.env`)은 0600을 유지한다. 웹 UI에서 Jev 키나 GitHub 토큰을
+  저장하려면 컨테이너 사용자(uid 1000)가 `router.env`를 쓸 수 있어야 한다.
+
 ## 17. 백업과 복원
 
 백업은 Router가 도는 중에 한다. 결과는 볼륨 안 `/data/backups/router-<UTC시각>.sqlite3`다.
