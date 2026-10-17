@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
 import { openRouterDb } from "../src/router/db/connection.js";
+import { readIssueRequirements } from "../src/issue/requirements.js";
+import { computeLegacyInputHash } from "../src/router/approval.js";
 import { getJob, getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
 import { RuleDecisionProvider } from "../src/router/decision.js";
 import type { RouterConfig } from "../src/router/config.js";
@@ -366,7 +368,78 @@ describe("reconcileCandidates", () => {
     expect(report.jobsCancelled).toContain(leased?.id);
     expect(getAttempt(db, attemptId)?.state).toBe("cancelled");
     expect(getActiveAttemptForWorker(db, "worker-1")).toBeUndefined();
-    expect(getOpenJobForIssue(db, "KAN-1")?.state).toBe("queued");
+    // ADR 0035: the edited request is not re-run under the approval of the original one.
+    expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
+    expect(report.held).toEqual([
+      expect.objectContaining({ issueKey: "KAN-1", reason: expect.stringContaining("edited") }),
+    ]);
+    const again = await reconcileCandidates(deps, []);
+    expect(again.jobsCreated).toEqual([]);
+  });
+
+  it("re-runs an edited request only after it is approved again (ADR 0035)", async () => {
+    jira.seedIssue(
+      {
+        key: "KAN-1",
+        statusName: REQUEST_STATUS,
+        projectKey: "KAN",
+        assigneeAccountId: "user-1",
+        description: description(),
+      },
+      [
+        { id: "1", name: "Revoke", toStatusName: "To Do" },
+        { id: "2", name: "Request", toStatusName: REQUEST_STATUS },
+      ],
+    );
+    const deps = makeDeps(buildConfig());
+    await reconcileCandidates(deps, []);
+    const first = getOpenJobForIssue(db, "KAN-1");
+
+    // A title edit alone was invisible to the v1 hash.
+    jira.seedIssue(
+      { ...(await jira.getIssue("KAN-1")), summary: "Do the thing differently" },
+      await jira.getTransitions("KAN-1"),
+    );
+    const edited = await reconcileCandidates(deps, []);
+    expect(edited.jobsCancelled).toContain(first?.id);
+    expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
+
+    await jira.transitionIssue("KAN-1", "Revoke");
+    await jira.transitionIssue("KAN-1", "Request");
+    const reapproved = await reconcileCandidates(deps, []);
+    expect(reapproved.jobsCreated).toHaveLength(1);
+    expect(getOpenJobForIssue(db, "KAN-1")?.approvalId).not.toBe(first?.approvalId);
+  });
+
+  it("keeps judging a job stamped with a v1 hash by the v1 rules until it closes", async () => {
+    jira.seedIssue({
+      key: "KAN-1",
+      statusName: REQUEST_STATUS,
+      projectKey: "KAN",
+      assigneeAccountId: "user-1",
+      description: description(),
+    });
+    const deps = makeDeps(buildConfig());
+    await reconcileCandidates(deps, []);
+    const job = getOpenJobForIssue(db, "KAN-1");
+    const issue = await jira.getIssue("KAN-1");
+    const legacy = computeLegacyInputHash(readIssueRequirements(issue), null);
+    db.prepare("UPDATE jobs SET input_hash = ? WHERE id = ?").run(legacy, job?.id);
+
+    // Free text outside the GGJIRA sections: not part of v1, so the legacy job stands.
+    jira.seedIssue({ ...issue, description: `Some background first.\n\n${description()}` });
+    const freeText = await reconcileCandidates(deps, []);
+    expect(freeText.jobsCancelled).toEqual([]);
+    expect(getJob(db, job?.id as string)?.inputHash).toBe(legacy);
+
+    // A capability edit is part of v1: cancelled and held like any other change.
+    jira.seedIssue({
+      ...issue,
+      description: description({ capabilities: ["programming", "testing"] }),
+    });
+    const capability = await reconcileCandidates(deps, []);
+    expect(capability.jobsCancelled).toContain(job?.id);
+    expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
   });
 
   it("asks a running job to stop but never closes it on a later pass without a confirmed stop", async () => {

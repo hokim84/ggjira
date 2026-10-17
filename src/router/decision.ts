@@ -1,4 +1,5 @@
 import { unknownCapabilities } from "../issue/capability.js";
+import { checkImplementationReadiness } from "../issue/readiness.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
@@ -69,6 +70,23 @@ export class RuleDecisionProvider implements DecisionProvider {
       };
     }
 
+    const target =
+      issue.statusName === workspace.workflow.planningStatus ? "planning" : "implementation";
+
+    // ADR 0034: an implementation request must say what "done" means and how to check it before a
+    // worker may start it. Planning requests are exempt — completing the request is their job.
+    if (target === "implementation") {
+      const readiness = checkImplementationReadiness(requirements);
+      if (!readiness.ready) {
+        return {
+          target: "human",
+          code: "not_ready",
+          missing: readiness.missing,
+          reason: `${issue.key} is not ready to implement: missing ${readiness.missing.join(" and ")}`,
+        };
+      }
+    }
+
     let pinnedWorkerId: string | undefined;
     if (this.executionAgent && context.executionAgentOptionId) {
       const workerId = this.executionAgent.optionWorkerMap[context.executionAgentOptionId];
@@ -81,8 +99,6 @@ export class RuleDecisionProvider implements DecisionProvider {
       pinnedWorkerId = workerId;
     }
 
-    const target =
-      issue.statusName === workspace.workflow.planningStatus ? "planning" : "implementation";
     return {
       target,
       workspaceId: workspace.id,

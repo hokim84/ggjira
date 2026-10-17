@@ -28,6 +28,7 @@ import {
 import { type AuditEntry, appendAudit, listAudit } from "./db/audit.js";
 import { oldestUnprocessedEventAt } from "./db/events.js";
 import { recordAdminHold } from "./db/holds.js";
+import { listOpenReadinessHolds, type ReadinessHoldRow } from "./db/readiness-holds.js";
 import { createPairingCode } from "./db/pairing.js";
 import {
   countJobsByState,
@@ -428,6 +429,11 @@ export class AdminService {
       });
     }
     return [...batches.values()];
+  }
+
+  /** Implementation requests Router is holding for an incomplete scope contract (ADR 0034). */
+  listReadinessHolds(): ReadinessHoldRow[] {
+    return listOpenReadinessHolds(this.db);
   }
 
   retryReportBatch(batchId: string, actor: string): { requeued: number } {

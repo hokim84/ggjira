@@ -372,6 +372,7 @@ function registerAdminRoutes(
       );
 
       scope.get("/reports", async () => ({ batches: admin.listBlockedReports() }));
+      scope.get("/holds/readiness", async () => ({ holds: admin.listReadinessHolds() }));
       scope.post<IdParams>("/reports/:id/retry", async (request) =>
         admin.retryReportBatch(request.params.id, actorOf(request)),
       );

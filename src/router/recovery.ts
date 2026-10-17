@@ -140,7 +140,14 @@ export async function retryJob(
       actor: input.actor,
       action: "job.retried",
       subject: job.id,
-      detail: { from: job.state, previousAttemptId: job.currentAttemptId },
+      // A job stamped before ADR 0035 gets its v2 hash only here, so the audit says so.
+      detail: {
+        from: job.state,
+        previousAttemptId: job.currentAttemptId,
+        ...(job.inputHash !== check.approval.inputHash
+          ? { inputHash: { from: job.inputHash, to: check.approval.inputHash } }
+          : {}),
+      },
     });
     return queued;
   });

@@ -20,10 +20,19 @@ export const testWorkspace: WorkspaceConfig = {
   },
 };
 
+/** A description whose scope contract is complete (ADR 0034) unless `acceptance`/`verification`
+ *  is passed as `[]`, so implementation requests built from it dispatch by default. */
 export function issueDescription(
-  opts: { dependencies?: string[]; capabilities?: string[] } = {},
+  opts: {
+    dependencies?: string[];
+    capabilities?: string[];
+    acceptance?: string[];
+    verification?: string[];
+  } = {},
 ): string {
   return renderSections([
+    { heading: "Acceptance Criteria", items: opts.acceptance ?? ["The change works"] },
+    { heading: "Verification", items: opts.verification ?? ["npm run test"] },
     { heading: "Dependencies", items: opts.dependencies ?? [] },
     { heading: "Required Capabilities", items: opts.capabilities ?? ["programming"] },
   ]);

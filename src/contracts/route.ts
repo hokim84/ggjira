@@ -21,6 +21,11 @@ export type RouteDispatch = z.infer<typeof RouteDispatchSchema>;
 export const RouteHoldSchema = z.object({
   target: z.enum(["wait", "human", "ignore"]),
   reason: z.string().min(1),
+  /** Set when the hold is a known, human-fixable gap rather than a free-text reason: `not_ready`
+   *  is an implementation request whose scope contract is incomplete (ADR 0034). */
+  code: z.enum(["not_ready"]).optional(),
+  /** For `not_ready`: which parts of the contract are missing. */
+  missing: z.array(z.enum(["acceptance", "verification"])).optional(),
 });
 export type RouteHold = z.infer<typeof RouteHoldSchema>;
 

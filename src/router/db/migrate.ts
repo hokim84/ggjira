@@ -5,6 +5,7 @@ import {
   JOB_ASSESSMENT_STATEMENTS,
   PROVIDER_USAGE_STATEMENTS,
   PULL_REQUEST_CHECK_STATEMENTS,
+  READINESS_HOLD_STATEMENTS,
   REPORT_JOURNAL_STATEMENTS,
   WORKER_REPOSITORY_PATH_STATEMENTS,
   SCHEMA_STATEMENTS,
@@ -86,6 +87,14 @@ const MIGRATIONS: readonly Migration[] = [
     description: "pull_requests.last_checked_at/last_error (GitHub poll status, ADR 0032)",
     up(db) {
       for (const statement of PULL_REQUEST_CHECK_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 10,
+    description:
+      "readiness_holds (implementation requests held for an incomplete contract, ADR 0034)",
+    up(db) {
+      for (const statement of READINESS_HOLD_STATEMENTS) db.exec(statement);
     },
   },
 ];

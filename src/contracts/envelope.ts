@@ -58,8 +58,9 @@ export const JobEnvelopeSchema = z.object({
   kind: z.enum(JOB_KINDS),
   providerId: z.string().min(1),
   approvalId: z.string().min(1),
-  /** Hash of the inputs (issue snapshot + planning context) this job was dispatched with, so a
-   *  worker resuming a session can detect the request changed underneath it. */
+  /** The approved input hash the job was stamped with (ADR 0035: `v2:` + sha256 over the title,
+   *  full description, parsed contract and plan placement — not comments, labels or planning
+   *  context). Router only builds an envelope whose `issueSnapshot` still hashes to it. */
   inputHash: z.string().min(1),
   issueSnapshot: IssueSnapshotSchema,
   planningContext: PlanningContextSchema.optional(),

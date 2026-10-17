@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
+import { readIssueRequirements } from "../src/issue/requirements.js";
+import type { JiraIssue } from "../src/jira/types.js";
+import { computeInputHash } from "../src/router/approval.js";
 import { upsertApproval } from "../src/router/db/approvals.js";
 import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
 import { listAudit } from "../src/router/db/audit.js";
@@ -200,6 +203,72 @@ describe("worker API", () => {
       worker.token,
     );
     expect(getJob(router.db, envelope.jobId)?.state).toBe("cancelled");
+  });
+
+  it("hands out an envelope whose snapshot hashes to its inputHash (ADR 0035)", async () => {
+    await router.seedQueuedJob();
+    const worker = await router.connectWorker("worker-1");
+    const envelope = await reserve(worker);
+
+    const issue = envelope.issueSnapshot as unknown as JiraIssue;
+    expect(
+      computeInputHash({
+        kind: envelope.kind,
+        issue,
+        requirements: readIssueRequirements(issue),
+        planTask: null,
+      }),
+    ).toBe(envelope.inputHash);
+    expect(envelope.inputHash.startsWith("v2:")).toBe(true);
+  });
+
+  it("withdraws execution authority when the title is edited mid-run, also across a restart", async () => {
+    await router.seedQueuedJob();
+    const worker = await router.connectWorker("worker-1");
+    const envelope = await reserve(worker);
+    await router.jobCall(worker, envelope.jobId, "start", lease(envelope));
+
+    router.jira.seedIssue(
+      { ...(await router.jira.getIssue("KAN-1")), summary: "Implement KAN-1 differently" },
+      await router.jira.getTransitions("KAN-1"),
+    );
+    const report = await router.reconcile();
+    expect(report.jobsCancelRequested).toEqual([envelope.jobId]);
+
+    await router.restart();
+    const authorize = await router.jobCall(worker, envelope.jobId, "authorize", lease(envelope), {
+      stage: "push",
+    });
+    expect(authorize.json()).toMatchObject({ authorized: false });
+    const heartbeat = await router.jobCall(worker, envelope.jobId, "heartbeat", lease(envelope));
+    expect(heartbeat.json()).toMatchObject({ cancel: true });
+
+    await router.post(
+      `/api/v1/jobs/${envelope.jobId}/result`,
+      result(envelope, { status: "cancelled", summary: "stopped" }),
+      worker.token,
+    );
+    // Stopped, and the edited request does not run under the original approval.
+    const after = await router.reconcile();
+    expect(after.jobsCreated).toEqual([]);
+    expect(getOpenJobForIssue(router.db, "KAN-1")).toBeUndefined();
+  });
+
+  it("keeps execution authority when only comments or labels change", async () => {
+    await router.seedQueuedJob();
+    const worker = await router.connectWorker("worker-1");
+    const envelope = await reserve(worker);
+    await router.jobCall(worker, envelope.jobId, "start", lease(envelope));
+
+    await router.jira.addComment("KAN-1", "[GGJIRA:REPORT:x]\nStarted.");
+    await router.jira.addLabel("KAN-1", "ggjira-failed");
+    const report = await router.reconcile();
+
+    expect(report.jobsCancelRequested).toEqual([]);
+    const authorize = await router.jobCall(worker, envelope.jobId, "authorize", lease(envelope), {
+      stage: "commit",
+    });
+    expect(authorize.json()).toEqual({ authorized: true });
   });
 
   it("treats an identical result resend as success and a different payload under the same resultId as 409", async () => {

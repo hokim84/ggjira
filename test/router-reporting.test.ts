@@ -56,6 +56,7 @@ const twoTaskPlan = {
       title: "Build the API",
       description: "Endpoints",
       acceptance: ["returns 200"],
+      verification: ["npm run test -- api"],
       requiredCapabilities: ["programming"],
     },
     {

@@ -330,3 +330,31 @@ export const PULL_REQUEST_CHECK_STATEMENTS: readonly string[] = [
   "ALTER TABLE pull_requests ADD COLUMN last_checked_at TEXT",
   "ALTER TABLE pull_requests ADD COLUMN last_error TEXT",
 ];
+
+/**
+ * Migration 10 (ADR 0034). An implementation request Router refused to start because its scope
+ * contract is incomplete (no Acceptance Criteria or no Verification). There is no job for such an
+ * issue, so the notice cannot ride the job-keyed report journal; this table is its own small
+ * journal. `id` hashes issue + approval + input hash + what is missing, so re-polling the same
+ * request lands on the same row (`seen_count` grows, no new comment) while an edited request is a
+ * new row (and a new notice). `notice_status` tracks the one Jira comment per row; the comment
+ * carries a `[GGJIRA:HOLD:<id>]` marker so a retry after an uncertain write never posts twice.
+ */
+export const READINESS_HOLD_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS readiness_holds (
+    id TEXT PRIMARY KEY,
+    issue_key TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    missing TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    notice_status TEXT NOT NULL CHECK (notice_status IN ('pending', 'posted', 'failed')),
+    notice_tries INTEGER NOT NULL DEFAULT 0,
+    notice_error TEXT,
+    resolved_at TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_readiness_holds_issue ON readiness_holds (issue_key)",
+  "CREATE INDEX IF NOT EXISTS idx_readiness_holds_notice ON readiness_holds (notice_status)",
+];

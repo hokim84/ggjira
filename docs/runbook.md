@@ -387,3 +387,62 @@ sqlite3 data/router.sqlite3 "SELECT j.issue_key, j.kind, j.state, j.attempt_coun
   `jev.timeoutMs`를 늘린다.
 - 한 job은 최대 3번까지만 시도한다. 다시 평가하려면 그 job의 `job_assessments` 행을 지운다.
 
+## 24. 구현 요청 준비 보류 (ADR 0034)
+
+구현 요청(요청 상태의 이슈)은 설명에 `h2. Acceptance Criteria`와 `h2. Verification` 절이 있고 각각
+목록 항목이 한 줄 이상 있어야 시작한다. 계획 요청은 이 조건 없이 시작한다.
+
+증상: 이슈가 요청 상태에 머물고 job이 생기지 않는다. 댓글에 "GGJIRA has not started this implementation
+request"가 한 번 달린다. Router 로그의 reconcile `held`에 `not ready to implement: missing …`가 보인다.
+
+확인:
+
+```
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://<router>/api/v1/admin/holds/readiness
+```
+
+`noticeStatus`가 `pending`이면 안내 댓글을 아직 못 쓴 것(Jira 응답 없음·429, 다음 패스에서 재시도)이고,
+`failed`면 Jira가 명확히 거부한 것이다(`noticeError`). `failed`여도 보류는 그대로 유효하다. 댓글만 빠졌다.
+
+보완(기존 티켓 포함):
+
+1. 설명에 아래 절을 추가한다. 위키 마크업 목록(`* 항목`)으로 쓴다.
+   ```
+   h2. Acceptance Criteria
+   * 저장 버튼 문구가 "저장"으로 보인다
+   h2. Verification
+   * npm run test -- settings
+   * 설정 화면을 열어 버튼 문구를 확인한다
+   ```
+   필요하면 `In Scope`, `Out of Scope`, `Affected Areas`(참고용), `Allowed Paths`(glob, 적으면 워커가
+   그 밖의 변경을 막는다, ADR 0036)도 같은 방식으로 쓴다.
+2. 이슈를 옮길 필요는 없다. 다음 조회(웹훅 또는 보완 조회)에서 보류가 풀리고 job이 생긴다. 설명을 고쳤지만
+   여전히 빠진 절이 있으면 새 안내 댓글이 한 번 더 달린다.
+
+대표 사례 수동 검토(프롬프트 품질은 자동 테스트가 입증하지 않는다):
+
+- 문구 변경 요청을 계획 상태로 보낸다. 하위 이슈 없이 부모 설명의 계획 블록에 Acceptance Criteria와
+  Verification이 채워지는지 본다.
+- API와 UI 변경이 섞인 요청을 계획 상태로 보낸다. 독립 결과별로 하위 이슈가 나뉘거나 결정 요청이 오는지,
+  각 하위 이슈에 계약 절이 모두 있는지 본다.
+
+## 25. 입력 해시 v2와 재승인 (ADR 0035)
+
+승인은 승인 당시의 제목·설명 전체·계약을 승인한다. 승인 뒤 이를 고치면:
+
+- 큐·임대 중인 job은 취소되고, 실행 중인 job은 다음 heartbeat에서 멈춤 지시를 받는다. commit·validate·push
+  직전 권한 확인(`authorize`)도 거부된다.
+- 같은 승인으로는 다시 실행하지 않는다. reconcile `held`에 `the request was edited after it was approved`가
+  보인다. 고친 내용을 실행하려면 이슈를 요청 상태 밖으로 옮겼다가 다시 요청 상태로 옮긴다.
+- 댓글·라벨 추가, 줄 끝 공백이나 줄바꿈 형식만 바뀐 편집은 변경이 아니다.
+
+업그레이드 전환: migration이나 수동 작업이 필요 없다. 업그레이드 전에 만든 job(해시에 `v2:` 접두가 없음)은
+닫힐 때까지 이전 규칙으로 비교한다. 관리자 `jobs retry`만 그 job을 새 해시로 다시 찍고, audit의
+`job.retried`에 `inputHash.from/to`를 남긴다.
+
+```
+sqlite3 data/router.sqlite3 "SELECT id, issue_key, state, substr(input_hash,1,3) AS v FROM jobs
+  WHERE state NOT IN ('succeeded','cancelled');"
+sqlite3 data/router.sqlite3 "SELECT * FROM admin_holds WHERE actor = 'router:inputs-changed';"
+```
+

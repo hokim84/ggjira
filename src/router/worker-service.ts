@@ -26,7 +26,9 @@ import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
 import type { JobState } from "../contracts/job-state.js";
 import { buildWorkerAvailability, isWorkerDispatchable } from "./availability.js";
 import type { RouterConfig } from "./config.js";
+import { inputHashMatches } from "./approval.js";
 import { getApproval } from "./db/approvals.js";
+import { type ApprovalSnapshot, storedApprovalHashes } from "./issue-check.js";
 import {
   type AttemptRow,
   bindAttemptToRequest,
@@ -55,7 +57,6 @@ import {
   type WorkerRow,
 } from "./db/workers.js";
 import { buildJobEnvelope } from "./envelope.js";
-import type { ApprovalSnapshot } from "./issue-check.js";
 import { expireLeases } from "./leases.js";
 import {
   buildRecoveredSteps,
@@ -646,7 +647,7 @@ export class WorkerService {
   private approvalCurrent(job: JobRow): boolean {
     const approval = getApproval(this.db, job.issueKey);
     if (!approval || approval.approvalId !== job.approvalId) return false;
-    return job.inputHash === null || approval.inputHash === job.inputHash;
+    return inputHashMatches(job.inputHash, storedApprovalHashes(approval));
   }
 
   private renew(attemptId: string, now: string): string {

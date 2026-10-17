@@ -37,6 +37,7 @@ function isNullishValue(value: string): boolean {
 }
 
 const CODE_FENCE_RE = /^\{(code(:[^}]*)?|noformat)\}$/i;
+const INLINE_NOFORMAT_RE = /^\{noformat\}.+\{noformat\}$/i;
 
 /** Parses a wiki-markup description into a map of normalized section name -> scalars/items. */
 export function parseSections(text: string): ParsedSections {
@@ -60,6 +61,10 @@ export function parseSections(text: string): ParsedSections {
       continue;
     }
     if (inFence || trimmed === "") continue;
+    // A one-line {noformat}…{noformat} block is a Router marker (the plan block's start/end, a
+    // report step's id), never content — without this the plan-end marker after the last section
+    // would read as one of its items.
+    if (INLINE_NOFORMAT_RE.test(trimmed)) continue;
 
     const heading = trimmed.match(/^h[1-6]\.\s*(.+)$/);
     if (heading?.[1]) {
@@ -80,7 +85,9 @@ export function parseSections(text: string): ParsedSections {
       continue;
     }
 
-    const item = trimmed.replace(/^[*#-]+\s*/, "").trim();
+    // A bullet is marker characters followed by whitespace ("* x", "** x", "# x"), so an item that
+    // itself starts with "*" (a glob such as "**/*.md" under Allowed Paths) keeps it.
+    const item = trimmed.replace(/^[*#-]+\s+/, "").trim();
     if (item) target.items.push(item);
   }
 

@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { renderSections } from "../issue/description.js";
+import { type RenderSection, renderSections } from "../issue/description.js";
 import type { Plan, PlanTaskSchema } from "./plan.js";
 
 /**
@@ -15,6 +15,23 @@ export class PlanApplyError extends Error {}
 /** Marks a subtask a replan dropped while it was still untouched. */
 export const SUPERSEDED_LABEL = "ggjira-superseded";
 
+type ScopeContract = Pick<
+  PlanTask,
+  "inScope" | "outOfScope" | "affectedAreas" | "allowedPaths" | "verification"
+>;
+
+/** The scope-contract sections (ADR 0034), in the order `readIssueRequirements` documents them.
+ *  Empty sections are still rendered so a human sees what to fill in. */
+function scopeContractSections(contract: ScopeContract): RenderSection[] {
+  return [
+    { heading: "Verification", items: contract.verification },
+    { heading: "In Scope", items: contract.inScope },
+    { heading: "Out of Scope", items: contract.outOfScope },
+    { heading: "Affected Areas", items: contract.affectedAreas },
+    { heading: "Allowed Paths", items: contract.allowedPaths },
+  ];
+}
+
 export function renderTaskDescription(task: PlanTask): string {
   return [
     task.description,
@@ -28,6 +45,7 @@ export function renderTaskDescription(task: PlanTask): string {
         ],
       },
       { heading: "Acceptance Criteria", items: task.acceptance },
+      ...scopeContractSections(task),
       { heading: "Dependencies", items: task.dependencies ?? [] },
       { heading: "Constraints", items: task.constraints ?? [] },
       { heading: "Required Capabilities", items: task.requiredCapabilities ?? ["programming"] },
@@ -94,6 +112,7 @@ export function renderParentPlan(
         ],
       },
       { heading: "Acceptance Criteria", items: plan.acceptanceCriteria ?? [] },
+      ...scopeContractSections(plan),
       { heading: "Dependencies", items: plan.dependencies ?? [] },
       { heading: "Constraints", items: plan.constraints ?? [] },
       { heading: "Required Capabilities", items: plan.requiredCapabilities ?? [] },

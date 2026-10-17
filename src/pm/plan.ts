@@ -14,6 +14,22 @@ export const PlanDecisionSchema = z.object({
   impact: z.string().optional(),
 });
 
+/**
+ * A task's scope contract (ADR 0034): what it delivers (`inScope`), what it deliberately leaves
+ * out (`outOfScope`), where the change is expected to land (`affectedAreas`, a hint only), which
+ * paths it may touch (`allowedPaths`, globs the implementation worker enforces when non-empty),
+ * and how its acceptance criteria are checked (`verification`). Acceptance stays in `acceptance`.
+ */
+function scopeContractShape() {
+  return {
+    inScope: z.array(z.string()).default([]),
+    outOfScope: z.array(z.string()).default([]),
+    affectedAreas: z.array(z.string()).default([]),
+    allowedPaths: z.array(z.string()).default([]),
+    verification: z.array(z.string()).default([]),
+  };
+}
+
 export const PlanTaskSchema = z.object({
   /** Stable identifier used by other tasks' dependencies (for example "backend-api"). */
   taskId: z.string().min(1).optional(),
@@ -24,6 +40,7 @@ export const PlanTaskSchema = z.object({
   constraints: z.array(z.string()).optional(),
   requiredCapabilities: z.array(z.string().min(1)).min(1).optional(),
   suggestedExecutionStrategy: z.string().min(1).optional(),
+  ...scopeContractShape(),
 });
 
 export const PlanSchema = z
@@ -36,6 +53,8 @@ export const PlanSchema = z
     constraints: z.array(z.string()).optional(),
     requiredCapabilities: z.array(z.string().min(1)).optional(),
     suggestedExecutionStrategy: z.string().min(1).optional(),
+    /** The parent's own contract, for a plan that keeps the parent as the executable unit. */
+    ...scopeContractShape(),
     tasks: z.array(PlanTaskSchema).default([]),
     /** Keys of existing subtasks a replan should keep as-is (not recreate or supersede). */
     keepTaskKeys: z.array(z.string()).default([]),
@@ -62,7 +81,22 @@ export const PlanSchema = z
 
 export type Plan = z.infer<typeof PlanSchema>;
 
-/** Hand-authored JSON Schema mirroring PlanSchema, passed to the provider as outputSchema. */
+const STRING_ARRAY = { type: "array", items: { type: "string" } } as const;
+
+const SCOPE_CONTRACT_JSON_PROPERTIES = {
+  inScope: STRING_ARRAY,
+  outOfScope: STRING_ARRAY,
+  affectedAreas: STRING_ARRAY,
+  allowedPaths: STRING_ARRAY,
+  verification: STRING_ARRAY,
+} as const;
+
+/**
+ * Hand-authored JSON Schema mirroring PlanSchema, passed to the provider as outputSchema.
+ * `test/pm-plan-schema.test.ts` keeps the two in step: same property names, and everything
+ * PlanSchema requires is required here too (this schema may require more, so the model always
+ * fills the contract fields).
+ */
 export const PLAN_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -75,6 +109,11 @@ export const PLAN_JSON_SCHEMA = {
     "constraints",
     "requiredCapabilities",
     "suggestedExecutionStrategy",
+    "inScope",
+    "outOfScope",
+    "affectedAreas",
+    "allowedPaths",
+    "verification",
     "tasks",
     "keepTaskKeys",
   ],
@@ -87,6 +126,7 @@ export const PLAN_JSON_SCHEMA = {
     constraints: { type: "array", items: { type: "string" } },
     requiredCapabilities: { type: "array", items: { type: "string" } },
     suggestedExecutionStrategy: { type: "string" },
+    ...SCOPE_CONTRACT_JSON_PROPERTIES,
     tasks: {
       type: "array",
       items: {
@@ -100,6 +140,11 @@ export const PLAN_JSON_SCHEMA = {
           "dependencies",
           "constraints",
           "requiredCapabilities",
+          "inScope",
+          "outOfScope",
+          "affectedAreas",
+          "allowedPaths",
+          "verification",
         ],
         properties: {
           taskId: { type: "string" },
@@ -110,6 +155,7 @@ export const PLAN_JSON_SCHEMA = {
           constraints: { type: "array", items: { type: "string" } },
           requiredCapabilities: { type: "array", minItems: 1, items: { type: "string" } },
           suggestedExecutionStrategy: { type: "string" },
+          ...SCOPE_CONTRACT_JSON_PROPERTIES,
         },
       },
     },
@@ -122,6 +168,7 @@ export const PLAN_JSON_SCHEMA = {
         question: { type: "string" },
         options: {
           type: "array",
+          minItems: 2,
           items: {
             type: "object",
             additionalProperties: false,

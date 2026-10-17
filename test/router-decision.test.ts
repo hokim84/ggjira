@@ -37,11 +37,16 @@ function issue(overrides: Partial<JiraIssue> = {}): JiraIssue {
 function requirements(overrides: Partial<IssueRequirements> = {}): IssueRequirements {
   return {
     objective: "Do the thing",
-    acceptanceCriteria: [],
+    acceptanceCriteria: ["It works"],
     dependencies: [],
     constraints: [],
     requiredCapabilities: ["programming"],
     suggestedExecutionStrategy: null,
+    verification: ["npm run test"],
+    inScope: [],
+    outOfScope: [],
+    affectedAreas: [],
+    allowedPaths: [],
     ...overrides,
   };
 }
@@ -135,5 +140,45 @@ describe("RuleDecisionProvider", () => {
     const provider = new RuleDecisionProvider();
     const result = provider.decide(context({ issue: issue({ statusName: "AI 계획 요청" }) }));
     expect(result.target).toBe("planning");
+  });
+
+  it("holds an implementation request without acceptance criteria or verification (ADR 0034)", () => {
+    const provider = new RuleDecisionProvider();
+    const result = provider.decide(
+      context({ requirements: requirements({ acceptanceCriteria: [], verification: [] }) }),
+    );
+    expect(result).toEqual({
+      target: "human",
+      code: "not_ready",
+      missing: ["acceptance", "verification"],
+      reason: expect.stringContaining("missing acceptance and verification"),
+    });
+  });
+
+  it("names only the missing part of the contract", () => {
+    const provider = new RuleDecisionProvider();
+    const result = provider.decide(context({ requirements: requirements({ verification: [] }) }));
+    expect(result).toMatchObject({ target: "human", code: "not_ready", missing: ["verification"] });
+  });
+
+  it("dispatches a planning request even when its contract is incomplete", () => {
+    const provider = new RuleDecisionProvider();
+    const result = provider.decide(
+      context({
+        issue: issue({ statusName: "AI 계획 요청" }),
+        requirements: requirements({ acceptanceCriteria: [], verification: [] }),
+      }),
+    );
+    expect(result.target).toBe("planning");
+  });
+
+  it("checks readiness after capabilities, so an unknown capability is reported first", () => {
+    const provider = new RuleDecisionProvider();
+    const result = provider.decide(
+      context({
+        requirements: requirements({ requiredCapabilities: ["telepathy"], verification: [] }),
+      }),
+    );
+    expect(result).toMatchObject({ target: "human", reason: expect.stringContaining("unknown") });
   });
 });

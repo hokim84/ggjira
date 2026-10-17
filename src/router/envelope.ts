@@ -9,10 +9,12 @@ import {
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import { buildPmSystemPrompt } from "../pm/prompt.js";
 import { buildImplementSystemPrompt } from "../worker/prompt.js";
+import { inputHashMatches } from "./approval.js";
 import type { RouterConfig } from "./config.js";
 import type { AttemptRow } from "./db/attempts.js";
 import { getApproval } from "./db/approvals.js";
 import type { JobRow } from "./db/jobs.js";
+import { storedApprovalHashes } from "./issue-check.js";
 
 export class EnvelopeUnavailableError extends Error {
   constructor(
@@ -72,6 +74,15 @@ export function buildJobEnvelope(
 ): JobEnvelope {
   const approval = getApproval(db, job.issueKey);
   if (!approval) throw new EnvelopeUnavailableError(job.id, "no approval row for its issue");
+  // The snapshot below is the latest one reconcile stored, not the one the job was created from.
+  // Hand it out only while it is still what the job was approved for (ADR 0035); otherwise the
+  // worker would run an edit nobody approved. Reconcile cancels such a job on its next pass.
+  if (
+    approval.approvalId !== job.approvalId ||
+    !inputHashMatches(job.inputHash, storedApprovalHashes(approval))
+  ) {
+    throw new EnvelopeUnavailableError(job.id, "its issue changed since the job was approved");
+  }
   const policy = config.workers.find((entry) => entry.workerId === attempt.workerId);
   if (!policy) {
     throw new EnvelopeUnavailableError(job.id, `worker ${attempt.workerId} has no config policy`);

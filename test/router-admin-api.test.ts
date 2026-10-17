@@ -11,7 +11,7 @@ import {
   updateReportStep,
 } from "../src/router/db/report-steps.js";
 import { expireLeases } from "../src/router/leases.js";
-import { REQUEST_STATUS } from "./helpers/router-fixtures.js";
+import { issueDescription, REQUEST_STATUS } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 
 function lease(envelope: JobEnvelope) {
@@ -236,11 +236,32 @@ describe("admin API", () => {
       summary: "x",
       statusName: REQUEST_STATUS,
       assigneeAccountId: "user-1",
-      description: "h2. Required Capabilities\n* programming",
+      description: issueDescription(),
     });
     const response = await router.adminCall("POST", "/reconcile");
     expect(response.statusCode).toBe(200);
     expect((response.json() as { jobsCreated: string[] }).jobsCreated).toHaveLength(1);
+  });
+
+  it("lists implementation requests held for an incomplete scope contract (ADR 0034)", async () => {
+    router.jira.seedIssue({
+      key: "KAN-9",
+      summary: "x",
+      statusName: REQUEST_STATUS,
+      assigneeAccountId: "user-1",
+      description: "h2. Required Capabilities\n* programming",
+    });
+    await router.adminCall("POST", "/reconcile");
+
+    const response = await router.adminCall("GET", "/holds/readiness");
+    expect(response.statusCode).toBe(200);
+    expect((response.json() as { holds: unknown[] }).holds).toEqual([
+      expect.objectContaining({
+        issueKey: "KAN-9",
+        missing: ["acceptance", "verification"],
+        noticeStatus: "pending",
+      }),
+    ]);
   });
 
   it("backup writes a consistent copy of the database", async () => {

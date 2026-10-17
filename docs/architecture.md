@@ -53,10 +53,15 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 
 1. 후보: workspace별 JQL(`project in (...) AND status in (request, planning)`)이다. v4 메타 이슈
    라벨은 제외한다.
-2. 승인 id: 요청 상태에 진입한 changelog 항목(`src/router/approval.ts`)이다. 입력 hash는 설명·
-   capability·의존성·계획 버전으로 만든다.
-3. `RuleDecisionProvider`: 인간 Assignee, 계획 버전(부모의 현재 계획일 때만), 의존성, 실행-Agent
-   필드 고정을 본다. 결과는 `planning | implementation | wait | human | ignore`다.
+2. 승인 id: 요청 상태에 진입한 changelog 항목(`src/router/approval.ts`)이다. 입력 hash(v2,
+   ADR 0035)는 job 종류·제목·설명 전체·파싱한 계약·plan-task 위치를 정규화해 만든다. 댓글·라벨·
+   상태·Assignee는 넣지 않는다. 업그레이드 전에 만든 job은 닫힐 때까지 v1 해시로 비교한다. 같은 승인
+   id에서 입력이 바뀌면 열린 job을 취소하고 그 승인을 보류한다(`admin_holds`,
+   `router:inputs-changed`). 재승인해야 다시 실행된다.
+3. `RuleDecisionProvider`: 인간 Assignee, 계획 버전(부모의 현재 계획일 때만), 의존성, capability,
+   구현 요청의 준비 상태(Acceptance Criteria·Verification, ADR 0034), 실행-Agent 필드 고정을 본다.
+   결과는 `planning | implementation | wait | human | ignore`다. 준비가 안 된 구현 요청은
+   `readiness_holds`에 기록하고, reports 루프가 Jira에 안내 댓글을 한 번 쓴다(`[GGJIRA:HOLD:<id>]`).
 4. 배정: queued job을 생성 순서대로 처리한다. 조건은 관리자 정책(`workers[]`)과 워커가 보고한
    capability·저장소의 교집합이다. 워커당 동시 1개다. 후보는 LLM 플랜 여유가 많은 순, 그다음 가장 오래
    배정받지 않은 순이다. 리셋 전 100%인 한도 창이 있는 워커는 건너뛴다(ADR 0029,
@@ -114,6 +119,7 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 | (웹 UI 설정) | `POST /jira/project`, `POST /jira/workflow-check` | 프로젝트 상태·하위 이슈 유형 목록, 저장 전 상태 매핑으로 Router가 하는 전이(시작·완료·결정 요청)가 워크플로에 있는지 확인(읽기 전용, `src/router/workflow-check.ts`) |
 | `router jobs list/show/cancel/retry/resolve` | `/jobs…` | list는 keyset 페이지네이션. retry는 Jira 승인을 재확인한 뒤 새 attempt를 만든다. resolve는 중단 확인 |
 | `router reports list/retry` | `/reports…` | 막힌 보고 배치 재대기 |
+| (API만) | `GET /holds/readiness` | 계약이 불완전해 시작하지 않은 구현 요청과 안내 댓글 상태(ADR 0034) |
 | `router reconcile` | `POST /reconcile` | sync lane에서 즉시 1회 실행 |
 | `router backup` | `POST /backup` | SQLite online backup을 `<db dir>/backups/`에 저장 |
 | (웹 UI) | `GET/PUT /config`, `POST /config/apply`, `POST /check` | 설정 파일 조회, 검증 후 저장(`.bak`)과 즉시 적용, 손으로 고친 파일 적용, 저장된 설정으로 `router check` |

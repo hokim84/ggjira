@@ -12,7 +12,12 @@ import {
   leaseAttempt,
   transitionAttemptState,
 } from "./db/attempts.js";
-import { isApprovalHeld } from "./db/holds.js";
+import { getApprovalHoldActor, INPUTS_CHANGED_HOLD_ACTOR, recordAdminHold } from "./db/holds.js";
+import {
+  recordReadinessHold,
+  resolveReadinessHolds,
+  resolveUnseenReadinessHolds,
+} from "./db/readiness-holds.js";
 import { markWorkerAssigned } from "./db/workers.js";
 import {
   createJob,
@@ -27,6 +32,7 @@ import { findWorkspaceCandidates } from "./candidates.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
+import { inputHashMatches } from "./approval.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 import {
   checkJobAgainstJira,
@@ -219,10 +225,10 @@ async function reconcileIssue(
 
   const existingJob = getOpenJobForIssue(deps.db, issue.key);
   if (existingJob) {
+    const inputsChanged =
+      existingJob.approvalId === approvalId && !inputHashMatches(existingJob.inputHash, approval);
     const approvalCurrent =
-      existingJob.approvalId === approvalId &&
-      (existingJob.inputHash === null || existingJob.inputHash === inputHash) &&
-      issue.assigneeAccountId !== null;
+      existingJob.approvalId === approvalId && !inputsChanged && issue.assigneeAccountId !== null;
     if (approvalCurrent && existingJob.state !== "waiting") {
       // Unchanged, already dispatched/leased/running/etc — nothing for this pass to do.
       return;
@@ -233,18 +239,22 @@ async function reconcileIssue(
     }
     // Either the approval/inputs changed underneath an open job (cancel reason per §2), or the
     // job was only "waiting" and its dependencies just resolved — both cases re-decide fresh.
+    if (inputsChanged) holdChangedApproval(deps.db, existingJob, now);
     const slotFreed = cancelStaleJob(deps.db, existingJob, now, report);
     if (!slotFreed) return;
   }
 
-  if (isApprovalHeld(deps.db, issue.key, approvalId)) {
-    // An admin cancelled the job for this very approval (`ggjira router jobs cancel`); only a
-    // fresh request in Jira (a new approval id) runs it again.
+  const holdActor = getApprovalHoldActor(deps.db, issue.key, approvalId);
+  if (holdActor) {
+    // An admin cancelled the job for this very approval (`ggjira router jobs cancel`), or what it
+    // approved was edited (ADR 0035); only a fresh request in Jira (a new approval id) runs it again.
     report.held.push({
       issueKey: issue.key,
       target: "human",
       reason:
-        "cancelled by an admin for this approval; move the issue to the request status again to re-run",
+        holdActor === INPUTS_CHANGED_HOLD_ACTOR
+          ? "the request was edited after it was approved; move the issue to the request status again to run the edited request"
+          : "cancelled by an admin for this approval; move the issue to the request status again to re-run",
     });
     return;
   }
@@ -258,6 +268,22 @@ async function reconcileIssue(
     executionAgentOptionId: issue.executionAgentOptionId ?? null,
   };
   const decision = deps.decisionProvider.decide(context);
+
+  if (decision.target === "human" && decision.code === "not_ready") {
+    // ADR 0034: hold it, and queue one Jira notice per distinct (approval, inputs, gaps). The
+    // daemon's report pass posts it; re-polling the same request only bumps the hold's counter.
+    recordReadinessHold(deps.db, {
+      issueKey: issue.key,
+      approvalId,
+      inputHash,
+      missing: decision.missing ?? [],
+      now,
+    });
+    report.held.push({ issueKey: issue.key, target: "human", reason: decision.reason });
+    return;
+  }
+  // Any other outcome means the contract gap (if there was one) is no longer what holds it.
+  resolveReadinessHolds(deps.db, issue.key, now);
 
   if (isRouteDispatch(decision)) {
     const job = createJob(deps.db, {
@@ -431,7 +457,23 @@ async function verifyJob(deps: SchedulerDeps, job: JobRow, report: SchedulerRepo
     return;
   }
   report.skipped.push({ issueKey: job.issueKey, reason: check.reason });
+  if (check.inputsChanged) holdChangedApproval(deps.db, job, now);
   cancelStaleJob(deps.db, job, now, report);
+}
+
+/**
+ * ADR 0035: an approval approves specific inputs. Once they are edited under an open job, the
+ * job is cancelled and this approval is held, so the next pass does not quietly start the edited
+ * request under the old approval — a human moves the issue to the request status again.
+ */
+function holdChangedApproval(db: Database.Database, job: JobRow, now: string): void {
+  recordAdminHold(db, {
+    issueKey: job.issueKey,
+    approvalId: job.approvalId,
+    jobId: job.id,
+    actor: INPUTS_CHANGED_HOLD_ACTOR,
+    now,
+  });
 }
 
 async function reverifyUnseenOpenJobs(
@@ -489,6 +531,8 @@ export async function reconcileCandidates(
   }
 
   await reverifyUnseenOpenJobs(deps, processedIssueKeys, report);
+  // A held issue that left the request statuses (or was deleted) owes no notice any more.
+  resolveUnseenReadinessHolds(deps.db, processedIssueKeys, deps.now());
   assignQueuedJobs(deps, availableWorkers, report);
   return report;
 }

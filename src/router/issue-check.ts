@@ -13,9 +13,14 @@ import {
   type PlanTaskMetadata,
   readPlanTaskMetadata,
 } from "../pm/metadata.js";
-import { computeApprovalId, computeInputHash } from "./approval.js";
+import {
+  computeApprovalId,
+  computeInputHash,
+  computeLegacyInputHash,
+  inputHashMatches,
+} from "./approval.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
-import { getApproval, upsertApproval } from "./db/approvals.js";
+import { type ApprovalRow, getApproval, upsertApproval } from "./db/approvals.js";
 import type { JobRow } from "./db/jobs.js";
 
 /** An issue's approval as Jira shows it right now. */
@@ -24,7 +29,10 @@ export interface IssueApproval {
   requirements: IssueRequirements;
   planTask: PlanTaskMetadata | null;
   approvalId: string;
+  /** v2 (ADR 0035): what new jobs are stamped with. */
   inputHash: string;
+  /** v1 hash of the same inputs, only for comparing jobs stamped before ADR 0035. */
+  legacyInputHash: string;
 }
 
 /** Which status's changelog entry identifies the approval. A planning request is approved by
@@ -52,8 +60,9 @@ export async function readIssueApproval(
   if (planTask) await assertPlanTaskCurrent(jira, issue.key, planTask);
   const requirements = readIssueRequirements(issue);
   const approvalId = await computeApprovalId(jira, issue, approvalStatusFor(kind, workspace));
-  const inputHash = computeInputHash(requirements, planTask);
-  return { issue, requirements, planTask, approvalId, inputHash };
+  const inputHash = computeInputHash({ kind, issue, requirements, planTask });
+  const legacyInputHash = computeLegacyInputHash(requirements, planTask);
+  return { issue, requirements, planTask, approvalId, inputHash, legacyInputHash };
 }
 
 /** A plan task is runnable only under its parent's current plan version (the v4 runtime's check,
@@ -125,6 +134,22 @@ export interface ApprovalSnapshot {
   requirements: IssueRequirements;
   planTask: PlanTaskMetadata | null;
   planning?: PlanningContext;
+  /** The v1 hash of these inputs (ADR 0035), so Worker API checks can still judge a job stamped
+   *  before the switch without re-reading Jira. Absent from snapshots stored before it. */
+  legacyInputHash?: string;
+}
+
+/** A stored approval's hashes in the shape `inputHashMatches` takes — for the Worker API checks,
+ *  which judge a job from Router's DB without asking Jira. */
+export function storedApprovalHashes(row: ApprovalRow): {
+  inputHash: string;
+  legacyInputHash?: string;
+} {
+  const legacy = (row.inputSnapshot as Partial<ApprovalSnapshot> | null)?.legacyInputHash;
+  return {
+    inputHash: row.inputHash,
+    ...(typeof legacy === "string" ? { legacyInputHash: legacy } : {}),
+  };
 }
 
 /**
@@ -147,6 +172,7 @@ export function storeApproval(
     requirements: approval.requirements,
     planTask: approval.planTask,
     ...(keptPlanning ? { planning: keptPlanning } : {}),
+    legacyInputHash: approval.legacyInputHash,
   };
   upsertApproval(db, {
     issueKey: approval.issue.key,
@@ -159,7 +185,13 @@ export function storeApproval(
 
 export type JobCheck =
   | { verdict: "current"; approval: IssueApproval }
-  | { verdict: "revoked"; reason: string };
+  | {
+      verdict: "revoked";
+      reason: string;
+      /** The approval itself stands but what it approved was edited (ADR 0035): the issue must
+       *  not run again under this approval id. */
+      inputsChanged?: boolean;
+    };
 
 /** Statuses an issue may sit in while its job is still approved: the request status for its
  *  kind, or `inProgressStatus` (where Router itself moves it on `start`). */
@@ -211,8 +243,8 @@ export async function checkJobAgainstJira(
   if (approval.approvalId !== job.approvalId) {
     return { verdict: "revoked", reason: `${issue.key} was re-approved` };
   }
-  if (job.inputHash !== null && approval.inputHash !== job.inputHash) {
-    return { verdict: "revoked", reason: `${issue.key}'s inputs changed` };
+  if (!inputHashMatches(job.inputHash, approval)) {
+    return { verdict: "revoked", reason: `${issue.key}'s inputs changed`, inputsChanged: true };
   }
   return { verdict: "current", approval };
 }
