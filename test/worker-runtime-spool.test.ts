@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobResult } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
+import type { Logger } from "../src/logger.js";
 import { ResultSpool } from "../src/worker-runtime/spool.js";
 
 function result(resultId: string, attemptId = "attempt-1"): JobResult {
@@ -57,6 +58,25 @@ describe("ResultSpool", () => {
     writeFileSync(path.join(dir, "r1.json"), "{ not json");
     expect(spool.listPending()).toEqual([result("r2")]);
     // Kept on disk for a human to inspect.
+    expect(existsSync(path.join(dir, "r1.json"))).toBe(true);
+  });
+
+  it("warns about, and does not resend, a result an older protocol version spooled (ADR 0036)", () => {
+    const warnings: string[] = [];
+    const logger = { warn: (_bindings: unknown, message: string) => warnings.push(message) };
+    const spool = new ResultSpool(dir, logger as unknown as Logger);
+    spool.save(result("r2"));
+    writeFileSync(
+      path.join(dir, "r1.json"),
+      JSON.stringify({ ...result("r1"), protocolVersion: 1 }),
+    );
+    writeFileSync(path.join(dir, "r0.json"), "{ not json");
+
+    expect(spool.listPending()).toEqual([result("r2")]);
+    expect(warnings).toEqual([
+      expect.stringContaining("unreadable"),
+      expect.stringContaining("does not match this protocol version"),
+    ]);
     expect(existsSync(path.join(dir, "r1.json"))).toBe(true);
   });
 

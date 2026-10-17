@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { type JobResult, JobResultSchema } from "../contracts/envelope.js";
+import type { Logger } from "../logger.js";
 
 const SUFFIX = ".json";
 
@@ -32,7 +33,10 @@ function assertSafeId(resultId: string): void {
  * is safe because Router treats an identical `resultId` resubmission as success.
  */
 export class ResultSpool {
-  constructor(readonly dir: string) {}
+  constructor(
+    readonly dir: string,
+    private readonly logger?: Logger,
+  ) {}
 
   save(result: JobResult): string {
     assertSafeId(result.resultId);
@@ -50,20 +54,29 @@ export class ResultSpool {
     return finalPath;
   }
 
-  /** Spooled results, oldest file name first. Unreadable/corrupt files are skipped (and kept
-   *  on disk for a human to look at) rather than blocking the resend of everything else. */
+  /** Spooled results, oldest file name first. Unreadable/corrupt files — including results an
+   *  older protocol version wrote (ADR 0036) — are skipped with a warning and kept on disk for a
+   *  human to look at, rather than blocking the resend of everything else. */
   listPending(): JobResult[] {
     if (!existsSync(this.dir)) return [];
     return readdirSync(this.dir)
       .filter((name) => name.endsWith(SUFFIX))
       .sort()
       .flatMap((name) => {
+        const file = path.join(this.dir, name);
         try {
-          const parsed = JobResultSchema.safeParse(
-            JSON.parse(readFileSync(path.join(this.dir, name), "utf-8")),
+          const parsed = JobResultSchema.safeParse(JSON.parse(readFileSync(file, "utf-8")));
+          if (parsed.success) return [parsed.data];
+          this.logger?.warn(
+            { layer: "worker-runtime", file, issues: parsed.error.issues.slice(0, 3) },
+            "spooled result does not match this protocol version; left on disk, not resent",
           );
-          return parsed.success ? [parsed.data] : [];
-        } catch {
+          return [];
+        } catch (error) {
+          this.logger?.warn(
+            { layer: "worker-runtime", file, err: error },
+            "spooled result is unreadable; left on disk, not resent",
+          );
           return [];
         }
       });

@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { PlanSchema } from "../pm/plan.js";
+import {
+  ExecutionContractSchema,
+  ImplementationReportSchema,
+  LocalEvidenceSchema,
+  ScopeCheckSchema,
+} from "./implementation.js";
 import { JOB_KINDS, PROTOCOL_VERSION } from "./protocol.js";
 
 /**
@@ -64,6 +70,8 @@ export const JobEnvelopeSchema = z.object({
   inputHash: z.string().min(1),
   issueSnapshot: IssueSnapshotSchema,
   planningContext: PlanningContextSchema.optional(),
+  /** The approved scope contract, for `kind: "implementation"` jobs only (ADR 0036). */
+  executionContract: ExecutionContractSchema.optional(),
   systemPrompt: z.string().min(1),
   timeoutMs: z.number().int().positive(),
 });
@@ -104,5 +112,12 @@ export const JobResultSchema = z.object({
   decisionRequest: z.string().optional(),
   /** Present only for `kind: "planning"` jobs. */
   plan: PlanSchema.optional(),
+  /** The implement agent's structured report (ADR 0036). Present for implementation results the
+   *  provider answered; absent when the run failed before producing one. */
+  implementation: ImplementationReportSchema.optional(),
+  /** The worker's changed-path check against the contract's `allowedPaths`. */
+  scopeCheck: ScopeCheckSchema.optional(),
+  /** Where uncommitted, unpushed changes were left (a deviation or failed verification). */
+  localEvidence: LocalEvidenceSchema.optional(),
 });
 export type JobResult = z.infer<typeof JobResultSchema>;

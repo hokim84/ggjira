@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export interface WorktreeHandle {
@@ -203,6 +203,134 @@ export async function changedFilesSince(
       ),
     );
   });
+}
+
+/** One path a job changed. `from` is the old path of a rename. */
+export interface WorktreeChange {
+  path: string;
+  change: "added" | "modified" | "deleted" | "renamed";
+  from?: string;
+}
+
+/** Runs git and resolves its raw stdout; rejects on a non-zero exit. */
+function gitOutput(args: string[], cwd: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: string[] = [];
+    child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString("utf-8")));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdout));
+        return;
+      }
+      const message = stderr.join("").trim();
+      reject(
+        new GitCommandError(
+          `git ${args.join(" ")} failed (exit ${code}): ${message}`,
+          args,
+          message,
+        ),
+      );
+    });
+  });
+}
+
+function changeKind(code: string): WorktreeChange["change"] {
+  if (code === "?" || code === "A" || code === "C") return "added";
+  if (code === "D") return "deleted";
+  if (code === "R") return "renamed";
+  return "modified";
+}
+
+/**
+ * Every uncommitted change in the worktree, new files included (`git status --porcelain=v1 -z
+ * --untracked-files=all`). NUL-separated so unusual file names survive; a staged rename is one
+ * entry with both paths. An unstaged rename shows up as a deletion plus an addition, which the
+ * scope check treats the same way (both paths must be allowed).
+ */
+export async function listWorkingTreeChanges(worktreePath: string): Promise<WorktreeChange[]> {
+  const fields = (
+    await gitOutput(["status", "--porcelain=v1", "-z", "--untracked-files=all"], worktreePath)
+  )
+    .toString("utf-8")
+    .split("\0");
+  const changes: WorktreeChange[] = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const entry = fields[i] as string;
+    if (entry.length < 4) continue;
+    const index = entry[0] as string;
+    const worktree = entry[1] as string;
+    const filePath = entry.slice(3);
+    if (index === "R" || index === "C") {
+      const from = fields[i + 1] ?? "";
+      i += 1;
+      changes.push(
+        index === "R"
+          ? { path: filePath, change: "renamed", from }
+          : { path: filePath, change: "added" },
+      );
+      continue;
+    }
+    const code = index === " " || index === "?" ? worktree : index;
+    changes.push({ path: filePath, change: index === "?" ? "added" : changeKind(code) });
+  }
+  return changes;
+}
+
+/** Changes already committed on the job branch since `baseBranch` (an agent that committed despite
+ *  being told not to), with renames detected. */
+export async function listCommittedChanges(
+  worktreePath: string,
+  baseBranch: string,
+): Promise<WorktreeChange[]> {
+  const fields = (
+    await gitOutput(["diff", "--name-status", "-z", "-M", `${baseBranch}...HEAD`], worktreePath)
+  )
+    .toString("utf-8")
+    .split("\0");
+  const changes: WorktreeChange[] = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const status = fields[i] as string;
+    if (!status) continue;
+    const code = status[0] as string;
+    if (code === "R" || code === "C") {
+      const from = fields[i + 1] ?? "";
+      const to = fields[i + 2] ?? "";
+      i += 2;
+      changes.push(
+        code === "R" ? { path: to, change: "renamed", from } : { path: to, change: "added" },
+      );
+      continue;
+    }
+    const filePath = fields[i + 1] ?? "";
+    i += 1;
+    changes.push({ path: filePath, change: changeKind(code) });
+  }
+  return changes;
+}
+
+/**
+ * Stages everything and writes the full change against `baseBranch` (committed or not, binary
+ * included) to `patchFile`, without committing. Used to keep the evidence of a run GGJIRA stopped
+ * before commit/push; the worktree itself is left in place.
+ */
+export async function writeStagedPatch(
+  worktreePath: string,
+  baseBranch: string,
+  patchFile: string,
+): Promise<void> {
+  await runGit(["add", "-A"], worktreePath);
+  // Against the fork point, not the base branch's tip: commits that landed on the base branch
+  // meanwhile are not part of this job.
+  const forkPoint = (await gitOutput(["merge-base", baseBranch, "HEAD"], worktreePath))
+    .toString("utf-8")
+    .trim();
+  const patch = await gitOutput(["diff", "--cached", "--binary", forkPoint], worktreePath);
+  mkdirSync(path.dirname(patchFile), { recursive: true });
+  writeFileSync(patchFile, patch);
 }
 
 /**

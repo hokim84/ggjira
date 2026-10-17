@@ -1,5 +1,8 @@
 import type { JobResult } from "../contracts/envelope.js";
-import { renderDecisionRequest } from "../pm/decision-render.js";
+import {
+  renderDecisionRequest,
+  renderImplementationDecisionRequest,
+} from "../pm/decision-render.js";
 import type { Plan } from "../pm/plan.js";
 import {
   PlanApplyError,
@@ -270,6 +273,14 @@ function failureSteps(
     reason,
   ];
   if (input.result.blockingIssue) lines.push("", "Blocking Issue:", input.result.blockingIssue);
+  const evidence = input.result.localEvidence;
+  if (evidence) {
+    // ADR 0036: the run stopped before commit; say where its changes were kept.
+    lines.push("", "Uncommitted changes were kept on the worker:");
+    if (evidence.patchFile) lines.push(`- patch: ${evidence.patchFile}`);
+    if (evidence.worktreePath) lines.push(`- worktree: ${evidence.worktreePath}`);
+    lines.push(`- cleanup: ${evidence.cleanup}`);
+  }
   lines.push(
     "",
     `To run it again, move the issue back to "${approvalStatusFor(input.job.kind, input.workspace)}".`,
@@ -289,6 +300,17 @@ function successComment(input: ResultJournalInput): string {
   if (result.changes?.length) lines.push("", "Changes:", ...result.changes.map((c) => `- ${c}`));
   if (result.validation?.length) {
     lines.push("", "Validation:", ...result.validation.map((v) => `- ${v}`));
+  }
+  const verification = result.implementation?.verification ?? [];
+  if (verification.length > 0) {
+    lines.push(
+      "",
+      "Acceptance checks:",
+      ...verification.map((entry) => `- ${entry.status}: ${entry.acceptance} — ${entry.evidence}`),
+    );
+  }
+  if (result.scopeCheck && !result.scopeCheck.checked) {
+    lines.push("", `Path scope: not checked (${result.scopeCheck.reason ?? "no reason given"}).`);
   }
   if (result.artifacts?.length) {
     lines.push("", "Artifacts:", ...result.artifacts.map((a) => `- ${a}`));
@@ -408,6 +430,40 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
     return toNewSteps(
       failureSteps(input, result.summary, result.failureReason ?? result.summary ?? "(unknown)"),
     );
+  }
+
+  if (result.status === "needs_decision" && job.kind === "implementation") {
+    // ADR 0036: the implement agent asked for a decision or left the contract, and the worker
+    // stopped before commit/push. Not a failure, and not a planning decision.
+    const report = result.implementation;
+    const deviated =
+      Boolean(report?.decision) ||
+      (report?.scopeDeviations.length ?? 0) > 0 ||
+      (result.scopeCheck?.outsideAllowed.length ?? 0) > 0;
+    if (!deviated) {
+      return toNewSteps(
+        failureSteps(
+          input,
+          result.summary,
+          "The implementation result asked for a decision but carried no decision or deviation.",
+        ),
+      );
+    }
+    return toNewSteps([
+      {
+        kind: "comment",
+        params: {
+          body: renderImplementationDecisionRequest(result, {
+            requestStatus: approvalStatusFor("implementation", workspace),
+            signature: signature(job, input.attemptId),
+          }),
+        },
+      },
+      finishTransition(
+        input,
+        workspace.workflow.needsDecisionStatus ?? workspace.workflow.reviewStatus,
+      ),
+    ]);
   }
 
   if (result.status === "needs_decision") {

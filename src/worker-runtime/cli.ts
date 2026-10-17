@@ -55,7 +55,7 @@ function workerRunner(config: WorkerConfig): WorkerRunner {
     config,
     client: new RouterClient({ routerUrl: config.routerUrl, workerToken: credential.workerToken }),
     workerId: credential.workerId,
-    spool: new ResultSpool(workerSpoolDir(config)),
+    spool: new ResultSpool(workerSpoolDir(config), logger),
     createProvider: (provider) => createProviderFromConfig(provider, logger),
     worktreesRoot: workerWorktreesRoot(config),
     logger,

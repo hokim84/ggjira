@@ -55,6 +55,19 @@ describe("ClaudeCodeCliProvider", () => {
     });
   });
 
+  it("prefers the result event's structured_output over JSON in the result text", async () => {
+    const provider = new ClaudeCodeCliProvider(undefined, {
+      command: path.join(FIXTURES_DIR, "claude-structured.sh"),
+    });
+
+    const result = await provider.run({ ...baseRequest(), outputSchema: { type: "object" } });
+
+    expect(result.structuredOutput).toEqual({
+      outcome: "needs_decision",
+      summary: "from structured_output",
+    });
+  });
+
   it("maps a non-zero exit with a result event to exitReason 'nonzero'", async () => {
     const provider = new ClaudeCodeCliProvider(undefined, {
       command: path.join(FIXTURES_DIR, "fails.sh"),

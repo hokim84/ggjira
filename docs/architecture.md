@@ -86,6 +86,12 @@ Worker                                   Router (SQLite)
   spool → jobs/{id}/result ──────────▶   결과 저장 + 보고 단계 기록(한 트랜잭션)
 ```
 
+프로토콜 2(ADR 0036): 구현 envelope는 승인된 범위 계약(`executionContract`)을 담는다. 구현 워커는
+provider의 최종 구조화 응답(`ImplementationReport`: outcome, 이탈, 결정, acceptance별 검증)을 받고, 커밋
+전에 변경 경로를 `allowedPaths`와 대조한다. 결정 필요·의미상 이탈·경로 이탈이면 commit·push·PR 없이
+patch와 worktree를 남기고 `needs_decision`으로 보고한다. 보고를 읽을 수 없거나 검증 근거가 없거나 실패한
+검증이 있으면 `failed`다.
+
 모든 변경 요청은 identity, session, attempt 소유, lease token, 임대 신선도를 한 트랜잭션에서
 검증한다. 오류는 다른 워커 403, 만료·오래된 권한 409, 프로토콜 불일치 426이다.
 
@@ -96,6 +102,7 @@ start 허가 ──▶ [start:<attempt>]   승인 상태 → inProgressStatus
 result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제거 → reviewStatus
                                     실패: 댓글 + ggjira-failed (inProgressStatus 유지)
                                     결정 요청: 댓글 → needsDecisionStatus ?? reviewStatus
+                                      (계획: plan.decision / 구현: 이탈·결정·증거 위치, ADR 0036)
                                     계획: 부모 계획 블록 → 하위 이슈 생성(마커) → plan-task
                                           → ggjira.plan → superseded → 댓글 → reviewStatus
 중단 확인 ───▶ [recovered:<attempt>] "적용된 것 없음" 댓글
@@ -167,7 +174,8 @@ DB와 루프 없이 `/ui/`와 `/api/v1/setup/*`만 제공하고, 콘솔에 찍�
 고르고, Router는 envelope에 `providerId`만 담는다.
 
 - `ClaudeCodeCliProvider`: `claude -p --output-format stream-json`을 쓴다. 구조화 출력은
-  `--json-schema`, 시스템 프롬프트는 `--append-system-prompt`로 넘긴다.
+  `--json-schema`로 요청하고 result 이벤트의 `structured_output`을 우선 읽는다. 시스템 프롬프트는
+  `--append-system-prompt`로 넘긴다.
 - `CodexCliProvider`: `codex exec --json --output-last-message <file>`을 쓴다. 시스템 프롬프트와
   스키마는 프롬프트 본문에 넣는다. 실제 `codex` CLI로는 아직 검증하지 않았다(ADR 0010).
 

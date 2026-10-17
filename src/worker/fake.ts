@@ -15,6 +15,18 @@ export class FakeWorkerProvider implements WorkerProvider {
   }
 }
 
+/** A completed implementation report (ADR 0036) with one passing check — what an implement agent
+ *  that did its job answers. Planning tests pass their own `structuredOutput` (a plan). */
+export function fakeImplementationReport(overrides: Record<string, unknown> = {}) {
+  return {
+    outcome: "completed",
+    summary: "Fake worker completed successfully.",
+    scopeDeviations: [],
+    verification: [{ acceptance: "The change works", status: "pass", evidence: "npm run test" }],
+    ...overrides,
+  };
+}
+
 export function fakeSuccessResult(overrides: Partial<WorkerResult> = {}): WorkerResult {
   return {
     exitReason: "completed",
@@ -22,6 +34,9 @@ export function fakeSuccessResult(overrides: Partial<WorkerResult> = {}): Worker
     summary: "Fake worker completed successfully.",
     durationMs: 1000,
     exitCode: 0,
+    structuredOutput: fakeImplementationReport(
+      overrides.summary ? { summary: overrides.summary } : {},
+    ),
     ...overrides,
   };
 }

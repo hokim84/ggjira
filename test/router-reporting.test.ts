@@ -420,6 +420,144 @@ describe("Router Jira reporting journal", () => {
     });
   });
 
+  describe("implementation decisions (ADR 0036)", () => {
+    const decision = {
+      question: "Add a column to users?",
+      options: [
+        { id: "a", title: "Add the column", pros: ["simple"], cons: ["needs a migration"] },
+        { id: "b", title: "Derive it at read time" },
+      ],
+      recommendation: "b",
+      impact: "A migration is outside this ticket's scope.",
+    };
+    const evidence = {
+      worktreePath: "/w/worktrees/ggjira-KAN-1-attempt",
+      branch: "ggjira/KAN-1-attempt",
+      patchFile: "/w/logs/job-attempt.patch",
+      cleanup: "git worktree remove --force /w/worktrees/ggjira-KAN-1-attempt",
+    };
+
+    it("hands the approved contract to the implementation worker", async () => {
+      const envelope = await startJob("KAN-1");
+      expect(envelope.executionContract).toMatchObject({
+        acceptance: ["The change works"],
+        verification: ["npm run test"],
+      });
+      expect(envelope.planningContext).toBeUndefined();
+    });
+
+    it("posts an implementation decision request, not a failure, and parks the issue", async () => {
+      const envelope = await startJob("KAN-1");
+      await process();
+      await submit(envelope, {
+        status: "needs_decision",
+        summary: "A migration is needed",
+        implementation: {
+          outcome: "needs_decision",
+          summary: "A migration is needed",
+          scopeDeviations: [{ description: "Schema change", reason: "the API needs it" }],
+          decision,
+          verification: [],
+        },
+        scopeCheck: { checked: true, changedPaths: [], outsideAllowed: [] },
+        localEvidence: evidence,
+      });
+      await process();
+
+      const [comment] = commentsOn("KAN-1");
+      expect(comment).toContain("stopped this implementation before commit and push");
+      expect(comment).toContain("Out of scope: Schema change (the API needs it)");
+      expect(comment).toContain("Question: Add a column to users?");
+      expect(comment).toContain("Impact: A migration is outside this ticket's scope.");
+      expect(comment).toContain(`move the issue to "${REQUEST_STATUS}" again`);
+      expect(comment).toContain(`- patch: ${evidence.patchFile}`);
+      expect(comment).not.toContain("[GGJIRA:DECISION-REQUEST]");
+      expect(await status("KAN-1")).toBe(REVIEW_STATUS);
+      expect((await router.jira.getIssue("KAN-1")).labels).not.toContain("ggjira-failed");
+      expect(getJob(router.db, envelope.jobId)?.state).toBe("succeeded");
+    });
+
+    it("reports a path deviation with the paths outside the contract", async () => {
+      const envelope = await startJob("KAN-1");
+      await process();
+      await submit(envelope, {
+        status: "needs_decision",
+        summary: "Done, but touched the schema",
+        implementation: {
+          outcome: "completed",
+          summary: "Done, but touched the schema",
+          scopeDeviations: [],
+          verification: [{ acceptance: "The change works", status: "pass", evidence: "ok" }],
+        },
+        scopeCheck: {
+          checked: true,
+          changedPaths: [{ path: "db/schema.sql", change: "added" }],
+          outsideAllowed: [
+            { path: "db/schema.sql", change: "added" },
+            { path: "src/new.ts", change: "renamed", from: "lib/old.ts" },
+          ],
+        },
+        localEvidence: evidence,
+      });
+      await process();
+
+      const [comment] = commentsOn("KAN-1");
+      expect(comment).toContain("Changed paths outside Allowed Paths:");
+      expect(comment).toContain("- db/schema.sql (added)");
+      expect(comment).toContain("- lib/old.ts -> src/new.ts (renamed)");
+    });
+
+    it("treats a needs_decision with nothing to decide as a failure", async () => {
+      const envelope = await startJob("KAN-1");
+      await process();
+      await submit(envelope, { status: "needs_decision", summary: "?" });
+      await process();
+
+      expect(commentsOn("KAN-1")[0]).toContain("carried no decision or deviation");
+      expect((await router.jira.getIssue("KAN-1")).labels).toContain("ggjira-failed");
+    });
+
+    it("posts the decision once across a resend and a Router restart", async () => {
+      const envelope = await startJob("KAN-1");
+      await process();
+      const payload = {
+        status: "needs_decision",
+        summary: "A migration is needed",
+        implementation: {
+          outcome: "needs_decision",
+          summary: "A migration is needed",
+          scopeDeviations: [],
+          decision,
+          verification: [],
+        },
+        localEvidence: evidence,
+      };
+      await submit(envelope, payload);
+      expect((await submit(envelope, payload)).json()).toMatchObject({ accepted: true });
+      await router.restart();
+      await process();
+      await process();
+
+      expect(commentsOn("KAN-1")).toHaveLength(1);
+    });
+
+    it("lists the uncommitted evidence on a verification failure", async () => {
+      const envelope = await startJob("KAN-1");
+      await process();
+      await submit(envelope, {
+        status: "failed",
+        summary: "Tests fail",
+        failureReason: "Verification failed: The change works",
+        localEvidence: evidence,
+      });
+      await process();
+
+      const [comment] = commentsOn("KAN-1");
+      expect(comment).toContain("Uncommitted changes were kept on the worker:");
+      expect(comment).toContain(`- patch: ${evidence.patchFile}`);
+    });
+  });
+
   describe("approval re-check once Router moves issues itself (ADR 0019 caveat)", () => {
     function verify() {
       return verifyActiveJobs({

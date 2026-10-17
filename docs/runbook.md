@@ -446,3 +446,48 @@ sqlite3 data/router.sqlite3 "SELECT id, issue_key, state, substr(input_hash,1,3)
 sqlite3 data/router.sqlite3 "SELECT * FROM admin_holds WHERE actor = 'router:inputs-changed';"
 ```
 
+## 26. 구현 결정 요청과 범위 이탈 (ADR 0036)
+
+증상: 구현 이슈가 `needsDecisionStatus`(없으면 검토 상태)로 옮겨지고 "GGJIRA stopped this implementation
+before commit and push" 댓글이 달린다. PR은 열리지 않고 브랜치도 push되지 않는다.
+
+댓글의 원인 줄로 종류를 구별한다.
+
+- `Out of scope: …`: 구현 에이전트가 계약 밖 변경이 필요하다고 보고했다(의미상 이탈).
+- `Changed paths outside Allowed Paths:`: 실제 변경 경로가 `Allowed Paths` 밖이다(경로 이탈). rename은
+  `옛 경로 -> 새 경로`로 보이며, 양쪽 모두 허용돼야 한다.
+- `Question: …`: 에이전트가 선택지를 두고 결정을 요청했다.
+
+증거(워커 머신):
+
+- patch: `<logPath>/<jobId>-<attemptId>.patch`. 커밋하지 않은 변경 전체이고(바이너리 포함), 기준
+  브랜치에서 갈라진 지점 대비다. 검토하려면 `git apply --check <patch>` 후 다른 브랜치에 적용한다.
+- worktree: `<dataDir>/worktrees/ggjira-<KEY>-<attempt>`. 변경이 stage된 상태로 남아 있다.
+- 정리: 댓글의 `cleanup` 줄을 따른다(`git worktree remove --force <path> && git branch -D <branch>`).
+  또는 기간이 지난 뒤 `ggjira worker worktrees prune`.
+
+재개(재승인):
+
+1. 결정을 이슈 설명의 계약에 반영한다. 예: 범위를 넓히면 `In Scope`와 `Allowed Paths`에 추가하고,
+   하지 않기로 하면 `Out of Scope`에 적는다. 필요하면 Acceptance Criteria·Verification도 고친다.
+2. 이슈를 요청 상태로 옮긴다. 새 승인 id와 새 입력 해시로 새 job·attempt가 만들어진다. 이전 attempt의 늦은
+   결과는 적용되지 않는다. 댓글만 달고 옮기지 않으면 아무 일도 일어나지 않는다. 댓글은 승인 입력이 아니다.
+
+실패로 보고되는 경우(커밋 없음, patch 보존, `ggjira-failed` 라벨):
+
+- `final report could not be read`: provider의 최종 응답에 보고 JSON이 없거나 스키마에 맞지 않는다.
+  워커 로그 `<logPath>/<jobId>-<attemptId>.jsonl`의 마지막 result 이벤트를 본다.
+- `without any verification evidence`: `completed`인데 acceptance별 검증이 비어 있다.
+- `Verification failed: …`: 에이전트가 직접 `fail`로 판정한 acceptance가 있다.
+
+### 프로토콜 2 업그레이드 순서
+
+Router와 워커는 `protocolVersion`이 같아야 한다. 다르면 426 `protocol_mismatch`로 거절되고 실행되지 않는다.
+
+1. `ggjira router status`로 running/leased job이 없는지 확인한다. 있으면 끝나기를 기다리거나
+   `ggjira router jobs cancel`.
+2. 각 워커에서 `ggjira worker results retry`로 spool을 비운다(`still waiting 0`). 남은 결과가 있으면 먼저
+   Router가 받아야 한다. 업그레이드 뒤에는 이전 형식 결과를 다시 보낼 수 없다.
+3. 워커를 멈추고, Router를 업그레이드·재시작한 뒤, 워커를 업그레이드·시작한다.
+4. 업그레이드 뒤 워커 로그에 `spooled result does not match this protocol version`이 보이면 2단계에서
+   빠진 결과다. 파일은 spool에 그대로 있다. 내용을 확인한 뒤 해당 이슈를 다시 요청 상태로 옮긴다.

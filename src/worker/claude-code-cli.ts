@@ -36,6 +36,8 @@ interface RawResultEvent {
   total_cost_usd?: number;
   num_turns?: number;
   session_id?: string;
+  /** Set by `--json-schema` runs: the final answer already validated against the schema. */
+  structured_output?: unknown;
 }
 
 function isRawResultEvent(value: unknown): value is RawResultEvent {
@@ -161,10 +163,14 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
       };
     }
 
-    const structuredOutput =
-      request.outputSchema && finalResult?.result
-        ? extractJsonBlock(finalResult.result)
-        : undefined;
+    // Prefer the CLI's own schema-checked answer; older CLIs only put it in the result text.
+    const structuredOutput = !request.outputSchema
+      ? undefined
+      : finalResult?.structured_output !== undefined && finalResult.structured_output !== null
+        ? finalResult.structured_output
+        : finalResult?.result
+          ? extractJsonBlock(finalResult.result)
+          : undefined;
 
     if (result.code !== 0) {
       return {

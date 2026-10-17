@@ -1,6 +1,14 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
+import {
+  IMPLEMENTATION_REPORT_JSON_SCHEMA,
+  type ImplementationReport,
+  ImplementationReportSchema,
+  type LocalEvidence,
+  type ScopeCheck,
+} from "../contracts/implementation.js";
+import { matchesAnyGlob } from "../issue/paths.js";
 import type { WorkerProviderConfig } from "../contracts/provider.js";
 import { runValidateCommand } from "../worker/validate.js";
 import { type CreatePullRequest, createPullRequest } from "../worker/github.js";
@@ -14,8 +22,12 @@ import {
   githubRepoSlug,
   hasUncommittedChanges,
   isGitRepository,
+  listCommittedChanges,
+  listWorkingTreeChanges,
   pushBranch,
   remoteUrl,
+  type WorktreeChange,
+  writeStagedPatch,
 } from "../worker/worktree.js";
 import type { WorkerConfig } from "./config.js";
 import { executePlanningEnvelope } from "./planning.js";
@@ -121,10 +133,15 @@ export async function executeEnvelope(
   try {
     workerResult = await deps.createProvider(providerConfig).run(
       {
-        prompt: buildImplementPrompt({ title: issue.summary, description: issue.description }),
+        prompt: buildImplementPrompt({
+          title: issue.summary,
+          description: issue.description,
+          ...(envelope.executionContract ? { contract: envelope.executionContract } : {}),
+        }),
         cwd,
         timeoutMs: envelope.timeoutMs,
         systemPrompt: envelope.systemPrompt,
+        outputSchema: IMPLEMENTATION_REPORT_JSON_SCHEMA,
       },
       {
         signal: deps.signal,
@@ -154,6 +171,72 @@ export async function executeEnvelope(
     };
   }
 
+  const keepEvidence = (): Promise<LocalEvidence> =>
+    preserveLocalEvidence({
+      cwd,
+      repositoryPath: repository.path,
+      baseBranch: repository.baseBranch,
+      branch,
+      patchFile: path.join(deps.config.logPath, `${envelope.jobId}-${envelope.attemptId}.patch`),
+    });
+
+  // ADR 0036: the run is judged by its structured report, never by the provider's exit alone.
+  const parsedReport = readImplementationReport(workerResult);
+  if (!parsedReport.ok) {
+    return {
+      status: "failed",
+      summary: "The implement agent's final report could not be read; nothing was committed.",
+      failureReason: parsedReport.reason,
+      localEvidence: await keepEvidence(),
+      ...withBranch,
+    };
+  }
+  const report = parsedReport.report;
+  const scopeCheck: ScopeCheck = branch
+    ? checkChangedPaths(
+        await listJobChanges(cwd, repository.baseBranch),
+        envelope.executionContract?.allowedPaths ?? [],
+      )
+    : { checked: false, reason: "not a git workspace", changedPaths: [], outsideAllowed: [] };
+  const reported = { implementation: report, scopeCheck };
+
+  // A requested decision, a deviation the agent admits, or a path outside the contract: stop
+  // before commit/validate/push and leave the changes where a human can look at them.
+  if (
+    report.outcome === "needs_decision" ||
+    report.scopeDeviations.length > 0 ||
+    scopeCheck.outsideAllowed.length > 0
+  ) {
+    return {
+      status: "needs_decision",
+      summary: report.summary,
+      ...reported,
+      localEvidence: await keepEvidence(),
+      ...withBranch,
+    };
+  }
+  if (report.verification.length === 0) {
+    return {
+      status: "failed",
+      summary: report.summary,
+      failureReason: "The agent reported completion without any verification evidence.",
+      ...reported,
+      localEvidence: await keepEvidence(),
+      ...withBranch,
+    };
+  }
+  const failedChecks = report.verification.filter((entry) => entry.status === "fail");
+  if (failedChecks.length > 0) {
+    return {
+      status: "failed",
+      summary: report.summary,
+      failureReason: `Verification failed: ${failedChecks.map((entry) => entry.acceptance).join("; ")}`,
+      ...reported,
+      localEvidence: await keepEvidence(),
+      ...withBranch,
+    };
+  }
+
   let changes: string[] = [];
   if (branch && (await hasUncommittedChanges(cwd))) {
     if (!(await deps.authorize("commit"))) {
@@ -176,10 +259,11 @@ export async function executeEnvelope(
     if (!validated.ok) {
       return {
         status: "failed",
-        summary: workerResult.summary,
+        summary: report.summary,
         failureReason: `Validation command failed: ${validated.summary}`,
         changes,
         validation,
+        ...reported,
         ...withBranch,
       };
     }
@@ -204,7 +288,7 @@ export async function executeEnvelope(
       issueSummary: issue.summary,
       jobId: envelope.jobId,
       attemptId: envelope.attemptId,
-      summary: workerResult.summary,
+      summary: report.summary,
       changes,
       createPullRequest: deps.createPullRequest ?? createPullRequest,
     });
@@ -214,12 +298,113 @@ export async function executeEnvelope(
 
   return {
     status: "succeeded",
-    summary: workerResult.summary,
+    summary: report.summary,
     changes,
     validation,
     artifacts,
+    ...reported,
     ...withBranch,
     ...(pullRequest ? { pullRequest } : {}),
+  };
+}
+
+/** Best-effort JSON out of free text, for providers that answer in prose with a fenced block. */
+function extractJson(text: string): unknown {
+  const fenced = text.match(/```json\s*([\s\S]*?)```/i);
+  const candidate = fenced?.[1] ?? text.match(/(\{[\s\S]*\})/)?.[1];
+  if (!candidate) return undefined;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The provider's structured answer (or, failing that, JSON in its final text) as a validated
+ *  report. Anything else — no JSON, wrong shape, a `needs_decision` without a decision — fails. */
+export function readImplementationReport(
+  workerResult: Pick<WorkerResult, "structuredOutput" | "summary">,
+): { ok: true; report: ImplementationReport } | { ok: false; reason: string } {
+  const candidate = workerResult.structuredOutput ?? extractJson(workerResult.summary);
+  if (candidate === undefined) {
+    return { ok: false, reason: "the final answer contained no JSON report" };
+  }
+  const parsed = ImplementationReportSchema.safeParse(candidate);
+  if (!parsed.success) {
+    return { ok: false, reason: `the report does not match the schema: ${parsed.error.message}` };
+  }
+  return { ok: true, report: parsed.data };
+}
+
+/** Committed (by an agent that committed anyway) and uncommitted changes, one entry per path. */
+async function listJobChanges(cwd: string, baseBranch: string): Promise<WorktreeChange[]> {
+  const byPath = new Map<string, WorktreeChange>();
+  for (const change of [
+    ...(await listCommittedChanges(cwd, baseBranch)),
+    ...(await listWorkingTreeChanges(cwd)),
+  ]) {
+    byPath.set(change.path, change);
+  }
+  return [...byPath.values()];
+}
+
+/** Compares changed paths with the contract's `allowedPaths`. A rename must be allowed at both
+ *  ends. With no allowed paths the check is reported as not done, never as passed. */
+export function checkChangedPaths(
+  changes: readonly WorktreeChange[],
+  allowedPaths: readonly string[],
+): ScopeCheck {
+  const changedPaths = changes.map((change) => ({ ...change }));
+  if (allowedPaths.length === 0) {
+    return {
+      checked: false,
+      reason: "the contract has no allowedPaths",
+      changedPaths,
+      outsideAllowed: [],
+    };
+  }
+  const outsideAllowed = changedPaths.filter(
+    (change) =>
+      !matchesAnyGlob(change.path, allowedPaths) ||
+      (change.from !== undefined && !matchesAnyGlob(change.from, allowedPaths)),
+  );
+  return { checked: true, changedPaths, outsideAllowed };
+}
+
+/**
+ * Keeps what a stopped run changed, for the human who decides: the worktree stays, and in git
+ * mode everything is staged (not committed) and written to a patch next to the job log. A patch
+ * that cannot be written is reported in `cleanup`, not fatal — the worktree still has the changes.
+ */
+async function preserveLocalEvidence(input: {
+  cwd: string;
+  repositoryPath: string;
+  baseBranch: string;
+  branch: string | undefined;
+  patchFile: string;
+}): Promise<LocalEvidence> {
+  if (!input.branch) {
+    return {
+      worktreePath: input.cwd,
+      cleanup:
+        "GGJIRA edited this workspace directly (not a git repository); review the changes there and revert what should not stay.",
+    };
+  }
+  const removal = `in ${input.repositoryPath}: git worktree remove --force "${input.cwd}" && git branch -D ${input.branch} (or "ggjira worker worktrees prune" once it is old enough)`;
+  try {
+    await writeStagedPatch(input.cwd, input.baseBranch, input.patchFile);
+  } catch (error) {
+    return {
+      worktreePath: input.cwd,
+      branch: input.branch,
+      cleanup: `${removal}. The patch could not be written: ${errorMessage(error)}`,
+    };
+  }
+  return {
+    worktreePath: input.cwd,
+    branch: input.branch,
+    patchFile: input.patchFile,
+    cleanup: removal,
   };
 }
 

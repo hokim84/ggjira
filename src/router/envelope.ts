@@ -6,6 +6,7 @@ import {
   type PlanningContext,
   PlanningContextSchema,
 } from "../contracts/envelope.js";
+import { type ExecutionContract, ExecutionContractSchema } from "../contracts/implementation.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import { buildPmSystemPrompt } from "../pm/prompt.js";
 import { buildImplementSystemPrompt } from "../worker/prompt.js";
@@ -32,6 +33,7 @@ export class EnvelopeUnavailableError extends Error {
 interface StoredApprovalSnapshot {
   issue?: unknown;
   planning?: unknown;
+  requirements?: Record<string, unknown>;
 }
 
 function toIssueSnapshot(jobId: string, snapshot: unknown): IssueSnapshot {
@@ -55,6 +57,28 @@ function toPlanningContext(jobId: string, snapshot: unknown): PlanningContext {
     throw new EnvelopeUnavailableError(
       jobId,
       `stored planning context is invalid: ${parsed.error.message}`,
+    );
+  }
+  return parsed.data;
+}
+
+/** The approved scope contract out of the stored requirements (ADR 0036). Requirements stored
+ *  before ADR 0034 lack the contract fields; they read as empty lists. */
+function toExecutionContract(jobId: string, snapshot: unknown): ExecutionContract {
+  const requirements = (snapshot as StoredApprovalSnapshot | null)?.requirements ?? {};
+  const parsed = ExecutionContractSchema.safeParse({
+    acceptance: requirements.acceptanceCriteria,
+    verification: requirements.verification,
+    inScope: requirements.inScope,
+    outOfScope: requirements.outOfScope,
+    affectedAreas: requirements.affectedAreas,
+    allowedPaths: requirements.allowedPaths,
+    constraints: requirements.constraints,
+  });
+  if (!parsed.success) {
+    throw new EnvelopeUnavailableError(
+      jobId,
+      `stored requirements are invalid: ${parsed.error.message}`,
     );
   }
   return parsed.data;
@@ -102,7 +126,7 @@ export function buildJobEnvelope(
     issueSnapshot: toIssueSnapshot(job.id, approval.inputSnapshot),
     ...(job.kind === "planning"
       ? { planningContext: toPlanningContext(job.id, approval.inputSnapshot) }
-      : {}),
+      : { executionContract: toExecutionContract(job.id, approval.inputSnapshot) }),
     systemPrompt: job.kind === "planning" ? buildPmSystemPrompt() : buildImplementSystemPrompt(),
     timeoutMs: config.execution.timeoutMs,
   };

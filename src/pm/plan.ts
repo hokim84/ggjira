@@ -1,18 +1,13 @@
 import { z } from "zod";
+import {
+  DECISION_REQUEST_JSON_SCHEMA,
+  DecisionOptionSchema,
+  DecisionRequestSchema,
+} from "../contracts/decision.js";
 
-export const PlanOptionSchema = z.object({
-  id: z.string().min(1),
-  title: z.string().min(1),
-  pros: z.array(z.string()).default([]),
-  cons: z.array(z.string()).default([]),
-});
-
-export const PlanDecisionSchema = z.object({
-  question: z.string().min(1),
-  options: z.array(PlanOptionSchema).min(2),
-  recommendation: z.string().optional(),
-  impact: z.string().optional(),
-});
+/** The planning names for the shared decision shape (`src/contracts/decision.ts`, ADR 0036). */
+export const PlanOptionSchema = DecisionOptionSchema;
+export const PlanDecisionSchema = DecisionRequestSchema;
 
 /**
  * A task's scope contract (ADR 0034): what it delivers (`inScope`), what it deliberately leaves
@@ -160,31 +155,7 @@ export const PLAN_JSON_SCHEMA = {
       },
     },
     keepTaskKeys: { type: "array", items: { type: "string" } },
-    decision: {
-      type: "object",
-      additionalProperties: false,
-      required: ["question", "options"],
-      properties: {
-        question: { type: "string" },
-        options: {
-          type: "array",
-          minItems: 2,
-          items: {
-            type: "object",
-            additionalProperties: false,
-            required: ["id", "title"],
-            properties: {
-              id: { type: "string" },
-              title: { type: "string" },
-              pros: { type: "array", items: { type: "string" } },
-              cons: { type: "array", items: { type: "string" } },
-            },
-          },
-        },
-        recommendation: { type: "string" },
-        impact: { type: "string" },
-      },
-    },
+    decision: DECISION_REQUEST_JSON_SCHEMA,
   },
 } as const;
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { type FetchLike, RouterApiError, RouterClient } from "../src/worker-runtime/client.js";
 
 function mockFetch(response: Response): { fetch: FetchLike; calls: Array<[string, RequestInit]> } {
@@ -40,7 +41,7 @@ describe("RouterClient", () => {
       new Response(JSON.stringify({ workerId: "w1", workerToken: "t" })),
     );
     await new RouterClient({ routerUrl: "https://router.example", fetch }).register({
-      protocolVersion: 1,
+      protocolVersion: PROTOCOL_VERSION,
       pairingCode: "code",
       workerName: "w",
     });

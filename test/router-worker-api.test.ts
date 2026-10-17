@@ -378,6 +378,22 @@ describe("worker API", () => {
     expect(retry.statusCode).toBe(200);
   });
 
+  it("refuses a protocol-1 result after the ADR 0036 upgrade, leaving the job running", async () => {
+    await router.seedQueuedJob();
+    const worker = await router.connectWorker("worker-1");
+    const envelope = await reserve(worker);
+    await router.jobCall(worker, envelope.jobId, "start", lease(envelope));
+
+    const response = await router.post(
+      `/api/v1/jobs/${envelope.jobId}/result`,
+      result(envelope, { protocolVersion: 1 }),
+      worker.token,
+    );
+
+    expect(response.statusCode).toBe(426);
+    expect(getJob(router.db, envelope.jobId)?.state).toBe("running");
+  });
+
   it("never hands out work to a worker that has not reported availability yet", async () => {
     await router.seedQueuedJob();
     const code = await router.pairingCode("worker-1");
