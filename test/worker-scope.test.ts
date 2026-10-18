@@ -122,6 +122,9 @@ describe("implementation scope checks (ADR 0036)", () => {
     git(["clone", "--bare", seed, remote], dir);
     clone = path.join(dir, "clone");
     git(["clone", remote, clone], dir);
+    // The worker commits in this clone; CI runners have no global git identity.
+    git(["config", "user.email", "t@example.com"], clone);
+    git(["config", "user.name", "t"], clone);
   });
 
   afterEach(() => {
