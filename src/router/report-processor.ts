@@ -165,7 +165,7 @@ async function runTransition(
       reason: `${issue.key} is in "${issue.statusName}", not ${params.from.map((s) => `"${s}"`).join(" or ")}; a human moved it`,
     };
   }
-  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus);
+  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus, params.optInLabel);
   if (approvalId !== params.approvalId) {
     return { status: "skipped", reason: `${issue.key} was re-approved since this job was created` };
   }

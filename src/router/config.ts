@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { CloneUrlSchema } from "../contracts/api.js";
+import { SUPERSEDED_LABEL } from "../pm/plan-render.js";
 
 /** See src/config.ts's `nfc` for why status/transition names get normalized. */
 function nfc(value: string): string {
@@ -8,6 +9,15 @@ function nfc(value: string): string {
 }
 
 const nfcString = z.string().min(1).transform(nfc);
+
+/** How labels are compared: Jira keeps a label's case but searches it case-insensitively. */
+export function normalizeLabel(label: string): string {
+  return label.normalize("NFC").trim().toLowerCase();
+}
+
+/** Labels Router writes itself (the superseded marker) or reads as v4 meta issues
+ *  (src/router/candidates.ts); the failure label is configurable and checked separately. */
+const ROUTER_RESERVED_LABELS = [SUPERSEDED_LABEL, "ggjira-agent", "ggjira-workspace"];
 
 /**
  * The request -> in-progress -> review loop for one workspace
@@ -19,9 +29,24 @@ const nfcString = z.string().min(1).transform(nfc);
  * `planningStatus` is a second, distinct request status: only issues whose
  * *current* status equals it get planning jobs instead of implementation
  * jobs. Leaving it unset disables planning for the workspace entirely.
+ *
+ * `mode: "label"` (ADR 0037) replaces the AI-only statuses with an opt-in label on the team's
+ * ordinary workflow: `requestStatus` is then the ordinary "To Do", an issue takes part only while
+ * it carries `optInLabel`, and planning vs. implementation is decided by the request itself
+ * (src/router/workflow-mode.ts), so `planningStatus`/`needsDecisionStatus` are not used.
  */
 const WorkflowStatusSchema = z
   .object({
+    /** Unset means "legacy": the status-based workflow above. */
+    mode: z.enum(["legacy", "label"]).optional(),
+    /** The label that opts an issue in to AI work in `label` mode. Jira labels carry no spaces. */
+    optInLabel: z
+      .string()
+      .trim()
+      .min(1)
+      .regex(/^\S+$/, "a Jira label cannot contain spaces")
+      .transform(nfc)
+      .optional(),
     requestStatus: nfcString,
     inProgressStatus: nfcString,
     reviewStatus: nfcString,
@@ -45,6 +70,23 @@ const WorkflowStatusSchema = z
         path: ["planningStatus"],
         message: "workflow.planningStatus must differ from workflow.requestStatus",
       });
+    }
+    if (workflow.mode === "label") {
+      if (!workflow.optInLabel) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["optInLabel"],
+          message: 'workflow.optInLabel is required when workflow.mode is "label"',
+        });
+      }
+      for (const field of ["planningStatus", "needsDecisionStatus"] as const) {
+        if (!workflow[field]) continue;
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: `workflow.${field} is not used in "label" mode; remove it (ADR 0037)`,
+        });
+      }
     }
   });
 export type WorkflowStatus = z.infer<typeof WorkflowStatusSchema>;
@@ -225,6 +267,26 @@ export const RouterConfigSchema = z
           path: ["workspaces", index, "workflow", "inProgressStatus"],
           message: "workflow.inProgressStatus must differ from workflow.requestStatus",
         });
+      }
+      // The opt-in label must never be one Router itself adds or removes, or Router's own report
+      // would opt an issue in (or out).
+      const optIn = workspace.workflow.optInLabel;
+      if (optIn) {
+        const reserved = new Map<string, string>([
+          [normalizeLabel(config.reporting.failureLabel), "reporting.failureLabel"],
+          ...ROUTER_RESERVED_LABELS.map((label): [string, string] => [
+            normalizeLabel(label),
+            label,
+          ]),
+        ]);
+        const clash = reserved.get(normalizeLabel(optIn));
+        if (clash) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["workspaces", index, "workflow", "optInLabel"],
+            message: `workflow.optInLabel "${optIn}" is reserved by GGJIRA (${clash})`,
+          });
+        }
       }
     });
 

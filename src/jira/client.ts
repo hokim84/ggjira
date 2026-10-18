@@ -90,7 +90,7 @@ interface RawJiraFields {
   status?: { name?: string };
   labels?: string[];
   assignee?: { accountId?: string } | null;
-  issuetype?: { name?: string };
+  issuetype?: { name?: string; subtask?: boolean };
   parent?: { key?: string };
   project?: { key?: string };
   updated?: string;
@@ -177,6 +177,9 @@ function mapRawIssue(raw: RawJiraIssue, executionAgentFieldId?: string): JiraIss
     labels: raw.fields.labels ?? [],
     assigneeAccountId: raw.fields.assignee?.accountId ?? null,
     issueTypeName: raw.fields.issuetype?.name ?? null,
+    ...(raw.fields.issuetype?.subtask !== undefined
+      ? { isSubtask: raw.fields.issuetype.subtask }
+      : {}),
     parentKey: raw.fields.parent?.key ?? null,
     projectKey: raw.fields.project?.key ?? null,
     ...(executionAgentFieldId

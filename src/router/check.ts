@@ -1,6 +1,7 @@
 import type { JiraGateway } from "../jira/gateway.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { checkWorkflowHops } from "./workflow-check.js";
+import { hasOptIn, isLabelMode, optInLabelOf } from "./workflow-mode.js";
 
 /**
  * `ggjira router check`: confirms the Router config matches the real Jira before `serve`
@@ -93,7 +94,9 @@ async function checkProject(
     });
   }
 
-  if (workspace.workflow.planningStatus) {
+  // A `label`-mode workspace plans too (any request without a contract, ADR 0037).
+  const labelMode = isLabelMode(workspace);
+  if (workspace.workflow.planningStatus || labelMode) {
     const subtaskType = config.planning.subtaskIssueType;
     const found = issueTypes.find((type) => type.name.normalize("NFC") === subtaskType);
     items.push(
@@ -104,11 +107,13 @@ async function checkProject(
             message: `${where}: planning.subtaskIssueType "${subtaskType}" is not a subtask type of this project`,
           },
     );
-    // The REST API does not expose a workflow's initial status, so this stays a manual check.
-    items.push({
-      level: "warn",
-      message: `${where}: confirm by hand that a new "${subtaskType}" starts in a status other than "${workspace.workflow.requestStatus}" — otherwise every PM subtask would be dispatched before a human approves it`,
-    });
+    // The REST API does not expose a workflow's initial status, so this stays a manual check. In
+    // `label` mode a new subtask carries no opt-in label, so its initial status does not matter.
+    if (!labelMode)
+      items.push({
+        level: "warn",
+        message: `${where}: confirm by hand that a new "${subtaskType}" starts in a status other than "${workspace.workflow.requestStatus}" — otherwise every PM subtask would be dispatched before a human approves it`,
+      });
   }
 }
 
@@ -124,6 +129,7 @@ function expectedNextStatuses(workspace: WorkspaceConfig, current: string): stri
       ...(workflow.needsDecisionStatus ? [workflow.needsDecisionStatus] : []),
     ];
   }
+  if (current === workflow.reviewStatus && workflow.doneStatus) return [workflow.doneStatus];
   return [];
 }
 
@@ -147,6 +153,17 @@ async function checkSampleIssue(
       message: `issue ${issueKey}: project ${issue.projectKey ?? "?"} is not in any workspace`,
     });
     return;
+  }
+  const optIn = optInLabelOf(workspace);
+  if (optIn) {
+    items.push(
+      hasOptIn(issue, workspace)
+        ? { level: "ok", message: `issue ${issueKey} carries the opt-in label "${optIn}"` }
+        : {
+            level: "warn",
+            message: `issue ${issueKey} has no opt-in label "${optIn}"; Router will not pick it up`,
+          },
+    );
   }
   const transitions = await jira.getTransitions(issueKey);
   const reachable = transitions.map((t) => t.toStatusName.normalize("NFC"));

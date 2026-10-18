@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import type { WorkspaceConfig } from "../src/router/config.js";
 import { buildWorkspaceJql, findWorkspaceCandidates } from "../src/router/candidates.js";
+import { labelWorkspace } from "./helpers/router-fixtures.js";
 
 const workspace: WorkspaceConfig = {
   id: "ws1",
@@ -28,6 +29,12 @@ describe("buildWorkspaceJql", () => {
     };
     expect(buildWorkspaceJql(withPlanning)).toBe(
       'project in ("KAN") AND status in ("AI 작업 요청", "AI 계획 요청") ORDER BY created ASC',
+    );
+  });
+
+  it("label mode: queries To Do with the opt-in label only (ADR 0037)", () => {
+    expect(buildWorkspaceJql(labelWorkspace)).toBe(
+      'project in ("KAN") AND status in ("To Do") AND labels = "ai-enabled" ORDER BY created ASC',
     );
   });
 

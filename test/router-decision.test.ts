@@ -5,6 +5,7 @@ import type { PlanTaskMetadata } from "../src/pm/metadata.js";
 import { RuleDecisionProvider, type RouteContext } from "../src/router/decision.js";
 import type { WorkspaceConfig } from "../src/router/config.js";
 import { isRouteDispatch } from "../src/contracts/route.js";
+import { resolveJobKind } from "../src/router/workflow-mode.js";
 
 const workspace: WorkspaceConfig = {
   id: "ws1",
@@ -51,8 +52,9 @@ function requirements(overrides: Partial<IssueRequirements> = {}): IssueRequirem
   };
 }
 
+/** The kind is what the scheduler would resolve for the context's issue unless given. */
 function context(overrides: Partial<RouteContext> = {}): RouteContext {
-  return {
+  const base = {
     issue: issue(),
     requirements: requirements(),
     planTask: null,
@@ -60,6 +62,18 @@ function context(overrides: Partial<RouteContext> = {}): RouteContext {
     unresolvedDependencies: [],
     executionAgentOptionId: null,
     ...overrides,
+  };
+  return {
+    ...base,
+    kind:
+      overrides.kind ??
+      resolveJobKind({
+        workspace: base.workspace,
+        issue: base.issue,
+        requirements: base.requirements,
+        planTask: base.planTask,
+        parentPlanHasTasks: false,
+      }),
   };
 }
 

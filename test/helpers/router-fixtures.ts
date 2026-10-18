@@ -20,6 +20,35 @@ export const testWorkspace: WorkspaceConfig = {
   },
 };
 
+/** A `label`-mode workspace (ADR 0037) on the ordinary four-status workflow. */
+export const TODO_STATUS = "To Do";
+export const LABEL_IN_PROGRESS_STATUS = "In Progress";
+export const LABEL_REVIEW_STATUS = "Review";
+export const DONE_STATUS = "Done";
+export const OPT_IN_LABEL = "ai-enabled";
+
+export const labelWorkspace: WorkspaceConfig = {
+  id: "ws1",
+  repositoryId: "repo1",
+  projectKeys: ["KAN"],
+  workflow: {
+    mode: "label",
+    optInLabel: OPT_IN_LABEL,
+    requestStatus: TODO_STATUS,
+    inProgressStatus: LABEL_IN_PROGRESS_STATUS,
+    reviewStatus: LABEL_REVIEW_STATUS,
+    doneStatus: DONE_STATUS,
+  },
+};
+
+/** Every move between the four statuses, for seeding issues in a `label`-mode workspace. */
+export const LABEL_TRANSITIONS = [
+  TODO_STATUS,
+  LABEL_IN_PROGRESS_STATUS,
+  LABEL_REVIEW_STATUS,
+  DONE_STATUS,
+].map((status) => ({ id: `t-${status}`, name: `To ${status}`, toStatusName: status }));
+
 /** A description whose scope contract is complete (ADR 0034) unless `acceptance`/`verification`
  *  is passed as `[]`, so implementation requests built from it dispatch by default. */
 export function issueDescription(

@@ -7,6 +7,9 @@ export interface JiraIssue {
   labels: string[];
   assigneeAccountId: string | null;
   issueTypeName: string | null;
+  /** Jira's `issuetype.subtask` flag. Unlike `parentKey` (which an epic's child stories also have),
+   *  it marks an issue that cannot have subtasks of its own. Absent when unknown. */
+  isSubtask?: boolean;
   parentKey: string | null;
   projectKey: string | null;
   updatedAt?: string;

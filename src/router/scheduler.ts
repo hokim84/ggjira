@@ -38,7 +38,6 @@ import {
   checkJobAgainstJira,
   collectPlanningContext,
   type IssueApproval,
-  kindForStatus,
   readIssueApproval,
   storeApproval,
 } from "./issue-check.js";
@@ -190,10 +189,9 @@ async function reconcileIssue(
   routerAccountId: () => Promise<string>,
   report: SchedulerReport,
 ): Promise<void> {
-  const kind = kindForStatus(issue.statusName, workspace);
   let approval: IssueApproval;
   try {
-    approval = await readIssueApproval(deps.jira, issue, kind, workspace);
+    approval = await readIssueApproval(deps.jira, issue, workspace);
   } catch (error) {
     if (error instanceof PlanMetadataError) {
       report.skipped.push({ issueKey: issue.key, reason: error.message });
@@ -206,7 +204,7 @@ async function reconcileIssue(
     }
     throw error;
   }
-  const { requirements, planTask, approvalId, inputHash } = approval;
+  const { kind, requirements, planTask, approvalId, inputHash } = approval;
 
   const dependencyKeys = extractDependencyKeys(requirements.dependencies);
   const unresolvedDependencies = await resolveUnresolvedDependencies(
@@ -261,6 +259,7 @@ async function reconcileIssue(
 
   const context: RouteContext = {
     issue,
+    kind,
     requirements,
     planTask,
     workspace,

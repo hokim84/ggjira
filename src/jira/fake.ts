@@ -92,6 +92,7 @@ export class FakeJiraGateway implements JiraGateway {
       labels: issue.labels ?? [],
       assigneeAccountId: issue.assigneeAccountId ?? null,
       issueTypeName: issue.issueTypeName ?? null,
+      ...(issue.isSubtask !== undefined ? { isSubtask: issue.isSubtask } : {}),
       parentKey: issue.parentKey ?? null,
       projectKey: issue.projectKey ?? issue.key.split("-")[0] ?? null,
       executionAgentOptionId: issue.executionAgentOptionId ?? null,
@@ -155,6 +156,19 @@ export class FakeJiraGateway implements JiraGateway {
     });
   }
 
+  /** Jira records a label edit as one `labels` item with the space-separated before/after lists. */
+  private recordLabelChange(key: string, before: string[], after: string[]): void {
+    this.seedChangelogEntry(key, {
+      items: [
+        {
+          field: "labels",
+          fromString: before.join(" ") || null,
+          toString: after.join(" ") || null,
+        },
+      ],
+    });
+  }
+
   seedComment(key: string, comment: Partial<JiraComment> & Pick<JiraComment, "body">): void {
     const existing = this.commentsByKey.get(key) ?? [];
     existing.push({
@@ -215,7 +229,9 @@ export class FakeJiraGateway implements JiraGateway {
 
     const labelsMatch = clause.match(/^labels\s*=\s*(.+)$/i);
     if (labelsMatch) {
-      return issue.labels.includes(unquote(labelsMatch[1] ?? ""));
+      // Jira matches labels case-insensitively.
+      const wanted = unquote(labelsMatch[1] ?? "").toLowerCase();
+      return issue.labels.some((label) => label.toLowerCase() === wanted);
     }
 
     // Unknown clause shape: fail closed rather than silently matching everything.
@@ -308,15 +324,19 @@ export class FakeJiraGateway implements JiraGateway {
     this.labelChanges.push({ key, label, action: "add" });
     const issue = this.issues.get(key);
     if (issue && !issue.labels.includes(label)) {
-      this.issues.set(key, { ...issue, labels: [...issue.labels, label] });
+      const labels = [...issue.labels, label];
+      this.issues.set(key, { ...issue, labels });
+      this.recordLabelChange(key, issue.labels, labels);
     }
   }
 
   async removeLabel(key: string, label: string): Promise<void> {
     this.labelChanges.push({ key, label, action: "remove" });
     const issue = this.issues.get(key);
-    if (issue) {
-      this.issues.set(key, { ...issue, labels: issue.labels.filter((l) => l !== label) });
+    if (issue?.labels.includes(label)) {
+      const labels = issue.labels.filter((l) => l !== label);
+      this.issues.set(key, { ...issue, labels });
+      this.recordLabelChange(key, issue.labels, labels);
     }
   }
 

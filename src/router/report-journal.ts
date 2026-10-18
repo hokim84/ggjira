@@ -15,7 +15,8 @@ import {
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import type { NewReportStep } from "./db/report-steps.js";
 import type { JobRow } from "./db/jobs.js";
-import { type ApprovalSnapshot, approvalStatusFor } from "./issue-check.js";
+import type { ApprovalSnapshot } from "./issue-check.js";
+import { approvalStatusFor, decisionTransitionTarget, optInLabelOf } from "./workflow-mode.js";
 
 /**
  * Pure translation of "what happened" into the ordered Jira side effects Router owes an issue
@@ -33,6 +34,9 @@ export interface TransitionParams {
   from: string[];
   approvalStatus: string;
   approvalId: string;
+  /** Set for a `label`-mode workspace (ADR 0037): the approval is then re-derived with the opt-in
+   *  label. Steps journaled before it have none and are judged by the status alone. */
+  optInLabel?: string;
 }
 
 export interface CommentParams {
@@ -127,23 +131,36 @@ function signature(job: JobRow, attemptId: string): string {
   return [`ggjira job: ${job.id}`, `attempt: ${attemptId}`].join("\n");
 }
 
+/** A status move guarded by the job's approval (see `TransitionParams`). */
+function transition(
+  job: JobRow,
+  workspace: WorkspaceConfig,
+  to: string,
+  from: string[],
+): ReportStepSpec {
+  const optInLabel = optInLabelOf(workspace);
+  return {
+    kind: "transition",
+    params: {
+      to,
+      from,
+      approvalStatus: approvalStatusFor(job.kind, workspace),
+      approvalId: job.approvalId,
+      ...(optInLabel ? { optInLabel } : {}),
+    },
+  };
+}
+
 /**
  * When a worker is granted execution: move the issue to `inProgressStatus` (§2 "Router가 실행
  * 직전 최신 상태를 재조회하고 진행 상태로 전이한다"), but only out of the status that approved it —
  * a human who already moved it elsewhere wins.
  */
 export function buildStartSteps(job: JobRow, workspace: WorkspaceConfig): NewReportStep[] {
-  const approvalStatus = approvalStatusFor(job.kind, workspace);
   return toNewSteps([
-    {
-      kind: "transition",
-      params: {
-        to: workspace.workflow.inProgressStatus,
-        from: [approvalStatus],
-        approvalStatus,
-        approvalId: job.approvalId,
-      },
-    },
+    transition(job, workspace, workspace.workflow.inProgressStatus, [
+      approvalStatusFor(job.kind, workspace),
+    ]),
   ]);
 }
 
@@ -180,21 +197,10 @@ export function buildPullRequestClosedSteps(input: {
         "",
         "The issue stays where it is. To redo the work, move it back to its request status.",
       ];
-  const approvalStatus = approvalStatusFor(job.kind, workspace);
   return toNewSteps([
     { kind: "comment", params: { body: [...body, "", `ggjira job: ${job.id}`].join("\n") } },
     ...(input.merged && done
-      ? [
-          {
-            kind: "transition" as const,
-            params: {
-              to: done,
-              from: [workspace.workflow.reviewStatus],
-              approvalStatus,
-              approvalId: job.approvalId,
-            },
-          },
-        ]
+      ? [transition(job, workspace, done, [workspace.workflow.reviewStatus])]
       : []),
   ]);
 }
@@ -246,16 +252,17 @@ export interface ResultJournalInput {
 
 /** Moves out of in-progress (or the approving status, if the start move was skipped) to `to`. */
 function finishTransition(input: ResultJournalInput, to: string): ReportStepSpec {
-  const approvalStatus = approvalStatusFor(input.job.kind, input.workspace);
-  return {
-    kind: "transition",
-    params: {
-      to,
-      from: [input.workspace.workflow.inProgressStatus, approvalStatus],
-      approvalStatus,
-      approvalId: input.job.approvalId,
-    },
-  };
+  return transition(input.job, input.workspace, to, [
+    input.workspace.workflow.inProgressStatus,
+    approvalStatusFor(input.job.kind, input.workspace),
+  ]);
+}
+
+/** A result that waits for a human decision: moved to the workspace's decision status, or (in
+ *  `label` mode, ADR 0037) left In Progress, where the comment says what to do. */
+function decisionTransition(input: ResultJournalInput): ReportStepSpec[] {
+  const to = decisionTransitionTarget(input.workspace);
+  return to ? [finishTransition(input, to)] : [];
 }
 
 function failureSteps(
@@ -459,10 +466,7 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
           }),
         },
       },
-      finishTransition(
-        input,
-        workspace.workflow.needsDecisionStatus ?? workspace.workflow.reviewStatus,
-      ),
+      ...decisionTransition(input),
     ]);
   }
 
@@ -487,11 +491,8 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
           }),
         },
       },
-      // ADR 0021: without a dedicated status the question waits in review.
-      finishTransition(
-        input,
-        workspace.workflow.needsDecisionStatus ?? workspace.workflow.reviewStatus,
-      ),
+      // ADR 0021: without a dedicated status the question waits in review (legacy mode).
+      ...decisionTransition(input),
     ]);
   }
 
