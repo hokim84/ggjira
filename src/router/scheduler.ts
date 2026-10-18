@@ -33,6 +33,7 @@ import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
 import { inputHashMatches } from "./approval.js";
+import { reRequestHint } from "./workflow-mode.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 import {
   checkJobAgainstJira,
@@ -251,8 +252,8 @@ async function reconcileIssue(
       target: "human",
       reason:
         holdActor === INPUTS_CHANGED_HOLD_ACTOR
-          ? "the request was edited after it was approved; move the issue to the request status again to run the edited request"
-          : "cancelled by an admin for this approval; move the issue to the request status again to re-run",
+          ? `the request was edited after it was approved; ${reRequestHint(workspace)} to run the edited request`
+          : `cancelled by an admin for this approval; ${reRequestHint(workspace)} to re-run`,
     });
     return;
   }

@@ -86,3 +86,11 @@ export function decisionTransitionTarget(workspace: WorkspaceConfig): string | n
   if (isLabelMode(workspace)) return null;
   return workspace.workflow.needsDecisionStatus ?? workspace.workflow.reviewStatus;
 }
+
+/** How a human approves a request again (a new approval id), for held-request reasons. */
+export function reRequestHint(workspace: WorkspaceConfig): string {
+  const { requestStatus, optInLabel } = workspace.workflow;
+  return isLabelMode(workspace)
+    ? `move the issue back to "${requestStatus}", or remove and re-add the "${optInLabel}" label`
+    : `move the issue to "${requestStatus}" again`;
+}

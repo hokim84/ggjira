@@ -229,6 +229,95 @@ describe("label mode (ADR 0037)", () => {
     expect(report.jobsCreated).toEqual([]);
   });
 
+  it("stops on a path deviation without Review or a re-run; the fixed contract is a new attempt (T07, M4-08)", async () => {
+    await seed("KAN-1");
+    const envelope = await startJob("KAN-1");
+    await process();
+    const first = getJob(router.db, envelope.jobId);
+
+    await submit(envelope, {
+      status: "needs_decision",
+      summary: "Done, but touched the schema",
+      implementation: {
+        outcome: "completed",
+        summary: "Done, but touched the schema",
+        scopeDeviations: [],
+        verification: [{ acceptance: "The change works", status: "pass", evidence: "ok" }],
+      },
+      scopeCheck: {
+        checked: true,
+        changedPaths: [{ path: "db/schema.sql", change: "added" }],
+        outsideAllowed: [{ path: "db/schema.sql", change: "added" }],
+      },
+    });
+    expect((await process()).blocked).toEqual([]);
+
+    // Not a success: no Review, no failure label either, and the same approval never runs again.
+    const parked = await router.jira.getIssue("KAN-1");
+    expect(parked.statusName).toBe(LABEL_IN_PROGRESS_STATUS);
+    expect(parked.labels).toEqual([OPT_IN_LABEL]);
+    expect(commentsOn("KAN-1").join("\n")).toContain("- db/schema.sql (added)");
+    expect((await router.reconcile()).jobsCreated).toEqual([]);
+
+    // The human widens the contract and requests it again: a new approval over the new inputs.
+    await router.jira.updateIssueDescription(
+      "KAN-1",
+      issueDescription({ acceptance: ["The change works", "The schema has the new column"] }),
+    );
+    await router.jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
+    await router.reconcile();
+    const second = getOpenJobForIssue(router.db, "KAN-1");
+    expect(second?.kind).toBe("implementation");
+    expect(second?.approvalId).not.toBe(first?.approvalId);
+    expect(second?.inputHash).not.toBe(first?.inputHash);
+  });
+
+  it("cancels a run whose request was edited, and its late result changes nothing (T06, M4-08)", async () => {
+    await seed("KAN-1");
+    const envelope = await startJob("KAN-1");
+    await process();
+
+    await router.jira.updateIssueDescription(
+      "KAN-1",
+      issueDescription({ acceptance: ["Something else entirely"] }),
+    );
+    expect((await verify()).jobsCancelRequested).toEqual([envelope.jobId]);
+
+    await submit(envelope);
+    expect(getJob(router.db, envelope.jobId)?.state).toBe("cancelled");
+    await process();
+    expect(await status("KAN-1")).toBe(LABEL_IN_PROGRESS_STATUS);
+
+    // The edited request does not quietly start under the old approval.
+    const report = await router.reconcile();
+    expect(report.jobsCreated).toEqual([]);
+    expect(getOpenJobForIssue(router.db, "KAN-1")).toBeUndefined();
+  });
+
+  it("holds a queued request edited before it ran until it is approved again (T06, M4-08)", async () => {
+    await seed("KAN-1");
+    await router.reconcile();
+    const queued = getOpenJobForIssue(router.db, "KAN-1");
+
+    await router.jira.updateIssueDescription(
+      "KAN-1",
+      issueDescription({ acceptance: ["Something else entirely"] }),
+    );
+    const edited = await router.reconcile();
+    expect(edited.jobsCancelled).toEqual([queued?.id]);
+    expect((await router.reconcile()).held).toEqual([
+      expect.objectContaining({
+        issueKey: "KAN-1",
+        reason: expect.stringContaining(`re-add the "${OPT_IN_LABEL}" label`),
+      }),
+    ]);
+
+    await router.jira.removeLabel("KAN-1", OPT_IN_LABEL);
+    await router.jira.addLabel("KAN-1", OPT_IN_LABEL);
+    await router.reconcile();
+    expect(getOpenJobForIssue(router.db, "KAN-1")?.approvalId).not.toBe(queued?.approvalId);
+  });
+
   it("keeps a failed issue In Progress with the failure label, and does not retry it", async () => {
     await seed("KAN-1");
     const envelope = await startJob("KAN-1");
