@@ -335,6 +335,32 @@ v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 �
   않는다. 사람이 직접 PR을 만들어 머지한 뒤 이슈를 손으로 완료 처리한다.
 - 웹훅 401: secret이 서로 다르다. GitHub 웹훅 화면의 Recent Deliveries에서 응답을 볼 수 있다.
 
+### 검토 대상과 머지 (ADR 0040)
+
+Router는 결과마다 검토할 커밋(head)을 고정한다. 머지가 완료로 이어지지 않으면 이슈 댓글과
+`ggjira router issue reviews KEY`를 본다.
+
+- `stale`, "is not the reviewed commit": 결과 뒤에 PR에 커밋이 더해졌다. 무엇이 머지됐는지 확인하고 이슈를 직접
+  완료로 옮긴다.
+- `stale`, "a newer result exists": 같은 이슈의 재작업이 그 뒤에 결과를 냈다. 이전 PR이 머지된 것이다. 새 결과와
+  비교해 정리한다.
+- `unverified`, "Head commit not compared": 워커가 커밋을 보고하지 않았다(이전 버전 워커). 기존처럼 완료로
+  옮긴다. 워커를 업그레이드하면 비교된다.
+- 고위험 규칙: workspace 설정에 다음을 넣는다. 설정 > 파일 편집 또는 `router.config.json`.
+
+```json
+"review": {
+  "highRiskPaths": [
+    { "name": "migrations", "paths": ["src/router/db/**", "db/migrations/**"] },
+    { "name": "public contract", "paths": ["src/contracts/**"] }
+  ]
+}
+```
+
+  규칙이 없으면 고위험 판정은 "unknown"으로 보인다. 일치한 결과는 "Needs your individual review"로 보고된다.
+  GGJIRA는 머지를 막지 않는다. 고위험 PR의 필수 리뷰는 GitHub branch protection(CODEOWNERS·required reviews)으로
+  설정하고, 테스트 저장소에서 실제로 막히는지 직접 확인한다.
+
 ## 22. 워커 LLM 사용량 (ADR 0028)
 
 웹 UI > 워커 카드의 "LLM 사용량"은 워커가 **연결할 때**와 **작업을 마친 직후**에만 갱신된다. 주기적으로

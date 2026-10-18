@@ -358,3 +358,49 @@ export const READINESS_HOLD_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS idx_readiness_holds_issue ON readiness_holds (issue_key)",
   "CREATE INDEX IF NOT EXISTS idx_readiness_holds_notice ON readiness_holds (notice_status)",
 ];
+
+/**
+ * Migration 11 (M4-11, ADR 0040). `review_targets` pins what a human reviews: one row per applied
+ * result, naming the issue, job, attempt, approval, input hash and Git base/head it came from,
+ * with the assessment (review class, high-risk evidence and rule version, acceptance tally,
+ * commit state) as JSON. A newer result for the same issue supersedes the older row, which stays
+ * as history. `review_records` is every human act Router saw that refers to a target (today: a
+ * pull request merged or closed on GitHub), with who did it, how they were authenticated, the head
+ * they acted on and whether that still matched the target.
+ */
+export const REVIEW_TARGET_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS review_targets (
+    id TEXT PRIMARY KEY,
+    issue_key TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs (id),
+    attempt_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    input_hash TEXT,
+    result_status TEXT NOT NULL,
+    final_state TEXT NOT NULL,
+    base_sha TEXT,
+    head_sha TEXT,
+    commit_state TEXT NOT NULL,
+    review_class TEXT NOT NULL CHECK (review_class IN ('immediate', 'standard')),
+    assessment TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    superseded_by TEXT,
+    superseded_at TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_review_targets_issue ON review_targets (issue_key)",
+  "CREATE INDEX IF NOT EXISTS idx_review_targets_attempt ON review_targets (attempt_id)",
+  `CREATE TABLE IF NOT EXISTS review_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id TEXT REFERENCES review_targets (id),
+    issue_key TEXT NOT NULL,
+    action TEXT NOT NULL,
+    actor TEXT,
+    authentication TEXT NOT NULL,
+    head_sha TEXT,
+    outcome TEXT NOT NULL CHECK (outcome IN ('matched', 'stale', 'unverified', 'no_target')),
+    detail TEXT,
+    at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_review_records_issue ON review_records (issue_key)",
+];

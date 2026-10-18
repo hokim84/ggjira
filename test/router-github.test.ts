@@ -4,6 +4,7 @@ import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { listAudit } from "../src/router/db/audit.js";
 import { getPullRequest } from "../src/router/db/pull-requests.js";
+import { listReviewRecords, listReviewTargets } from "../src/router/db/review-targets.js";
 import {
   parsePullRequestClosed,
   pollErrorMessage,
@@ -23,6 +24,15 @@ import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.j
 const SECRET = "github-webhook-secret-0123456789";
 const DONE = "완료";
 const PR = { repo: "Acme/App", number: 12, url: "https://github.com/Acme/App/pull/12" };
+const BASE = "a".repeat(40);
+const HEAD = "b".repeat(40);
+const GIT = {
+  repository: "git",
+  baseBranch: "main",
+  baseSha: BASE,
+  headSha: HEAD,
+  committed: true,
+};
 
 const TRANSITIONS = [
   { id: "t-progress", name: "Start", toStatusName: IN_PROGRESS_STATUS },
@@ -30,10 +40,19 @@ const TRANSITIONS = [
   { id: "t-done", name: "Done", toStatusName: DONE },
 ];
 
-function pullRequestEvent(merged: boolean, overrides: Record<string, unknown> = {}) {
+function pullRequestEvent(
+  merged: boolean,
+  overrides: Record<string, unknown> = {},
+  headSha: string = HEAD,
+) {
   return {
     action: "closed",
-    pull_request: { number: PR.number, merged, merged_by: merged ? { login: "reviewer" } : null },
+    pull_request: {
+      number: PR.number,
+      merged,
+      merged_by: merged ? { login: "reviewer" } : null,
+      head: { sha: headSha },
+    },
     repository: { full_name: "acme/app" },
     sender: { login: "reviewer" },
     ...overrides,
@@ -69,7 +88,10 @@ describe("GitHub pull request → Jira done", () => {
   }
 
   /** Runs KAN-1 to a succeeded result that carries `PR`, and applies its journal. */
-  async function finishWithPullRequest(pullRequest: typeof PR | undefined = PR) {
+  async function finishWithPullRequest(
+    pullRequest: typeof PR | undefined = PR,
+    git: Record<string, unknown> | null = GIT,
+  ) {
     router.jira.seedIssue(
       {
         key: "KAN-1",
@@ -101,6 +123,7 @@ describe("GitHub pull request → Jira done", () => {
         summary: "done",
         branch: "ggjira/KAN-1-abc",
         ...(pullRequest ? { pullRequest } : {}),
+        ...(git ? { git } : {}),
       },
       worker.token,
     );
@@ -163,6 +186,102 @@ describe("GitHub pull request → Jira done", () => {
     });
   });
 
+  it("records the merge against the reviewed commit (M4-11)", async () => {
+    await finishWithPullRequest();
+    const [target] = listReviewTargets(router.db, "KAN-1");
+    expect(target).toMatchObject({ headSha: HEAD, baseSha: BASE, commitState: "committed" });
+
+    await webhook(pullRequestEvent(true));
+    await process();
+
+    expect(await status("KAN-1")).toBe(DONE);
+    expect(listReviewRecords(router.db, "KAN-1")).toEqual([
+      expect.objectContaining({
+        targetId: target?.id,
+        action: "pull_request.merged",
+        actor: "github:reviewer",
+        authentication: "github",
+        headSha: HEAD,
+        outcome: "matched",
+      }),
+    ]);
+    const view = (await router.adminCall("GET", "/issues/kan-1/reviews")).json();
+    expect(view).toMatchObject({
+      targets: [{ id: target?.id, reviewClass: "standard", supersededBy: null }],
+      records: [{ outcome: "matched" }],
+    });
+  });
+
+  it("does not move to done when the merged head is not the reviewed commit (T16)", async () => {
+    await finishWithPullRequest();
+    await webhook(pullRequestEvent(true, {}, "c".repeat(40)));
+    await process();
+
+    expect(await status("KAN-1")).toBe(REVIEW_STATUS);
+    const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
+    expect(comment).toContain("GGJIRA did not move the issue");
+    expect(comment).toContain(`is not the reviewed commit ${HEAD.slice(0, 12)}`);
+    expect(listReviewRecords(router.db, "KAN-1")[0]).toMatchObject({ outcome: "stale" });
+  });
+
+  it("does not move to done for a pull request from a superseded run (T16)", async () => {
+    await finishWithPullRequest();
+    const [first] = listReviewTargets(router.db, "KAN-1");
+    // A rework runs and reports again before the old pull request is merged.
+    router.jira.seedIssue(
+      { ...(await router.jira.getIssue("KAN-1")), statusName: REQUEST_STATUS },
+      TRANSITIONS,
+    );
+    router.jira.seedChangelogEntry("KAN-1", {
+      id: "KAN-1-reworked",
+      created: "2026-02-01T00:00:00.000Z",
+      items: [{ field: "status", fromString: REVIEW_STATUS, toString: REQUEST_STATUS }],
+    });
+    await router.reconcile();
+    const envelope = (await router.next(worker, "req-2")).json() as JobEnvelope;
+    const lease = { attemptId: envelope.attemptId, leaseToken: envelope.leaseToken };
+    await router.jobCall(worker, envelope.jobId, "start", lease);
+    await router.post(
+      `/api/v1/jobs/${envelope.jobId}/result`,
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        jobId: envelope.jobId,
+        attemptId: envelope.attemptId,
+        resultId: "result-2",
+        status: "failed",
+        summary: "broke",
+        failureReason: "tests red",
+      },
+      worker.token,
+    );
+    await process();
+    const targets = listReviewTargets(router.db, "KAN-1");
+    expect(targets.map((t) => [t.id, t.supersededBy])).toEqual([
+      ["result-2", null],
+      [first?.id, "result-2"],
+    ]);
+
+    await webhook(pullRequestEvent(true));
+    await process();
+    expect(listReviewRecords(router.db, "KAN-1")[0]).toMatchObject({
+      targetId: first?.id,
+      outcome: "stale",
+    });
+    const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
+    expect(comment).toContain("a newer result exists");
+    expect(await status("KAN-1")).not.toBe(DONE);
+  });
+
+  it("keeps ADR 0027's move for a worker that does not report its commit", async () => {
+    await finishWithPullRequest(PR, null);
+    await webhook(pullRequestEvent(true));
+    await process();
+    expect(await status("KAN-1")).toBe(DONE);
+    const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
+    expect(comment).toContain("Head commit not compared");
+    expect(listReviewRecords(router.db, "KAN-1")[0]).toMatchObject({ outcome: "unverified" });
+  });
+
   it("only comments when the PR is closed without merging", async () => {
     await finishWithPullRequest();
     await webhook(pullRequestEvent(false));
@@ -216,7 +335,12 @@ describe("GitHub pull request → Jira done", () => {
       fetch: async (url, init) => {
         requests.push(`${url} ${(init.headers as Record<string, string>).authorization}`);
         return new Response(
-          JSON.stringify({ state: "closed", merged: true, merged_by: { login: "lead" } }),
+          JSON.stringify({
+            state: "closed",
+            merged: true,
+            merged_by: { login: "lead" },
+            head: { sha: HEAD },
+          }),
           { status: 200 },
         );
       },
@@ -286,6 +410,7 @@ describe("parsePullRequestClosed", () => {
       number: 12,
       merged: true,
       by: "reviewer",
+      headSha: HEAD,
     });
     expect(parsePullRequestClosed("pull_request", { action: "opened" })).toBeUndefined();
     expect(parsePullRequestClosed("push", pullRequestEvent(true))).toBeUndefined();

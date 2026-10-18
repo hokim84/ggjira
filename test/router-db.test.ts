@@ -47,19 +47,19 @@ describe("Router SQLite store", () => {
     });
 
     it("applies every migration and records it in schema_migrations", () => {
-      expect(currentSchemaVersion(db)).toBe(10);
+      expect(currentSchemaVersion(db)).toBe(11);
     });
 
     it("is idempotent: reopening an existing database does not re-run migrations", () => {
       db.close();
       const reopened = openRouterDb(dbPath);
-      expect(currentSchemaVersion(reopened)).toBe(10);
+      expect(currentSchemaVersion(reopened)).toBe(11);
       reopened.close();
       // Reopen once more so the outer afterEach's db.close() has a live handle.
       db = openRouterDb(dbPath);
     });
 
-    it("upgrades a version-9 database to 10 (readiness_holds) and keeps its data", () => {
+    it("upgrades a version-9 database to the current version and keeps its data", () => {
       createJob(db, {
         id: "job-v9",
         issueKey: "KAN-9",
@@ -77,7 +77,7 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(10);
+      expect(currentSchemaVersion(db)).toBe(11);
       expect(getJob(db, "job-v9")?.inputHash).toBe("legacy-hash");
       expect(db.prepare("SELECT COUNT(*) AS n FROM readiness_holds").get()).toEqual({ n: 0 });
     });

@@ -409,6 +409,9 @@ function registerAdminRoutes(
       scope.get<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
         admin.issueOptIn(request.params.key),
       );
+      scope.get<{ Params: { key: string } }>("/issues/:key/reviews", async (request) =>
+        admin.issueReviews(request.params.key),
+      );
       scope.put<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
         admin.setIssueOptIn(
           request.params.key,

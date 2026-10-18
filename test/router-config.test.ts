@@ -71,6 +71,30 @@ describe("loadRouterConfig", () => {
     expect(config.workspaces[0]?.workflow.requestStatus).toBe("AI 작업 요청".normalize("NFC"));
   });
 
+  it("reads a workspace's high-risk review paths and refuses a rule without paths (ADR 0040)", () => {
+    const workspace = validConfig().workspaces[0];
+    const config = loadRouterConfig(
+      writeConfig(
+        validConfig({
+          workspaces: [
+            { ...workspace, review: { highRiskPaths: [{ name: "db", paths: ["db/**"] }] } },
+          ],
+        }),
+      ),
+    );
+    expect(config.workspaces[0]?.review?.highRiskPaths).toEqual([{ name: "db", paths: ["db/**"] }]);
+    expect(loadRouterConfig(writeConfig(validConfig())).workspaces[0]?.review).toBeUndefined();
+    expect(() =>
+      loadRouterConfig(
+        writeConfig(
+          validConfig({
+            workspaces: [{ ...workspace, review: { highRiskPaths: [{ name: "db", paths: [] }] } }],
+          }),
+        ),
+      ),
+    ).toThrow(RouterConfigError);
+  });
+
   it("rejects a workspace referencing an unknown repositoryId", () => {
     expect(() =>
       loadRouterConfig(

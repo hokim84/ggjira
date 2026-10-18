@@ -19,6 +19,7 @@ import { type CheckItem, runRouterCheck } from "./check.js";
 import { loadRouterConfig, type RouterConfig } from "./config.js";
 import type { LabelMigrationPlan, LabelMigrationResult } from "./label-migration.js";
 import type { IssueOptInView, SetOptInResult } from "./issue-opt-in.js";
+import type { ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
 import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
 import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
@@ -53,6 +54,7 @@ export const ROUTER_USAGE = `ggjira router <command>
   reports list | retry <batchId>
   issue show <KEY> | opt-in <KEY> on|off  an issue's AI participation (label mode): show why it
                                          would not start, or add/remove the opt-in label
+  issue reviews <KEY>                    results pinned for review, and merges seen against them
   reconcile
   backup
   migrate-labels plan --workspace <id> --label <l> --to-do <status> --review <status> [--out <f>]
@@ -476,11 +478,48 @@ function printIssueOptIn(io: CliIo, view: IssueOptInView): void {
   }
 }
 
-/** `issue show|opt-in` (M4-03): the opt-in label is the only thing it writes. */
+function printReviews(
+  io: CliIo,
+  view: { targets: ReviewTargetRow[]; records: ReviewRecordRow[] },
+): void {
+  if (view.targets.length === 0) io.out("no results pinned for review yet");
+  for (const target of view.targets) {
+    const { assessment } = target;
+    const head = target.headSha ? target.headSha.slice(0, 12) : target.commitState;
+    io.out(
+      `${target.supersededBy ? "  (superseded) " : "* "}${target.id}  ${target.kind} ${target.resultStatus}  ${target.reviewClass}  head ${head}`,
+    );
+    io.out(`    job ${target.jobId}  attempt ${target.attemptId}  approval ${target.approvalId}`);
+    for (const reason of assessment.reasons) io.out(`    needs review: ${reason.detail}`);
+    io.out(
+      `    high-risk: ${assessment.risk.status}${assessment.risk.policyVersion ? ` (rules ${assessment.risk.policyVersion})` : ""} — ${assessment.risk.basis}`,
+    );
+    for (const match of assessment.risk.matches) {
+      io.out(
+        `      ${match.rule}: ${match.from ? `${match.from} -> ` : ""}${match.path} (${match.change})`,
+      );
+    }
+  }
+  for (const record of view.records) {
+    io.out(
+      `  ${record.at}  ${record.action} by ${record.actor ?? "?"} (${record.authentication})  ${record.outcome}${record.targetId ? `  -> ${record.targetId}` : ""}`,
+    );
+  }
+}
+
+/** `issue show|opt-in|reviews` (M4-03, M4-11): the opt-in label is the only thing it writes. */
 async function issue(parsed: ParsedArgs, io: CliIo): Promise<number> {
   const client = adminClient(parsed, io);
-  const sub = requirePositional(parsed, 1, "issue subcommand (show|opt-in)");
+  const sub = requirePositional(parsed, 1, "issue subcommand (show|opt-in|reviews)");
   const key = requirePositional(parsed, 2, "issue key").toUpperCase();
+  if (sub === "reviews") {
+    const view = await client.get<{ targets: ReviewTargetRow[]; records: ReviewRecordRow[] }>(
+      `/issues/${encodeURIComponent(key)}/reviews`,
+    );
+    if (parsed.values.json) printJson(io, view);
+    else printReviews(io, view);
+    return 0;
+  }
   const endpoint = `/issues/${encodeURIComponent(key)}/opt-in`;
   if (sub === "show") {
     const view = await client.get<IssueOptInView>(endpoint);

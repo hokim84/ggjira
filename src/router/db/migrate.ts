@@ -7,6 +7,7 @@ import {
   PULL_REQUEST_CHECK_STATEMENTS,
   READINESS_HOLD_STATEMENTS,
   REPORT_JOURNAL_STATEMENTS,
+  REVIEW_TARGET_STATEMENTS,
   WORKER_REPOSITORY_PATH_STATEMENTS,
   SCHEMA_STATEMENTS,
   WORKER_PROTOCOL_STATEMENTS,
@@ -95,6 +96,13 @@ const MIGRATIONS: readonly Migration[] = [
       "readiness_holds (implementation requests held for an incomplete contract, ADR 0034)",
     up(db) {
       for (const statement of READINESS_HOLD_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 11,
+    description: "review_targets, review_records (what a human reviews, pinned to a result; M4-11)",
+    up(db) {
+      for (const statement of REVIEW_TARGET_STATEMENTS) db.exec(statement);
     },
   },
 ];

@@ -106,11 +106,29 @@ export type RepositoryConfig = z.infer<typeof RepositorySchema>;
  * status mapping (§3 "첫 버전은 Jira 사이트 하나를 지원하고 여러 프로젝트를 workspace에
  * 연결할 수 있게 한다"). A project belongs to exactly one workspace.
  */
+/**
+ * Areas whose changes always need a human's individual review, whatever the verification says
+ * (M4-11, ADR 0040). Matched against the paths a result actually added, changed, deleted or
+ * renamed (both ends), with the same globs as a contract's `allowedPaths`.
+ */
+const ReviewPolicySchema = z.object({
+  highRiskPaths: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1),
+        paths: z.array(z.string().trim().min(1)).min(1),
+      }),
+    )
+    .default([]),
+});
+export type ReviewPolicyConfig = z.infer<typeof ReviewPolicySchema>;
+
 const WorkspaceSchema = z.object({
   id: z.string().min(1),
   repositoryId: z.string().min(1),
   projectKeys: z.array(z.string().min(1)).min(1),
   workflow: WorkflowStatusSchema,
+  review: ReviewPolicySchema.optional(),
 });
 export type WorkspaceConfig = z.infer<typeof WorkspaceSchema>;
 

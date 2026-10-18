@@ -6,6 +6,7 @@ import {
   type ImplementationReport,
   ImplementationReportSchema,
   type LocalEvidence,
+  type ResultGit,
   type ScopeCheck,
 } from "../contracts/implementation.js";
 import { matchesAnyGlob } from "../issue/paths.js";
@@ -26,6 +27,7 @@ import {
   listWorkingTreeChanges,
   pushBranch,
   remoteUrl,
+  revParse,
   type WorktreeChange,
   writeStagedPatch,
 } from "../worker/worktree.js";
@@ -124,7 +126,21 @@ export async function executeEnvelope(
       };
     }
   }
-  const withBranch = branch ? { branch } : {};
+  // M4-11: the commit the branch starts from, so a review can name exactly what it looked at.
+  // Unreadable → left out (the result then says "unknown", never a guessed commit).
+  const baseSha = branch ? await revParse(cwd, "HEAD").catch(() => undefined) : undefined;
+  const git = (headSha?: string): { git: ResultGit } => ({
+    git: branch
+      ? {
+          repository: "git",
+          baseBranch: repository.baseBranch,
+          ...(baseSha ? { baseSha } : {}),
+          ...(headSha ? { headSha } : {}),
+          committed: headSha !== undefined,
+        }
+      : { repository: "none", committed: false },
+  });
+  const withBranch = { ...(branch ? { branch } : {}), ...git() };
 
   mkdirSync(deps.config.logPath, { recursive: true });
   const logFile = path.join(deps.config.logPath, `${envelope.jobId}-${envelope.attemptId}.jsonl`);
@@ -245,12 +261,16 @@ export async function executeEnvelope(
     await commitAll(cwd, `GGJIRA worker: ${issue.key} ${issue.summary}`.slice(0, 200));
     changes = await changedFilesSince(cwd, repository.baseBranch);
   }
+  // Read after commit, whether or not this run committed: an agent that committed on its own
+  // still left a head; a run with no commit leaves HEAD at the base and reports no head.
+  const head = branch ? await revParse(cwd, "HEAD").catch(() => undefined) : undefined;
+  const committed = { ...withBranch, ...git(head && head !== baseSha ? head : undefined) };
 
   const validation: string[] = [];
   if (repository.validateCommand) {
     if (!(await deps.authorize("validate"))) {
       return cancelled("Stopped before validation: Router withdrew execution authority.", {
-        ...withBranch,
+        ...committed,
         changes,
       });
     }
@@ -264,7 +284,7 @@ export async function executeEnvelope(
         changes,
         validation,
         ...reported,
-        ...withBranch,
+        ...committed,
       };
     }
   }
@@ -278,7 +298,7 @@ export async function executeEnvelope(
   if (branch && changes.length > 0 && repository.pushRemote) {
     if (!(await deps.authorize("push"))) {
       return cancelled("Stopped before push: Router withdrew execution authority.", {
-        ...withBranch,
+        ...committed,
         changes,
         validation,
       });
@@ -303,7 +323,7 @@ export async function executeEnvelope(
     validation,
     artifacts,
     ...reported,
-    ...withBranch,
+    ...committed,
     ...(pullRequest ? { pullRequest } : {}),
   };
 }

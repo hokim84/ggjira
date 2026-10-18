@@ -33,6 +33,12 @@ export const ImplementationReportSchema = z
       .array(z.object({ description: z.string().min(1), reason: z.string().min(1) }))
       .default([]),
     decision: DecisionRequestSchema.optional(),
+    /** Changes inside the contract that still deserve a human's individual review — a public API
+     *  or contract, data migration, permission/security policy — in the agent's own judgement
+     *  (M4-11, ADR 0040). Path rules cannot see meaning; this is kept as evidence next to them. */
+    risks: z
+      .array(z.object({ area: z.string().min(1), description: z.string().min(1) }))
+      .default([]),
     verification: z
       .array(
         z.object({
@@ -61,7 +67,7 @@ export type ImplementationReport = z.infer<typeof ImplementationReportSchema>;
 export const IMPLEMENTATION_REPORT_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["outcome", "summary", "scopeDeviations", "verification"],
+  required: ["outcome", "summary", "scopeDeviations", "risks", "verification"],
   properties: {
     outcome: { type: "string", enum: ["completed", "needs_decision"] },
     summary: { type: "string" },
@@ -78,6 +84,18 @@ export const IMPLEMENTATION_REPORT_JSON_SCHEMA = {
       },
     },
     decision: DECISION_REQUEST_JSON_SCHEMA,
+    risks: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["area", "description"],
+        properties: {
+          area: { type: "string" },
+          description: { type: "string" },
+        },
+      },
+    },
     verification: {
       type: "array",
       items: {
@@ -126,3 +144,21 @@ export const LocalEvidenceSchema = z.object({
   cleanup: z.string().min(1),
 });
 export type LocalEvidence = z.infer<typeof LocalEvidenceSchema>;
+
+const GitShaSchema = z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/);
+
+/**
+ * The Git state a result describes, so a human's review attaches to exact commits (M4-11,
+ * ADR 0040). `repository: "none"` is a workspace edited in place: there is no commit to point at.
+ * `headSha` is set only when the worker committed this run's changes; it is never guessed, and a
+ * result without `git` (an older worker) is read as "unknown", not as "no commit".
+ */
+export const ResultGitSchema = z.object({
+  repository: z.enum(["git", "none"]),
+  baseBranch: z.string().min(1).optional(),
+  /** The commit the job branch started from. */
+  baseSha: GitShaSchema.optional(),
+  headSha: GitShaSchema.optional(),
+  committed: z.boolean(),
+});
+export type ResultGit = z.infer<typeof ResultGitSchema>;

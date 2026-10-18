@@ -45,6 +45,12 @@ import { type AuditEntry, appendAudit, listAudit } from "./db/audit.js";
 import { oldestUnprocessedEventAt } from "./db/events.js";
 import { recordAdminHold } from "./db/holds.js";
 import { listOpenReadinessHolds, type ReadinessHoldRow } from "./db/readiness-holds.js";
+import {
+  listReviewRecords,
+  listReviewTargets,
+  type ReviewRecordRow,
+  type ReviewTargetRow,
+} from "./db/review-targets.js";
 import { createPairingCode } from "./db/pairing.js";
 import {
   countJobsByState,
@@ -745,6 +751,15 @@ export class AdminService {
       }
       throw error;
     }
+  }
+
+  // --- review targets (M4-11, ADR 0040) ------------------------------------------------------
+
+  /** Every result pinned for review on the issue (newest first) and the human acts Router saw
+   *  against them. Read-only: nothing here approves, accepts or completes anything. */
+  issueReviews(issueKey: string): { targets: ReviewTargetRow[]; records: ReviewRecordRow[] } {
+    const key = issueKey.toUpperCase();
+    return { targets: listReviewTargets(this.db, key), records: listReviewRecords(this.db, key) };
   }
 
   // --- AI participation per issue (M4-03, ADR 0039) ----------------------------------------

@@ -156,6 +156,16 @@ describe("Router Jira reporting journal", () => {
     expect(comments[0]).toContain("Implementation completed.");
     expect(comments[0]).toContain("- src/a.ts");
     expect(comments[0]).toContain(`attempt: ${envelope.attemptId}`);
+    // M4-11/M4-09: what to do comes first; a result whose commit is unknown is reviewed on its own.
+    const [first, second, third] = (comments[0] as string)
+      .split("\n")
+      .filter((line) => !line.startsWith("[GGJIRA:"));
+    expect([first, second, third]).toEqual([
+      "Implementation completed.",
+      "Needs your individual review before it is accepted:",
+      "- the worker did not report which commit this is (older worker)",
+    ]);
+    expect(comments[0]).toContain(`approval: ${getJob(router.db, envelope.jobId)?.approvalId}`);
 
     // Nothing left to do: a second pass writes nothing.
     const again = await process();

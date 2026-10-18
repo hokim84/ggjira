@@ -16,6 +16,7 @@ import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import type { NewReportStep } from "./db/report-steps.js";
 import type { JobRow } from "./db/jobs.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
+import type { ReviewAssessment } from "./review-gate.js";
 import { approvalStatusFor, decisionTransitionTarget, optInLabelOf } from "./workflow-mode.js";
 
 /**
@@ -181,14 +182,36 @@ export function buildPullRequestClosedSteps(input: {
   number: number;
   merged: boolean;
   by: string | null;
+  /** Why the merge is not taken as acceptance of the reviewed result (M4-11): no move to done. */
+  doneWithheld?: string;
+  /** The merge moves the issue, but its head could not be compared with the reviewed commit. */
+  headNotCompared?: string;
+  /** The reviewed result was high risk; only GitHub's branch protection enforces its review. */
+  highRisk?: boolean;
 }): NewReportStep[] {
   const { job, workspace } = input;
-  const done = workspace.workflow.doneStatus;
+  const done = input.doneWithheld ? undefined : workspace.workflow.doneStatus;
   const by = input.by ? ` by ${input.by}` : "";
   const body = input.merged
     ? [
         `Pull request #${input.number} was merged${by}.`,
         input.url,
+        ...(input.doneWithheld
+          ? [
+              "",
+              `GGJIRA did not move the issue: ${input.doneWithheld}.`,
+              "Check what was merged and move the issue yourself.",
+            ]
+          : []),
+        ...(input.headNotCompared
+          ? ["", `Head commit not compared: ${input.headNotCompared}.`]
+          : []),
+        ...(input.highRisk
+          ? [
+              "",
+              "This result was flagged high risk. GGJIRA does not block merges; only the repository's branch protection enforces a required review.",
+            ]
+          : []),
         ...(done ? ["", `Moving the issue to "${done}".`] : []),
       ]
     : [
@@ -248,6 +271,8 @@ export interface ResultJournalInput {
   config: RouterConfig;
   /** The approval snapshot stored for the issue (parent issue + planning context). */
   snapshot: ApprovalSnapshot | undefined;
+  /** What a human has to look at in this result (M4-11); absent for cancelled runs. */
+  review?: ReviewAssessment;
 }
 
 /** Moves out of in-progress (or the approving status, if the start move was skipped) to `to`. */
@@ -301,13 +326,64 @@ function failureSteps(
   ];
 }
 
-function successComment(input: ResultJournalInput): string {
-  const { result } = input;
-  const lines = ["Implementation completed.", "", "Summary:", result.summary || "(no summary)"];
-  if (result.changes?.length) lines.push("", "Changes:", ...result.changes.map((c) => `- ${c}`));
-  if (result.validation?.length) {
-    lines.push("", "Validation:", ...result.validation.map((v) => `- ${v}`));
+const short = (sha: string | undefined): string => (sha ? sha.slice(0, 12) : "?");
+
+/** The review lines of a success comment (M4-11): which queue, why, and on what evidence. */
+function reviewLines(input: ResultJournalInput): string[] {
+  const { review, result, workspace } = input;
+  if (!review) return [];
+  const lines: string[] = [];
+  if (review.reviewClass === "immediate") {
+    lines.push(
+      "Needs your individual review before it is accepted:",
+      ...review.reasons.map((reason) => `- ${reason.detail}`),
+    );
+  } else {
+    lines.push("Ready for the ordinary review queue.");
   }
+  const done = workspace.workflow.doneStatus;
+  lines.push(
+    result.pullRequest
+      ? `Next: review and merge ${result.pullRequest.url}${done ? `; Router then moves the issue to "${done}"` : ""}.`
+      : `Next: review the result below${done ? ` and move the issue to "${done}" yourself` : ""}; there is no pull request.`,
+  );
+  const { commit, risk } = review;
+  if (commit.state === "committed") {
+    lines.push("", `Reviewed commit: ${short(commit.headSha)} (base ${short(commit.baseSha)})`);
+  } else if (commit.state === "no_commit") {
+    lines.push(
+      "",
+      `No commit: ${commit.location ?? "unknown location"}. Commit-based freshness checks do not apply.`,
+    );
+  } else if (commit.state === "unknown") {
+    lines.push("", "Commit: not reported by the worker.");
+  }
+  if (risk.status === "high") {
+    lines.push(
+      `High-risk check: ${risk.basis}${risk.policyVersion ? ` (rules ${risk.policyVersion})` : ""}`,
+    );
+    for (const match of risk.matches) {
+      lines.push(
+        `- ${match.rule}: ${match.from ? `${match.from} -> ` : ""}${match.path} (${match.change})`,
+      );
+    }
+    for (const entry of risk.agentRisks)
+      lines.push(`- agent: ${entry.area} — ${entry.description}`);
+  } else if (risk.status === "not_matched") {
+    lines.push(`High-risk check: no rule matched (rules ${risk.policyVersion}).`);
+  } else if (risk.status === "unknown") {
+    lines.push(`High-risk check: unknown — ${risk.basis}.`);
+  }
+  return lines;
+}
+
+/**
+ * Change → impact → what the human does → evidence (M4-09): the first lines say what happened and
+ * what to do; the evidence follows, referenced rather than copied where it is long.
+ */
+function successComment(input: ResultJournalInput): string {
+  const { result, job } = input;
+  const lines = ["Implementation completed.", ...reviewLines(input)];
   const verification = result.implementation?.verification ?? [];
   if (verification.length > 0) {
     lines.push(
@@ -316,13 +392,23 @@ function successComment(input: ResultJournalInput): string {
       ...verification.map((entry) => `- ${entry.status}: ${entry.acceptance} — ${entry.evidence}`),
     );
   }
+  lines.push("", "Summary:", result.summary || "(no summary)");
+  if (result.changes?.length) lines.push("", "Changes:", ...result.changes.map((c) => `- ${c}`));
+  if (result.validation?.length) {
+    lines.push("", "Validation:", ...result.validation.map((v) => `- ${v}`));
+  }
   if (result.scopeCheck && !result.scopeCheck.checked) {
     lines.push("", `Path scope: not checked (${result.scopeCheck.reason ?? "no reason given"}).`);
   }
   if (result.artifacts?.length) {
     lines.push("", "Artifacts:", ...result.artifacts.map((a) => `- ${a}`));
   }
-  lines.push("", signature(input.job, input.attemptId));
+  lines.push(
+    "",
+    signature(job, input.attemptId),
+    `approval: ${job.approvalId}`,
+    ...(job.inputHash ? [`input: ${job.inputHash.slice(0, 19)}`] : []),
+  );
   return lines.join("\n");
 }
 

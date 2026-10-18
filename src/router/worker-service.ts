@@ -46,6 +46,8 @@ import { saveProviderUsage } from "./db/provider-usage.js";
 import { recordPullRequest } from "./db/pull-requests.js";
 import { insertReportBatch } from "./db/report-steps.js";
 import { recordResult, ResultConflictError } from "./db/results.js";
+import { recordReviewTarget } from "./db/review-targets.js";
+import { assessResult } from "./review-gate.js";
 import {
   findWorkerByTokenHash,
   getWorker,
@@ -585,6 +587,26 @@ export class WorkerService {
         now,
       });
     }
+    // M4-11: pin what a human reviews to this exact result, in the same transaction.
+    const review =
+      finalState === "cancelled"
+        ? undefined
+        : assessResult({ kind: job.kind, finalState, result, workspace });
+    if (review) {
+      recordReviewTarget(this.db, {
+        resultId: result.resultId,
+        issueKey: job.issueKey,
+        jobId: job.id,
+        attemptId: attempt.id,
+        kind: job.kind,
+        approvalId: job.approvalId,
+        inputHash: job.inputHash,
+        resultStatus: result.status,
+        finalState,
+        assessment: review,
+        now,
+      });
+    }
     insertReportBatch(this.db, {
       batchId: result.resultId,
       resultId: result.resultId,
@@ -599,6 +621,7 @@ export class WorkerService {
         workspace,
         config: this.config,
         snapshot,
+        ...(review ? { review } : {}),
       }),
       now,
     });

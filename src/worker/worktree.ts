@@ -205,6 +205,13 @@ export async function changedFilesSince(
   });
 }
 
+/** The full commit id `ref` names in `cwd` (`git rev-parse --verify`). */
+export async function revParse(cwd: string, ref: string): Promise<string> {
+  return (await gitOutput(["rev-parse", "--verify", `${ref}^{commit}`], cwd))
+    .toString("utf-8")
+    .trim();
+}
+
 /** One path a job changed. `from` is the old path of a rename. */
 export interface WorktreeChange {
   path: string;

@@ -4,6 +4,7 @@ import {
   ExecutionContractSchema,
   ImplementationReportSchema,
   LocalEvidenceSchema,
+  ResultGitSchema,
   ScopeCheckSchema,
 } from "./implementation.js";
 import { JOB_KINDS, PROTOCOL_VERSION } from "./protocol.js";
@@ -119,5 +120,7 @@ export const JobResultSchema = z.object({
   scopeCheck: ScopeCheckSchema.optional(),
   /** Where uncommitted, unpushed changes were left (a deviation or failed verification). */
   localEvidence: LocalEvidenceSchema.optional(),
+  /** Base and head commits of an implementation result (M4-11). Absent from older workers. */
+  git: ResultGitSchema.optional(),
 });
 export type JobResult = z.infer<typeof JobResultSchema>;
