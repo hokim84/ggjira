@@ -17,6 +17,14 @@ import {
   writeRouterConfig,
 } from "./config-store.js";
 import { listRecentPullRequests, type PullRequestRow } from "./db/pull-requests.js";
+import {
+  applyLabelMigration,
+  LabelMigrationError,
+  type LabelMigrationPlan,
+  type LabelMigrationResult,
+  type LabelMigrationTarget,
+  planLabelMigration,
+} from "./label-migration.js";
 import type { PullRequestPollReport } from "./github.js";
 import { SecretValueSchema } from "./secrets.js";
 import {
@@ -33,6 +41,7 @@ import { createPairingCode } from "./db/pairing.js";
 import {
   countJobsByState,
   getJob,
+  getOpenJobs,
   type JobPage,
   type JobRow,
   listJobs,
@@ -211,6 +220,19 @@ export interface ConfigApplyResult extends AdminConfigView {
 }
 
 const MAX_PAGE_SIZE = 200;
+
+/** The workflow fields that decide which issues are approved work (see
+ *  `assertApprovalRulesUnchangedUnderLiveJobs`). */
+function approvalRules(workspace: WorkspaceConfig) {
+  const { mode, optInLabel, requestStatus, planningStatus, inProgressStatus } = workspace.workflow;
+  return {
+    mode: mode ?? "legacy",
+    optInLabel: optInLabel ?? null,
+    requestStatus,
+    planningStatus: planningStatus ?? null,
+    inProgressStatus,
+  };
+}
 
 function elapsedMs(since: string | null, now: string): number | null {
   return since ? Math.max(0, Date.parse(now) - Date.parse(since)) : null;
@@ -525,8 +547,37 @@ export class AdminService {
     if (!validation.ok) {
       throw new AdminError(400, "invalid_config", "config is invalid", validation.issues);
     }
+    this.assertApprovalRulesUnchangedUnderLiveJobs(validation.config);
     writeRouterConfig(configPath, raw);
     return this.apply(validation.config, actor, "config.updated", configPath);
+  }
+
+  /**
+   * ADR 0037: a workspace's approval rules (mode, opt-in label, the statuses that request and run
+   * work) cannot change under a job that may still run — the job was approved under the old rules
+   * and would be revoked, or kept, by the new ones. Drain or cancel those jobs first. Failed and
+   * timed-out jobs run nothing; the next pass closes them under the new rules.
+   */
+  private assertApprovalRulesUnchangedUnderLiveJobs(next: RouterConfig): void {
+    const live = getOpenJobs(this.db).filter(
+      (job) => job.state !== "failed" && job.state !== "timed_out",
+    );
+    for (const workspace of next.workspaces) {
+      const current = this.config.workspaces.find((entry) => entry.id === workspace.id);
+      if (
+        !current ||
+        canonicalJson(approvalRules(current)) === canonicalJson(approvalRules(workspace))
+      ) {
+        continue;
+      }
+      const blocking = live.filter((job) => job.workspaceId === workspace.id);
+      if (blocking.length === 0) continue;
+      throw new AdminError(
+        409,
+        "workspace_busy",
+        `workspace "${workspace.id}" changes how work is approved, but ${blocking.length} job(s) may still run under the current rules (${blocking.map((job) => `${job.issueKey} ${job.state}`).join(", ")}); let them finish or cancel them first`,
+      );
+    }
   }
 
   /**
@@ -587,6 +638,7 @@ export class AdminService {
     if (!validation.ok) {
       throw new AdminError(409, "invalid_config", "config file is invalid", validation.issues);
     }
+    this.assertApprovalRulesUnchangedUnderLiveJobs(validation.config);
     return this.apply(validation.config, actor, "config.applied", configPath);
   }
 
@@ -610,6 +662,68 @@ export class AdminService {
       },
     });
     return { ...this.readConfig(), appliedWithout };
+  }
+
+  // --- legacy → label migration (ADR 0037) ------------------------------------------------
+
+  /** Read-only proposal; a human reviews it and marks entries `approved`. */
+  async planLabelMigration(
+    workspaceId: string,
+    target: LabelMigrationTarget,
+  ): Promise<LabelMigrationPlan> {
+    const workspace = this.requireWorkspace(workspaceId);
+    try {
+      return await planLabelMigration({
+        db: this.db,
+        jira: this.deps.jira,
+        workspace,
+        target,
+        now: this.now(),
+      });
+    } catch (error) {
+      if (error instanceof LabelMigrationError) {
+        throw new AdminError(409, "not_migratable", error.message);
+      }
+      throw new AdminError(502, "jira_error", (error as Error).message);
+    }
+  }
+
+  /** Applies a reviewed plan's approved entries; every issue's outcome goes to the audit log. */
+  async applyLabelMigration(
+    plan: LabelMigrationPlan,
+    actor: string,
+  ): Promise<{ results: LabelMigrationResult[] }> {
+    const workspace = this.requireWorkspace(plan.workspaceId);
+    try {
+      const results = await applyLabelMigration({
+        db: this.db,
+        jira: this.deps.jira,
+        workspace,
+        plan,
+        onResult: (result) => {
+          if (result.outcome === "skipped" && result.detail === "not approved") return;
+          appendAudit(this.db, {
+            at: this.now(),
+            actor,
+            action: `migration.label.${result.outcome}`,
+            subject: result.issueKey,
+            detail: { workspaceId: workspace.id, action: result.action, detail: result.detail },
+          });
+        },
+      });
+      return { results };
+    } catch (error) {
+      if (error instanceof LabelMigrationError) {
+        throw new AdminError(409, "not_migratable", error.message);
+      }
+      throw error;
+    }
+  }
+
+  private requireWorkspace(workspaceId: string): WorkspaceConfig {
+    const workspace = this.config.workspaces.find((entry) => entry.id === workspaceId);
+    if (!workspace) throw new AdminError(404, "unknown_workspace", `no workspace "${workspaceId}"`);
+    return workspace;
   }
 
   /** Statuses and subtask issue types of a Jira project, for the web UI pickers (read-only). */

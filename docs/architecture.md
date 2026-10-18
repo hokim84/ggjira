@@ -41,7 +41,7 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 
 | 루프 | 주기 | 호출 | 비고 |
 |---|---|---|---|
-| sync | 1초마다 점검. 부팅 시, `backgroundIntervalMs`(60초)마다, 미처리 웹훅이 있을 때 실행 | `reconcileCandidates` | 웹훅은 변경 알림일 뿐이고, 판단은 Jira 재조회로 한다. 실패 후 10초 backoff |
+| sync | 1초마다 점검. 부팅 시, `backgroundIntervalMs`(60초)마다, 미처리 웹훅이 있을 때 실행 | `reconcileCandidates` | 웹훅은 변경 알림일 뿐이고, 판단은 Jira 재조회로 한다. 웹훅은 이벤트 종류·이슈·프로젝트·바뀐 필드만 저장하고, 댓글 이벤트와 workspace 밖 프로젝트 이벤트는 깨우지 않는다(ADR 0038). 실패 후 10초 backoff |
 | verify | `activeJobPollIntervalMs`(5초) | `verifyActiveJobs` | leased/running job의 승인을 Jira에서 재확인. sync와 같은 lane |
 | reports | 2초 | `processReportJournal` | `report_steps` 저널을 진행 |
 | leases | 5초 | `expireLeases` | 워커 API 호출 시에도 정리 |
@@ -51,9 +51,18 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 
 ## 승인과 배정
 
-1. 후보: workspace별 JQL(`project in (...) AND status in (request, planning)`)이다. v4 메타 이슈
+workspace마다 `workflow.mode`가 있다(ADR 0037, `src/router/workflow-mode.ts`). 기본값 `legacy`는 AI
+전용 상태(요청·계획 요청·결정 대기)로 일한다. `label`은 일반 할 일/진행/검토/완료 흐름에서
+`workflow.optInLabel`이 붙은 이슈만 맡는다. 계획 요청 상태와 결정 대기 상태는 없다.
+
+1. 후보: workspace별 JQL이다. legacy는 `project in (...) AND status in (request, planning)`이고,
+   label은 `status = 할 일 AND labels = <optInLabel>`이다(코드에서도 라벨을 다시 확인). v4 메타 이슈
    라벨은 제외한다.
-2. 승인 id: 요청 상태에 진입한 changelog 항목(`src/router/approval.ts`)이다. 입력 hash(v2,
+2. 승인 id: 요청 상태에 진입한 changelog 항목(`src/router/approval.ts`)이다. label 모드에서는 할 일
+   진입과 opt-in 라벨 추가 가운데 마지막 항목이다. 라벨을 떼었다 다시 붙이면 새 승인이다.
+   job 종류도 label 모드에서는 상태가 아니라 요청이 정한다. Acceptance Criteria·Verification이 없는
+   상위 이슈와 이미 하위 작업으로 나뉜 상위 이슈는 계획 job이다. plan-task와 Jira 하위 이슈는 항상 구현
+   job이다(계약이 없으면 준비 보류). 입력 hash(v2,
    ADR 0035)는 job 종류·제목·설명 전체·파싱한 계약·plan-task 위치를 정규화해 만든다. 댓글·라벨·
    상태·Assignee는 넣지 않는다. 업그레이드 전에 만든 job은 닫힐 때까지 v1 해시로 비교한다. 같은 승인
    id에서 입력이 바뀌면 열린 job을 취소하고 그 승인을 보류한다(`admin_holds`,
@@ -102,13 +111,15 @@ start 허가 ──▶ [start:<attempt>]   승인 상태 → inProgressStatus
 result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제거 → reviewStatus
                                     실패: 댓글 + ggjira-failed (inProgressStatus 유지)
                                     결정 요청: 댓글 → needsDecisionStatus ?? reviewStatus
+                                      (label 모드: 전이 없음, 진행 상태 유지, ADR 0037)
                                       (계획: plan.decision / 구현: 이탈·결정·증거 위치, ADR 0036)
                                     계획: 부모 계획 블록 → 하위 이슈 생성(마커) → plan-task
                                           → ggjira.plan → superseded → 댓글 → reviewStatus
 중단 확인 ───▶ [recovered:<attempt>] "적용된 것 없음" 댓글
 ```
 
-각 단계는 쓰기 전에 Jira를 다시 읽는다. 결과가 불명확한 쓰기는 `uncertain`으로 두고 재조회로
+상태 전이 단계는 승인 상태·approvalId와 함께 label 모드의 opt-in 라벨을 기록해 두고, 실행 직전 같은
+규칙으로 승인을 다시 계산한다. 각 단계는 쓰기 전에 Jira를 다시 읽는다. 결과가 불명확한 쓰기는 `uncertain`으로 두고 재조회로
 확정한다. 확정할 수 없는 하위 이슈 생성은 `recovery_required`로 둔다. 명확한 거부는 `failed`다.
 `failed`와 `recovery_required`는 관리자의 `reports retry`로만 풀린다. 이 재시도는 워커를 다시
 실행하지 않는다.
@@ -127,6 +138,7 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 | `router jobs list/show/cancel/retry/resolve` | `/jobs…` | list는 keyset 페이지네이션. retry는 Jira 승인을 재확인한 뒤 새 attempt를 만든다. resolve는 중단 확인 |
 | `router reports list/retry` | `/reports…` | 막힌 보고 배치 재대기 |
 | (API만) | `GET /holds/readiness` | 계약이 불완전해 시작하지 않은 구현 요청과 안내 댓글 상태(ADR 0034) |
+| `router migrate-labels plan/apply` | `POST /migrations/label/plan`, `…/apply` | legacy workspace의 이슈를 label 흐름으로 옮김. plan은 읽기 전용 제안이고, apply는 사람이 `approved`로 표시한 항목만 이슈별로 처리·재조회·감사 기록한다(ADR 0037) |
 | `router reconcile` | `POST /reconcile` | sync lane에서 즉시 1회 실행 |
 | `router backup` | `POST /backup` | SQLite online backup을 `<db dir>/backups/`에 저장 |
 | (웹 UI) | `GET/PUT /config`, `POST /config/apply`, `POST /check` | 설정 파일 조회, 검증 후 저장(`.bak`)과 즉시 적용, 손으로 고친 파일 적용, 저장된 설정으로 `router check` |

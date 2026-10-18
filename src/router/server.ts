@@ -6,6 +6,8 @@ import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
   AdminJiraProjectRequestSchema,
+  AdminLabelMigrationApplyRequestSchema,
+  AdminLabelMigrationPlanRequestSchema,
   AdminWorkflowCheckRequestSchema,
   AdminSecretRequestSchema,
   type ApiErrorResponse,
@@ -390,6 +392,17 @@ function registerAdminRoutes(
       scope.get("/holds/readiness", async () => ({ holds: admin.listReadinessHolds() }));
       scope.post<IdParams>("/reports/:id/retry", async (request) =>
         admin.retryReportBatch(request.params.id, actorOf(request)),
+      );
+
+      scope.post("/migrations/label/plan", async (request) => {
+        const body = parseBody(AdminLabelMigrationPlanRequestSchema, request.body);
+        return admin.planLabelMigration(body.workspaceId, body.target);
+      });
+      scope.post("/migrations/label/apply", async (request) =>
+        admin.applyLabelMigration(
+          parseBody(AdminLabelMigrationApplyRequestSchema, request.body),
+          actorOf(request),
+        ),
       );
 
       scope.get("/config", async () => admin.readConfig());

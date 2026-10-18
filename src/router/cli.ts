@@ -17,6 +17,7 @@ import type { AdminBlockedBatch, AdminWorkerView, RouterStatus } from "./admin-s
 import { AdminClient } from "./admin-client.js";
 import { type CheckItem, runRouterCheck } from "./check.js";
 import { loadRouterConfig, type RouterConfig } from "./config.js";
+import type { LabelMigrationPlan, LabelMigrationResult } from "./label-migration.js";
 import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
 import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
@@ -50,7 +51,10 @@ export const ROUTER_USAGE = `ggjira router <command>
        cancel <jobId> | retry <jobId> | resolve <jobId>
   reports list | retry <batchId>
   reconcile
-  backup`;
+  backup
+  migrate-labels plan --workspace <id> --label <l> --to-do <status> --review <status> [--out <f>]
+  migrate-labels apply <plan file>       move a legacy workspace onto the label workflow
+                                         (ADR 0037); apply runs only "approved": true entries`;
 
 const DEFAULT_CONFIG = "router.config.json";
 
@@ -448,6 +452,65 @@ async function reports(parsed: ParsedArgs, io: CliIo): Promise<number> {
   throw new UsageError(`unknown reports subcommand "${sub}"`);
 }
 
+function requireOption(parsed: ParsedArgs, name: string): string {
+  const value = stringOption(parsed, name);
+  if (!value) throw new UsageError(`missing --${name}`);
+  return value;
+}
+
+/** `migrate-labels plan|apply` (ADR 0037, runbook §27): plan writes a reviewable file, apply runs
+ *  only the entries a human marked `"approved": true`. */
+async function migrateLabels(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const sub = requirePositional(parsed, 1, "migrate-labels subcommand (plan|apply)");
+  if (sub === "plan") {
+    const plan = await client.post<LabelMigrationPlan>("/migrations/label/plan", {
+      workspaceId: requireOption(parsed, "workspace"),
+      target: {
+        optInLabel: requireOption(parsed, "label"),
+        toDoStatus: requireOption(parsed, "to-do"),
+        reviewStatus: requireOption(parsed, "review"),
+      },
+    });
+    const out = stringOption(parsed, "out");
+    if (out) writeFileSync(out, `${JSON.stringify(plan, null, 2)}\n`);
+    else printJson(io, plan);
+    if (!parsed.values.json) {
+      for (const line of formatTable(
+        ["ISSUE", "STATUS", "ACTION", "REASON"],
+        plan.entries.map((e) => [e.issueKey, e.status, e.action, e.reason]),
+      )) {
+        io.out(line);
+      }
+      if (out) {
+        io.out(
+          `\nWrote ${out}. Nothing was changed in Jira. Set "approved": true on the entries to apply, then run: ggjira router migrate-labels apply ${out}`,
+        );
+      }
+    }
+    return 0;
+  }
+  if (sub === "apply") {
+    const file = requirePositional(parsed, 2, "plan file");
+    const plan = JSON.parse(readFileSync(file, "utf-8")) as LabelMigrationPlan;
+    const { results } = await client.post<{ results: LabelMigrationResult[] }>(
+      "/migrations/label/apply",
+      plan,
+    );
+    if (parsed.values.json) printJson(io, results);
+    else {
+      for (const line of formatTable(
+        ["ISSUE", "ACTION", "OUTCOME", "DETAIL"],
+        results.map((r) => [r.issueKey, r.action, r.outcome, r.detail]),
+      )) {
+        io.out(line);
+      }
+    }
+    return results.some((result) => result.outcome === "failed") ? 1 : 0;
+  }
+  throw new UsageError(`unknown migrate-labels subcommand "${sub}"`);
+}
+
 export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
   const [command, ...rest] = args;
   switch (command) {
@@ -489,6 +552,18 @@ export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
       );
     case "reports":
       return reports(parseCommandArgs(args, COMMON_OPTIONS), io);
+    case "migrate-labels":
+      return migrateLabels(
+        parseCommandArgs(args, {
+          ...COMMON_OPTIONS,
+          workspace: { type: "string" },
+          label: { type: "string" },
+          "to-do": { type: "string" },
+          review: { type: "string" },
+          out: { type: "string" },
+        }),
+        io,
+      );
     case "reconcile": {
       const parsed = parseCommandArgs(args, COMMON_OPTIONS);
       printJson(io, await adminClient(parsed, io).post("/reconcile"));
