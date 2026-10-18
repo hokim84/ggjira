@@ -1,0 +1,103 @@
+# M4 검증 기록과 완료 보고 — label opt-in과 간소화된 작업 흐름
+
+작성일: 2026-10-19 · 대상: `docs/M4_WORK_BACKLOG.md`의 M4-00 ~ M4-12 · 브랜치 `feat/m4-label-opt-in`
+
+## 1. 기준선과 범위
+
+- 기준선: 태그 `m3-baseline-2026-10-18`(원격에 있음) → `main` = `origin/main` = `2cca7fc`.
+- M4 커밋(기준선 이후): `7c653e8`(백로그) → `a983bd3`(M4-01·02·05) → `27f1ee5`(M4-06) → `de17fa1`·`851a8f0`·
+  `9155576`(M4-07) → `ae94697`(M4-03·04) → `5823cad`(M4-08) → `3355ed1`(M4-11) → `b50f97a`(M4-09) →
+  `b33c2a4`(M4-12) → 이 문서의 커밋(M4-07 최종 검증, M4-10).
+- 브랜치는 아직 push하지 않았다. DB·설정 백업은 Git 태그와 별개로 운영자가 확보한다(runbook §17, §31).
+
+## 2. 티켓별 결과
+
+| 티켓 | 상태 | 근거 | 사용자에게 달라진 점 |
+|---|---|---|---|
+| M4-00 기준선 | 완료(이전 세션) | 원격 태그 `m3-baseline-2026-10-18` | 없음 |
+| M4-01 의미 확정 | 완료 | ADR 0037 결정표 | label/legacy 모드 |
+| M4-02 라벨 후보·철회 | 완료 | `router-label-mode`, `router-issue-opt-in` | 라벨 제거 = 취소·중단 요청, 재부착 = 새 승인 |
+| M4-03 API 라벨 수정 | 완료 | ADR 0039, `router-issue-opt-in`(9) | `router issue show/opt-in`, 감사 기록 |
+| M4-04 UI 토글 | 완료 | ADR 0039, 브라우저 수동 확인(§4) | 웹 UI "이슈" 화면 |
+| M4-05 네 상태 전이 | 완료 | ADR 0037, `router-label-mode` | 결정·실패는 진행 상태 유지 |
+| M4-06 웹훅 | 완료 | ADR 0038, `router-webhook`, `router-server` | 댓글·외부 프로젝트 이벤트는 깨우지 않음 |
+| M4-07 전환·마이그레이션 | 완료 | ADR 0037 §8, `router-label-migration`, `router-db`(M4 migrations) | `migrate-labels plan/apply`, migration 11~13 |
+| M4-08 범위 이탈 회귀 | 완료 | `router-label-mode`(T06·T07 3건), PM 프롬프트 크기 규칙 | label 모드의 재승인 안내 |
+| M4-09 간결한 보고·주의 항목 | 완료 | ADR 0041, `router-attention`(4) | 확인 필요 항목, 반복 실패 댓글 억제 |
+| M4-10 리허설·회귀·운영 | 이 문서 | §3, runbook §31 | 업그레이드·되돌리기 절차 |
+| M4-11 책임 게이트 | 완료 | ADR 0040, `router-review-gate`(8), `router-github`(+4) | 검토 대상 고정, 머지 → 완료 조건 강화 |
+| M4-12 실행·사용량 증거 | 완료 | ADR 0042, `router-execution-records`(5), `worker-call-usage`(6) | `router usage` |
+
+기존 결정과 달라진 것: ADR 0027(머지 → 완료)은 ADR 0040 7항으로 보완됐다. head가 검토 커밋과 다르거나 같은
+이슈의 새 결과가 있으면 완료로 옮기지 않는다. ADR 0036의 "`not_verified`는 성공으로 통과"는 그대로이되, 그런 결과는
+개별 검토 대상(`immediate`)으로 분류된다.
+
+## 3. 시나리오 검증표 (T01 ~ T23)
+
+자동 = Fake Jira·Fake/스크립트 provider·loopback HTTP만 쓰는 vitest. 실제 Jira·GitHub·CLI 연동은 하지 않았다.
+
+| ID | 자동 테스트 | 수동/미실행 |
+|---|---|---|
+| T01 | `router-label-mode` "picks up only To Do…", `router-issue-opt-in` "adds only the opt-in label…" | 실제 Jira JQL `labels =` 대소문자 동작 미실행 |
+| T02 | `router-label-mode` "plans a request… holds a subtask", `router-attention` "counts every pass…" | — |
+| T03 | `router-label-mode` "moves To Do → In Progress → Review…", "moves Review → Done when the reviewed pull request is merged" | 실제 GitHub 머지 미실행 |
+| T04 | `router-label-mode` "implements a planned request…", `router-reporting` planning results | — |
+| T05 | `router-label-mode` 라벨 제거 2건, `router-issue-opt-in` "removes the label…" | — |
+| T06 | `router-label-mode` "cancels a run whose request was edited…", "holds a queued request edited…" | — |
+| T07 | `router-label-mode` "stops on a path deviation…", `worker-scope`, `router-reporting` 검증 실패 증거 | — |
+| T08 | `router-webhook`, `router-server`(웹훅), `router-label-mode` "creates nothing new when Router's own writes…" | 실제 Jira 웹훅 전송 미실행 |
+| T09 | `router-issue-opt-in` 404·403·429·불명확한 쓰기, `router-reporting` uncertain 댓글, `jira-retry` | — |
+| T10 | `router-issue-opt-in` 다른 라벨 보존(부분 수정 `update.labels`) | 실제 Jira에서 동시 수정 미실행 |
+| T11 | `router-reporting` "never overrides a status a human set…", `router-github` "leaves an issue a human already moved…" | — |
+| T12 | `router-reporting` "posts the decision once across a resend and a Router restart", `router-execution-records` 재전송·재시작, `router-daemon` | — |
+| T13 | `router-label-migration` 8건 | 실제 프로젝트 이관 리허설 미실행 |
+| T14 | `router-db` "upgrades a pre-M4 (version 10) database…", `contracts-implementation` "results from a protocol-2 worker before M4" | 운영 DB 사본으로 리허설 미실행 |
+| T15 | `router-label-migration` "skips an issue that changed… and carries on after a failure" | 롤백 리허설 미실행(runbook §31 절차만) |
+| T16 | `router-github` head 불일치·대체된 실행, `router-review-gate` | — |
+| T17 | 전체 스위트(아래 §5) | 실제 setup·worker start·PR 흐름 미실행 |
+| T18 | `router-review-gate` 추가·삭제·rename 양끝, 규칙 버전 | GitHub branch protection 강제 여부 미실행 |
+| T19 | `router-review-gate` "asks for individual judgement of a result with no commit", `worker-scope` 비 git | — |
+| T20 | `router-attention` "counts a repeated failure once, resolves it on success, links a recurrence" | — |
+| T21 | `router-attention` "never starts anything when an item is resolved…" | — |
+| T22 | `router-execution-records` 5건, `worker-call-usage` 6건 | 실제 Claude Code·Codex 스트림의 사용량 필드 미확인 |
+| T23 | `router-no-llm` (보고·검토·주의 항목·사용량 모듈이 Jev·provider에 닿지 않음) | — |
+
+자연어 작업 크기와 의미상 이탈의 판정 품질(M4-08)은 프롬프트 문구와 경로 검사만으로 입증되지 않는다. 대표 사례를
+사람이 함께 검토해야 한다(미실행).
+
+## 4. 수동 확인
+
+- 웹 UI(Fake Jira를 붙인 로컬 Router, scratch 스크립트): 이슈 화면 조회 → AI 참여 켜기 → 재조회 확인 메시지 →
+  다음 조회에서 구현 job 큐, 보류 이유(요청 상태 아님·담당자 없음)와 다음 행동, 범위 밖 프로젝트 키 오류,
+  대시보드 "확인 필요" 카드·목록, 이슈 화면 검토 대상(개별 검토 필요·고위험 규칙 일치·미검증)과 주의 항목,
+  실패한 job 표시. 콘솔 오류 없음. 확인 중 두 가지를 고쳤다: 검토 상태 이슈의 "요청 상태로 옮기라" 안내 문구,
+  실패한 job이 정상처럼 보이던 배지.
+- 실제 Jira·GitHub·Claude Code/Codex CLI 연동(`router check`, `worker check`, 실제 PR 머지)은 하지 않았다.
+
+## 5. 자동 검사 결과와 남은 제약
+
+- `npm run typecheck`, `npm run lint`, `npm run format:check`: 통과.
+- `npx vitest run`(이 Windows 머신, Node 25.8): 607개 중 592 통과, 15 실패. 실패는 모두
+  `worker-claude-code-cli`·`worker-codex-cli`·`worker-usage`의 `spawn EFTYPE`이다(셸 스크립트 가짜 CLI를 Windows에서
+  spawn할 수 없음). M4 이전 커밋에서도 똑같이 실패한다. **M4-12가 이 두 provider의 스트림 파싱을 바꿨으므로
+  Linux(`docker compose -f docker-compose.test.yml run --rm --build check` 또는 CI)에서 한 번 돌려야 한다.**
+  이 세션에서는 Docker 데몬이 꺼져 있어 실행하지 못했다. 파싱 자체는 순수 함수(`src/worker/call-usage.ts`)로
+  분리해 Windows에서 테스트했다.
+- 전체 실행 중 한 번 17개 실패가 보고됐으나 이어서 세 번 돌렸을 때 재현되지 않았다(15개만 실패).
+- DB: migration 11~13 추가(append-only). 이전 바이너리는 새 DB로 동작한다(schema 버전 검사 없음, 새 테이블 무시).
+- Worker 호환: 프로토콜 2 유지. 새 필드는 모두 선택이고 양방향으로 무시·기본값 처리된다.
+- 라벨 제거 후 최대 5초 동안 commit·push 허가가 남을 수 있다(ADR 0037).
+- 상태는 아직 이름으로 식별한다(상태 ID 전환은 후속).
+- 추가 LLM 호출: 없음(T23).
+
+## 6. 승계표 기준 누락과 후속
+
+| 기존 작업 | M4에서 한 것 | 후속으로 남은 것 |
+|---|---|---|
+| 책임 게이트·검토 대상 고정 | 검토 대상·고위험 근거·커밋 없음·머지 조건(ADR 0040) | F01 검토 대기 화면과 항목별 판단, F02 묶음 검토 |
+| 보고 정책·사람 주의 필터 | 즉시 확인/일반 검토 대기/내부 기록, 주의 항목(ADR 0041) | F07 digest |
+| 검토 대기·묶음 검토 | 댓글·UI에서 보류 이유와 다음 행동 | F01 → F02 |
+| 부채·변경 저항 증거 | 실행·사용량·원인 분류 보존(ADR 0042) | F03 부채 후보, F04 후속 티켓, F05 비교·분석 |
+
+F01~F07은 하나도 구현하지 않았다. 고위험 PR의 필수 리뷰를 GitHub branch protection으로 강제하는 설정과 그 확인은
+운영자 작업이다.

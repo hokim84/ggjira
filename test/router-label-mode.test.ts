@@ -8,7 +8,9 @@ import { listJobReportSteps } from "../src/router/db/report-steps.js";
 import { RuleDecisionProvider } from "../src/router/decision.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import { verifyActiveJobs } from "../src/router/scheduler.js";
+import { handlePullRequestClosed } from "../src/router/github.js";
 import {
+  DONE_STATUS,
   issueDescription,
   LABEL_IN_PROGRESS_STATUS,
   LABEL_REVIEW_STATUS,
@@ -157,6 +159,31 @@ describe("label mode (ADR 0037)", () => {
     const rework = getOpenJobForIssue(router.db, "KAN-1");
     expect(rework?.state).toBe("queued");
     expect(rework?.approvalId).not.toBe(firstApproval);
+  });
+
+  it("moves Review → Done when the reviewed pull request is merged (T03)", async () => {
+    await seed("KAN-1");
+    const envelope = await startJob("KAN-1");
+    await process();
+    const head = "c".repeat(40);
+    await submit(envelope, {
+      branch: "ggjira/KAN-1-x",
+      pullRequest: { repo: "acme/app", number: 7, url: "https://github.com/acme/app/pull/7" },
+      git: { repository: "git", baseSha: "a".repeat(40), headSha: head, committed: true },
+    });
+    await process();
+    expect(await status("KAN-1")).toBe(LABEL_REVIEW_STATUS);
+
+    handlePullRequestClosed(
+      router.db,
+      router.config,
+      { repo: "acme/app", number: 7, merged: true, by: "lead", headSha: head },
+      router.clock.now(),
+    );
+    expect((await process()).blocked).toEqual([]);
+    expect(await status("KAN-1")).toBe(DONE_STATUS);
+    // Done is not a request: nothing runs again.
+    expect((await router.reconcile()).jobsCreated).toEqual([]);
   });
 
   it("cancels a queued job when the label is removed; adding it back is a new approval (T05)", async () => {

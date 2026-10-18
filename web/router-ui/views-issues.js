@@ -14,14 +14,19 @@ const JOB_STATE_LABELS = {
   running: "실행 중",
   cancel_requested: "취소 요청",
   recovery_required: "복구 필요",
+  failed: "실패",
+  timed_out: "시간 초과",
 };
+
+/** A failed run keeps its approval's slot (ADR 0021): it does not run again by itself. */
+const STOPPED_JOB_STATES = new Set(["failed", "timed_out", "recovery_required"]);
 
 /** Why it would not start and what a person does about it (codes from src/router/issue-opt-in.ts). */
 const BLOCKERS = {
   opt_in_missing: [() => "opt-in 라벨이 없습니다", "아래 버튼으로 AI 참여를 켜세요."],
   not_requested: [
     (view) => `요청 상태("${view.requestStatus}")가 아닙니다`,
-    "Jira에서 이슈를 요청 상태로 옮기세요.",
+    "AI에게 (다시) 맡길 때만 Jira에서 요청 상태로 옮기세요. 검토·완료 중이면 그대로 두면 됩니다.",
   ],
   no_assignee: [() => "담당자가 없습니다", "Jira에서 담당자(인간 책임자)를 지정하세요."],
   inputs_changed: [
@@ -207,12 +212,26 @@ export function renderIssues(root, ctx) {
     if (view.openJob) {
       const kind = JOB_KIND_LABELS[view.openJob.kind] || view.openJob.kind;
       const state = JOB_STATE_LABELS[view.openJob.state] || view.openJob.state;
+      const stopped = STOPPED_JOB_STATES.has(view.openJob.state);
       return h(
         "p",
         {},
-        h("span", { class: "badge badge-ok" }, `${kind} 작업 ${state}`),
+        h(
+          "span",
+          { class: `badge ${stopped ? "badge-bad" : "badge-ok"}` },
+          `${kind} 작업 ${state}`,
+        ),
         " ",
         h("code", {}, view.openJob.jobId),
+        stopped
+          ? h(
+              "div",
+              { class: "hint" },
+              view.mode === "label"
+                ? "같은 승인으로는 다시 돌지 않습니다. 원인을 고친 뒤 요청 상태로 다시 옮기거나 AI 참여를 껐다 켜세요."
+                : "같은 승인으로는 다시 돌지 않습니다. 원인을 고친 뒤 요청 상태로 다시 옮기세요.",
+            )
+          : null,
       );
     }
     if (!view.blockers.length) {
@@ -262,7 +281,7 @@ export function renderIssues(root, ctx) {
         { class: "hint" },
         turnOn
           ? `라벨 "${view.optInLabel}"만 붙입니다. 실행 승인이 아니며, 요청 상태·담당자·계약 조건이 맞아야 시작합니다.`
-          : view.openJob
+          : view.openJob && !STOPPED_JOB_STATES.has(view.openJob.state)
             ? `라벨 "${view.optInLabel}"을 뗍니다. 열린 작업은 몇 초 안에 취소되거나 중단 요청됩니다. 이미 push된 변경은 되돌리지 않습니다.`
             : `라벨 "${view.optInLabel}"만 뗍니다. 다른 라벨은 그대로 둡니다.`,
       ),

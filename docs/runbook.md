@@ -5,7 +5,8 @@ GGJIRA v5(Router + Worker) 운영·진단 절차다. §1~§12(v4 폴링 에이�
 
 먼저 볼 곳:
 
-- `ggjira router status`는 큐 대기, 워커 연결, recovery 대기, 웹훅 지연, 막힌 보고를 보여 준다.
+- `ggjira router status`는 큐 대기, 워커 연결, recovery 대기, 웹훅 지연, 막힌 보고, 확인 필요 항목 수를 보여 준다.
+  사람이 봐야 할 것은 `ggjira router attention`(§29)에 모인다.
 - `ggjira router jobs show <jobId>`는 attempt, 보고 단계, 감사 기록을 보여 준다.
 - Router 로그의 `layer:"router"`에서 `pass:"reconcile"`의 `held`/`skipped`는 job이 생기지 않은
   이유이고, `report journal pass`의 `blocked`는 Jira 반영이 막힌 곳이다.
@@ -593,6 +594,20 @@ label 모드 workspace에서는 AI 전용 상태 없이 일반 상태 흐름을 
 
 AI 전용 상태를 Jira 워크플로에서 지우는 것은 전환 조건이 아니다. 충분히 관찰한 뒤 따로 한다.
 
+## 28. Jira 웹훅 진단 (ADR 0038)
+
+Router는 서명이 맞는 웹훅의 이벤트 종류·이슈 키·프로젝트·바뀐 필드만 `events`에 저장한다. 이슈 본문·댓글·
+사용자 정보는 저장하지 않는다. 판단은 늘 Jira 재조회로 한다.
+
+- `202 {"status":"ignored"}`: 댓글 이벤트이거나 workspace 밖 프로젝트다. 기록만 하고 reconcile을 깨우지
+  않는다. 결정 답변 댓글은 사람이 이슈를 다시 요청할 때 반영된다.
+- `401`: 서명 불일치. 처리하지 않는다. Jira 웹훅 secret과 `GGJIRA_WEBHOOK_SECRET`을 맞춘다.
+- `400 missing x-atlassian-webhook-identifier`: delivery id가 없는 요청. Jira Cloud 웹훅이 아니다.
+- `413`: 본문이 1 MiB를 넘는다.
+- `500`: 저장 실패. Jira가 재전송한다. Router 로그와 DB 디스크를 확인한다.
+- 웹훅이 오지 않아도 `reconciliation.backgroundIntervalMs`(기본 60초)마다 보완 조회가 돈다.
+  `ggjira router status`의 `webhooks` 지연이 계속 늘면 sync 루프가 실패하고 있는 것이다.
+
 ## 29. 확인 필요 항목 (ADR 0041)
 
 웹 UI 대시보드의 "확인 필요", `ggjira router status`의 `needs attention`, `ggjira router attention`이 사람이
@@ -626,16 +641,26 @@ AI 전용 상태를 Jira 워크플로에서 지우는 것은 전환 조건이 �
 - `cause`: `environment`(시간 초과·비정상 종료), `requirements_change`(승인 뒤 요청 수정으로 취소)는 Router 판단이다.
   `unknown`은 원인을 판단하지 않았다는 뜻이다. 코드 구조 문제인지는 사람이 본다.
 
-## 28. Jira 웹훅 진단 (ADR 0038)
+## 31. M4 업그레이드·되돌리기 (M4-07, M4-10)
 
-Router는 서명이 맞는 웹훅의 이벤트 종류·이슈 키·프로젝트·바뀐 필드만 `events`에 저장한다. 이슈 본문·댓글·
-사용자 정보는 저장하지 않는다. 판단은 늘 Jira 재조회로 한다.
+M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, `execution_records`)을 더하고
+워커 결과에 선택 필드(`git`, `execution`, 구현 보고의 `risks`)를 더한다. 프로토콜 버전은 2 그대로다.
 
-- `202 {"status":"ignored"}`: 댓글 이벤트이거나 workspace 밖 프로젝트다. 기록만 하고 reconcile을 깨우지
-  않는다. 결정 답변 댓글은 사람이 이슈를 다시 요청할 때 반영된다.
-- `401`: 서명 불일치. 처리하지 않는다. Jira 웹훅 secret과 `GGJIRA_WEBHOOK_SECRET`을 맞춘다.
-- `400 missing x-atlassian-webhook-identifier`: delivery id가 없는 요청. Jira Cloud 웹훅이 아니다.
-- `413`: 본문이 1 MiB를 넘는다.
-- `500`: 저장 실패. Jira가 재전송한다. Router 로그와 DB 디스크를 확인한다.
-- 웹훅이 오지 않아도 `reconciliation.backgroundIntervalMs`(기본 60초)마다 보완 조회가 돈다.
-  `ggjira router status`의 `webhooks` 지연이 계속 늘면 sync 루프가 실패하고 있는 것이다.
+업그레이드:
+1. `ggjira router backup`과 `router.config.json`·`router.env` 사본을 저장소 밖에 둔다. 기준선 태그
+   `m3-baseline-2026-10-18`은 코드만 되돌린다. DB와 Jira는 되돌리지 않는다.
+2. `ggjira router status`로 실행 중인 job이 없는지 본다(필수는 아니다. 결과 형식이 호환된다).
+3. Router를 새 버전으로 바꾸고 시작한다. migration은 시작할 때 한 번 돈다(재시작해도 다시 돌지 않는다).
+   이전 결과에는 검토 대상·주의 항목·사용량 행을 소급해 만들지 않는다.
+4. 워커를 업그레이드한다. 순서는 상관없다. 이전 워커의 결과는 커밋·사용량이 "미보고"로 기록되고, PR 머지는
+   ADR 0027대로 완료로 옮긴다(댓글에 "Head commit not compared"). 새 워커가 이전 Router에 보내는 결과의 새 필드는
+   무시된다.
+5. 확인: `ggjira router status`의 `needs attention`, `ggjira router attention`, 새 결과에 대한
+   `ggjira router issue reviews KEY`·`ggjira router usage --issue KEY`.
+
+되돌리기:
+- 코드만 이전 버전으로 되돌려도 된다. 이전 Router는 schema 버전을 검사하지 않고 새 테이블을 쓰지 않는다.
+  그동안의 검토 대상·주의 항목·사용량 기록은 남지만 갱신되지 않는다. PR 머지 → 완료는 ADR 0027 동작으로 돌아간다.
+- DB 백업을 복원하는 것은 마지막 수단이다. 백업 이후의 job·결과·보고 저널이 사라지므로, 복원 전에 그 사이 Jira
+  댓글·전이와 push된 브랜치를 `audit_log`와 Jira에서 대조해 둔다.
+- label 모드 전환 자체의 되돌리기는 §27 "legacy → label 전환" 7단계를 따른다.
