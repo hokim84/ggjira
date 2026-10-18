@@ -1,4 +1,5 @@
 import type { ProviderUsageWindow } from "../contracts/api.js";
+import type { CallUsage } from "../contracts/execution.js";
 
 export interface WorkerRequest {
   /** The task instruction passed to the CLI as its prompt. */
@@ -22,9 +23,14 @@ export interface WorkerResult {
   summary: string;
   durationMs: number;
   exitCode: number | null;
+  /** The CLI's own id for this call (Claude Code session, Codex thread). */
   sessionId?: string;
   totalCostUsd?: number;
   numTurns?: number;
+  /** The model the CLI reported running, when its stream says (M4-12). */
+  model?: string;
+  /** Token usage the CLI reported for this call; absent when it reported none (M4-12). */
+  usage?: CallUsage;
   /** Parsed from the CLI's final answer when `WorkerRequest.outputSchema` was set. */
   structuredOutput?: unknown;
 }

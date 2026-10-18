@@ -109,6 +109,9 @@ patch와 worktree를 남기고 `needs_decision`으로 보고한다. 보고를 �
 PR 머지는 그 머지의 head가 최신 대상의 head와 같을 때만(또는 head를 비교할 수 없을 때) 완료로 옮기고,
 `review_records`에 actor·인증·head·일치 여부를 남긴다.
 
+결과의 `execution`은 provider 호출 하나를 기록한다(ADR 0042). Router는 저장한 결과마다(늦게 와 적용하지 않은
+결과 포함) `execution_records`에 결과 id 기준으로 한 번 남긴다.
+
 모든 변경 요청은 identity, session, attempt 소유, lease token, 임대 신선도를 한 트랜잭션에서
 검증한다. 오류는 다른 워커 403, 만료·오래된 권한 409, 프로토콜 불일치 426이다.
 
@@ -151,6 +154,7 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 | (API만) | `GET /holds/readiness` | 계약이 불완전해 시작하지 않은 구현 요청과 안내 댓글 상태(ADR 0034) |
 | `router migrate-labels plan/apply` | `POST /migrations/label/plan`, `…/apply` | legacy workspace의 이슈를 label 흐름으로 옮김. plan은 읽기 전용 제안이고, apply는 사람이 `approved`로 표시한 항목만 이슈별로 처리·재조회·감사 기록한다(ADR 0037) |
 | `router issue show/opt-in` (웹 UI 이슈) | `GET/PUT /issues/:key/opt-in` | label 모드 이슈의 opt-in 라벨만 부분 수정으로 붙이거나 떼고, 재조회로 확인한 뒤 성공으로 답한다. 조회는 시작되지 않는 이유를 함께 준다(ADR 0039) |
+| `router usage` | `GET /executions` | 결과마다 provider 호출(모델·호출 id·종료 사유·토큰·비용)과 원래 요구사항·실행 유형·원인 분류. 미보고는 NULL(ADR 0042) |
 | `router attention` | `GET /attention` | 주의 항목(실패·결정·범위 이탈·개별 검토·계약 보완·막힌 보고). 같은 사건은 횟수로 묶고 해소·재발 이력을 남긴다(ADR 0041) |
 | `router issue reviews` | `GET /issues/:key/reviews` | 검토 대상(최신·대체됨)과 PR 머지 기록. 읽기 전용(ADR 0040) |
 | `router reconcile` | `POST /reconcile` | sync lane에서 즉시 1회 실행 |

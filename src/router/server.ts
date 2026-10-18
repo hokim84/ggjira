@@ -412,6 +412,14 @@ function registerAdminRoutes(
       scope.get<{ Params: { key: string } }>("/issues/:key/reviews", async (request) =>
         admin.issueReviews(request.params.key),
       );
+      scope.get<{ Querystring: { issue?: string; children?: string } }>(
+        "/executions",
+        async (request) =>
+          admin.executions({
+            ...(request.query.issue ? { issueKey: request.query.issue } : {}),
+            ...(request.query.children === "true" ? { includeChildren: true } : {}),
+          }),
+      );
       scope.get<{ Querystring: { status?: string; issue?: string; kind?: string } }>(
         "/attention",
         async (request) =>

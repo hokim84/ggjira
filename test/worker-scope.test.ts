@@ -224,6 +224,13 @@ describe("implementation scope checks (ADR 0036)", () => {
     expectStoppedBeforeCommit(outcome, stages);
     expect(outcome.git).toMatchObject({ repository: "git", committed: false });
     expect(outcome.git?.headSha).toBeUndefined();
+    // M4-12: a stopped run still says what it called; the fake reported no usage, so none.
+    expect(outcome.execution).toMatchObject({
+      providerId: "default",
+      exitReason: "completed",
+      modelSource: "configured",
+    });
+    expect(outcome.execution?.usage).toBeUndefined();
     const patchFile = outcome.localEvidence?.patchFile as string;
     expect(patchFile).toBe(path.join(dir, "logs", "job-1-attempt-12345678.patch"));
     const patch = readFileSync(patchFile, "utf-8");

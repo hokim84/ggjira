@@ -46,6 +46,12 @@ import { oldestUnprocessedEventAt } from "./db/events.js";
 import { recordAdminHold } from "./db/holds.js";
 import { listOpenReadinessHolds, type ReadinessHoldRow } from "./db/readiness-holds.js";
 import {
+  type ExecutionRecordRow,
+  type ExecutionTotals,
+  listExecutionRecords,
+  totalExecutions,
+} from "./db/execution-records.js";
+import {
   type AttentionItemRow,
   type AttentionKind,
   countOpenAttention,
@@ -895,6 +901,22 @@ export class AdminService {
       reports: { blocked: blocked.size },
       attention: { open: countOpenAttention(this.db) },
     };
+  }
+
+  /**
+   * Execution evidence (M4-12): every stored result's provider call, with totals over what was
+   * reported and a count of what was not. `includeChildren` adds the issues whose original
+   * requirement `issueKey` is (plan tasks, subtasks). Read-only; JSON is the export format.
+   */
+  executions(filter: { issueKey?: string; includeChildren?: boolean }): {
+    records: ExecutionRecordRow[];
+    totals: ExecutionTotals;
+  } {
+    const records = listExecutionRecords(this.db, {
+      ...(filter.issueKey ? { issueKey: filter.issueKey.toUpperCase() } : {}),
+      ...(filter.includeChildren ? { includeChildren: true } : {}),
+    });
+    return { records, totals: totalExecutions(records) };
   }
 
   /** Attention items (M4-09), newest activity first. Read-only; resolving happens on its own when

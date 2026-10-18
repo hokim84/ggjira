@@ -611,6 +611,21 @@ AI 전용 상태를 Jira 워크플로에서 지우는 것은 전환 조건이 �
 - `--all`이나 `--resolved`로 해소 이력을 본다. "recurred after"는 해소된 같은 사건의 재발이다.
 - 같은 이유의 반복 실패는 Jira 댓글을 다시 달지 않는다. 이유가 바뀌면 새 댓글이 달린다.
 
+## 30. 실행·사용량 기록 (ADR 0042)
+
+`ggjira router usage --issue KAN-12 --children`은 그 요구사항과 하위 작업의 모든 실행을 보여 준다.
+`--json`이 내보내기 형식이다.
+
+- `usage not reported`/`?`: CLI가 토큰을 주지 않았다(이전 워커, 오래된 CLI). 0이 아니라 모름이다. 합계의
+  `usage not reported for N`이 그 건수다.
+- `(inside in)`: Codex는 캐시 입력을 입력 토큰 안에 센다. 합계에서 `in … (of which cache …)`로 보인다.
+  Claude Code의 캐시 읽기는 입력과 별도(`cache-read on top`)다. 둘을 더하지 않는다.
+- `(configured)`: CLI가 모델을 알려 주지 않아 워커 설정의 모델을 적었다(Codex).
+- `retry`는 관리자 `jobs retry`, `rework`는 같은 이슈의 새 요청이다. `not applied`는 늦게 와서 반영하지 않은
+  결과다(사용량은 남긴다).
+- `cause`: `environment`(시간 초과·비정상 종료), `requirements_change`(승인 뒤 요청 수정으로 취소)는 Router 판단이다.
+  `unknown`은 원인을 판단하지 않았다는 뜻이다. 코드 구조 문제인지는 사람이 본다.
+
 ## 28. Jira 웹훅 진단 (ADR 0038)
 
 Router는 서명이 맞는 웹훅의 이벤트 종류·이슈 키·프로젝트·바뀐 필드만 `events`에 저장한다. 이슈 본문·댓글·

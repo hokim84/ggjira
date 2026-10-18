@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PlanSchema } from "../pm/plan.js";
+import { ExecutionRecordSchema } from "./execution.js";
 import {
   ExecutionContractSchema,
   ImplementationReportSchema,
@@ -122,5 +123,8 @@ export const JobResultSchema = z.object({
   localEvidence: LocalEvidenceSchema.optional(),
   /** Base and head commits of an implementation result (M4-11). Absent from older workers. */
   git: ResultGitSchema.optional(),
+  /** The provider call behind this result: provider, model, call id, usage (M4-12). Absent from
+   *  older workers and from results refused before any call. */
+  execution: ExecutionRecordSchema.optional(),
 });
 export type JobResult = z.infer<typeof JobResultSchema>;

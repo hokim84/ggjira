@@ -123,6 +123,21 @@ export function getOpenJobForIssue(db: Database.Database, issueKey: string): Job
 }
 
 /** Jobs ready to be leased to a worker, oldest first (scheduler's assignment pass). */
+/** Jobs created for the same issue before `jobId` (earlier approvals or closed runs). */
+export function countEarlierJobsForIssue(
+  db: Database.Database,
+  issueKey: string,
+  jobId: string,
+): number {
+  return (
+    db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE issue_key = ? AND rowid < (SELECT rowid FROM jobs WHERE id = ?)",
+      )
+      .get(issueKey, jobId) as { n: number }
+  ).n;
+}
+
 export function getQueuedJobs(db: Database.Database): JobRow[] {
   const rows = db
     .prepare("SELECT * FROM jobs WHERE state = 'queued' ORDER BY created_at ASC")

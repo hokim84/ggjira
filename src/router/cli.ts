@@ -21,6 +21,7 @@ import type { LabelMigrationPlan, LabelMigrationResult } from "./label-migration
 import type { IssueOptInView, SetOptInResult } from "./issue-opt-in.js";
 import type { ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
 import type { AttentionItemRow } from "./db/attention.js";
+import type { ExecutionRecordRow, ExecutionTotals } from "./db/execution-records.js";
 import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
 import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
@@ -57,6 +58,7 @@ export const ROUTER_USAGE = `ggjira router <command>
                                          would not start, or add/remove the opt-in label
   issue reviews <KEY>                    results pinned for review, and merges seen against them
   attention [--all|--resolved] [--issue KEY]  what a human must look at (open by default)
+  usage [--issue KEY [--children]] [--json]   provider calls and token usage per result
   reconcile
   backup
   migrate-labels plan --workspace <id> --label <l> --to-do <status> --review <status> [--out <f>]
@@ -552,6 +554,40 @@ async function issue(parsed: ParsedArgs, io: CliIo): Promise<number> {
   throw new UsageError(`unknown issue subcommand "${sub}"`);
 }
 
+const tokens = (value: number | null): string => (value === null ? "?" : String(value));
+
+/** `usage` (M4-12): read-only execution evidence; `--json` is the export. */
+async function usage(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const query = new URLSearchParams();
+  const issueKey = stringOption(parsed, "issue");
+  if (issueKey) query.set("issue", issueKey);
+  if (parsed.values.children) query.set("children", "true");
+  const view = await client.get<{ records: ExecutionRecordRow[]; totals: ExecutionTotals }>(
+    `/executions?${query}`,
+  );
+  if (parsed.values.json) {
+    printJson(io, view);
+    return 0;
+  }
+  for (const record of view.records) {
+    const usageText = record.usageReported
+      ? `in ${tokens(record.inputTokens)} out ${tokens(record.outputTokens)} cache-read ${tokens(record.cacheReadTokens)}${record.cacheReadIncluded ? " (inside in)" : ""}`
+      : "usage not reported";
+    io.out(
+      `${record.recordedAt}  ${record.issueKey}${record.parentIssueKey ? ` (of ${record.parentIssueKey})` : ""}  ${record.kind} ${record.runType}  ${record.resultStatus}${record.applied ? "" : " (not applied)"}`,
+    );
+    io.out(
+      `    ${record.providerId ?? "?"} ${record.model ?? "?"}${record.modelSource === "configured" ? " (configured)" : ""}  ${record.exitReason ?? "?"}  ${usageText}  cause ${record.causeCategory}`,
+    );
+  }
+  const t = view.totals;
+  io.out(
+    `total: ${t.records} result(s), usage not reported for ${t.usageUnreported}; in ${t.inputTokens} (of which cache ${t.cacheReadTokensInsideInput}), out ${t.outputTokens}, cache-read on top ${t.cacheReadTokensOnTop}, cache-write ${t.cacheCreationTokens}, cost $${t.costUsd}`,
+  );
+  return 0;
+}
+
 /** `attention` (M4-09): read-only list of attention items. */
 async function attention(parsed: ParsedArgs, io: CliIo): Promise<number> {
   const client = adminClient(parsed, io);
@@ -679,6 +715,15 @@ export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
       return reports(parseCommandArgs(args, COMMON_OPTIONS), io);
     case "issue":
       return issue(parseCommandArgs(args, COMMON_OPTIONS), io);
+    case "usage":
+      return usage(
+        parseCommandArgs(args, {
+          ...COMMON_OPTIONS,
+          issue: { type: "string" },
+          children: { type: "boolean" },
+        }),
+        io,
+      );
     case "attention":
       return attention(
         parseCommandArgs(args, {

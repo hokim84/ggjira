@@ -11,6 +11,7 @@ import type {
   WorkerRunHooks,
 } from "./provider.js";
 import { killProcessTree, runProcessWithTimeout } from "./spawn.js";
+import { type CodexCallInfo, readCodexCallEvent } from "./call-usage.js";
 import { parseCodexRateLimits } from "./usage.js";
 
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -81,6 +82,11 @@ export class CodexCliProvider implements WorkerProvider {
     const tmpDir = mkdtempSync(path.join(tmpdir(), "ggjira-codex-"));
     const lastMessagePath = path.join(tmpDir, "last-message.txt");
     const sandbox = request.readOnly ? "read-only" : this.sandbox;
+    let call: CodexCallInfo = {};
+    const callFields = () => ({
+      ...(call.threadId ? { sessionId: call.threadId } : {}),
+      ...(call.usage ? { usage: call.usage } : {}),
+    });
 
     const args = [
       "exec",
@@ -108,7 +114,7 @@ export class CodexCliProvider implements WorkerProvider {
         onLine: (line) => {
           hooks.onEvent?.(line);
           try {
-            JSON.parse(line);
+            call = readCodexCallEvent(call, JSON.parse(line));
           } catch {
             this.logger?.debug({ layer: "worker", line }, "non-JSON codex output line");
           }
@@ -132,6 +138,7 @@ export class CodexCliProvider implements WorkerProvider {
           summary: `Worker timed out after ${request.timeoutMs}ms`,
           durationMs: result.durationMs,
           exitCode: result.code,
+          ...callFields(),
         };
       }
 
@@ -155,6 +162,7 @@ export class CodexCliProvider implements WorkerProvider {
             lastMessage || `Worker exited with code ${result.code}. ${result.stderrTail}`.trim(),
           durationMs: result.durationMs,
           exitCode: result.code,
+          ...callFields(),
         };
       }
 
@@ -164,6 +172,7 @@ export class CodexCliProvider implements WorkerProvider {
         summary: lastMessage || "(worker produced no final message)",
         durationMs: result.durationMs,
         exitCode: result.code,
+        ...callFields(),
         ...(structuredOutput !== undefined ? { structuredOutput } : {}),
       };
     } finally {

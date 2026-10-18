@@ -35,11 +35,14 @@ import {
   getActiveAttemptForWorker,
   getAttempt,
   getAttemptByRequestId,
+  listAttemptsForJob,
   renewAttemptLease,
   setAttemptResultId,
   transitionAttemptState,
 } from "./db/attempts.js";
-import { getJob, type JobRow, transitionJobState } from "./db/jobs.js";
+import { countEarlierJobsForIssue, getJob, type JobRow, transitionJobState } from "./db/jobs.js";
+import { type CauseCategory, recordExecution } from "./db/execution-records.js";
+import { getApprovalHoldActor, INPUTS_CHANGED_HOLD_ACTOR } from "./db/holds.js";
 import { consumePairingCode, createPairingCode, PairingCodeRejectedError } from "./db/pairing.js";
 import { appendAudit } from "./db/audit.js";
 import { saveProviderUsage } from "./db/provider-usage.js";
@@ -491,12 +494,18 @@ export class WorkerService {
       }
       if (current && attempt.state === "recovery_required" && job.state === "recovery_required") {
         this.confirmStopFromResult(worker, job, attempt, result, now);
+        this.recordExecutionEvidence(job, attempt, result, undefined, now);
         return { accepted: true, applied: false };
       }
-      if (!applicable) return { accepted: true, applied: false };
+      if (!applicable) {
+        // M4-12: a late result applies nothing, but what its call used is still kept.
+        this.recordExecutionEvidence(job, attempt, result, undefined, now);
+        return { accepted: true, applied: false };
+      }
 
       setAttemptResultId(this.db, attempt.id, result.resultId);
       const finalState = this.applyResult(job, attempt, result, now);
+      this.recordExecutionEvidence(job, attempt, result, finalState, now);
       this.journalResult(job, attempt, result, finalState, now);
       return { accepted: true, applied: true };
     });
@@ -506,6 +515,72 @@ export class WorkerService {
   }
 
   // --- helpers -------------------------------------------------------------------------
+
+  /**
+   * M4-12: the provider call behind a stored result, linked to its job, approval and original
+   * requirement. Keyed by result id, so a resend never counts it twice. `finalState` is set only
+   * for an applied result.
+   */
+  private recordExecutionEvidence(
+    job: JobRow,
+    attempt: AttemptRow,
+    result: JobResult,
+    finalState: ClosedJobState | undefined,
+    now: string,
+  ): void {
+    const attempts = listAttemptsForJob(this.db, job.id);
+    const runType =
+      attempts.findIndex((entry) => entry.id === attempt.id) > 0
+        ? "retry"
+        : countEarlierJobsForIssue(this.db, job.issueKey, job.id) > 0
+          ? "rework"
+          : "initial";
+    const snapshot = getApproval(this.db, job.issueKey)?.inputSnapshot as
+      | ApprovalSnapshot
+      | undefined;
+    const cause = this.causeOf(job, result, finalState);
+    recordExecution(this.db, {
+      resultId: result.resultId,
+      jobId: job.id,
+      attemptId: attempt.id,
+      issueKey: job.issueKey,
+      parentIssueKey: snapshot?.issue.parentKey ?? null,
+      kind: job.kind,
+      approvalId: job.approvalId,
+      runType,
+      applied: finalState !== undefined,
+      resultStatus: finalState === "cancelled" ? "cancelled" : result.status,
+      execution: result.execution,
+      causeCategory: cause,
+      causeSource: cause === "environment" || cause === "requirements_change" ? "router" : null,
+      now,
+    });
+  }
+
+  /** What Router itself can tell about why a run ended the way it did (see `CauseCategory`). */
+  private causeOf(
+    job: JobRow,
+    result: JobResult,
+    finalState: ClosedJobState | undefined,
+  ): CauseCategory {
+    const cancelled = finalState === "cancelled" || result.status === "cancelled";
+    if (cancelled) {
+      return getApprovalHoldActor(this.db, job.issueKey, job.approvalId) ===
+        INPUTS_CHANGED_HOLD_ACTOR
+        ? "requirements_change"
+        : "not_applicable";
+    }
+    if (result.status === "succeeded" || result.status === "planned") return "none";
+    if (result.status === "needs_decision") return "not_applicable";
+    const exit = result.execution?.exitReason;
+    if (result.timedOut || exit === "timeout" || exit === "crashed" || exit === "error") {
+      return "environment";
+    }
+    if (!result.execution && /worktree|not configured/i.test(result.failureReason ?? "")) {
+      return "environment";
+    }
+    return "unknown";
+  }
 
   /** Closes the job per ADR 0020 §4 and returns the state it closed in. */
   private applyResult(

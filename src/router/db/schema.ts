@@ -437,3 +437,47 @@ export const ATTENTION_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS idx_attention_issue ON attention_items (issue_key)",
   "CREATE INDEX IF NOT EXISTS idx_attention_status ON attention_items (status)",
 ];
+
+/**
+ * Migration 13 (M4-12, ADR 0042). One row per stored worker result — applied or kept only as a
+ * late record — with the provider call behind it: provider, model, call id, how it ended and the
+ * token usage the CLI reported. Usage columns are NULL when not reported (never 0), and
+ * `cache_read_included` says whether cache reads are already inside `input_tokens`. Each row links
+ * the result to its job, attempt, approval and original requirement (`parent_issue_key`), with
+ * `run_type` (initial / retry under the same approval / rework under a new one) and a coarse
+ * `cause_category` Router itself can tell apart; `cause_source` says who judged it.
+ */
+export const EXECUTION_RECORD_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS execution_records (
+    result_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES jobs (id),
+    attempt_id TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    parent_issue_key TEXT,
+    kind TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    run_type TEXT NOT NULL CHECK (run_type IN ('initial', 'retry', 'rework')),
+    applied INTEGER NOT NULL,
+    result_status TEXT NOT NULL,
+    provider_id TEXT,
+    provider_type TEXT,
+    model TEXT,
+    model_source TEXT,
+    call_id TEXT,
+    exit_reason TEXT,
+    duration_ms INTEGER,
+    num_turns INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_creation_tokens INTEGER,
+    cache_read_included INTEGER,
+    cost_usd REAL,
+    usage_reported INTEGER NOT NULL,
+    cause_category TEXT NOT NULL,
+    cause_source TEXT,
+    recorded_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_execution_records_issue ON execution_records (issue_key)",
+  "CREATE INDEX IF NOT EXISTS idx_execution_records_parent ON execution_records (parent_issue_key)",
+];

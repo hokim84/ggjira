@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
+import type { ExecutionRecord } from "../contracts/execution.js";
 import {
   IMPLEMENTATION_REPORT_JSON_SCHEMA,
   type ImplementationReport,
@@ -63,6 +64,65 @@ function cancelled(summary: string, extra: Partial<ExecutionOutcome> = {}): Exec
   return { status: "cancelled", summary, ...extra };
 }
 
+type ProviderCall = { result: WorkerResult } | { error: unknown; durationMs: number };
+
+/** Remembers every call the job makes, so its result can say what ran and what it used. Only
+ *  `run` is passed through: a job never reads plan usage outside its own call. */
+function recordingProvider(provider: WorkerProvider, calls: ProviderCall[]): WorkerProvider {
+  return {
+    run: async (request, hooks) => {
+      const started = Date.now();
+      try {
+        const result = await provider.run(request, hooks);
+        calls.push({ result });
+        return result;
+      } catch (error) {
+        calls.push({ error, durationMs: Date.now() - started });
+        throw error;
+      }
+    },
+  };
+}
+
+/** M4-12: the call as the result reports it. Usage the CLI did not report stays absent. */
+export function executionRecord(
+  provider: WorkerProviderConfig,
+  call: ProviderCall,
+): ExecutionRecord {
+  const base = { providerId: provider.id, providerType: provider.type };
+  if ("error" in call) {
+    return {
+      ...base,
+      model: provider.model,
+      modelSource: "configured",
+      exitReason: "error",
+      durationMs: call.durationMs,
+    };
+  }
+  const { result } = call;
+  return {
+    ...base,
+    model: result.model ?? provider.model,
+    modelSource: result.model ? "reported" : "configured",
+    ...(result.sessionId ? { callId: result.sessionId } : {}),
+    exitReason: result.exitReason,
+    durationMs: Math.max(0, Math.round(result.durationMs)),
+    ...(result.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
+    ...(result.usage
+      ? {
+          usage: {
+            ...result.usage,
+            ...(result.usage.costUsd === undefined && result.totalCostUsd !== undefined
+              ? { costUsd: result.totalCostUsd }
+              : {}),
+          },
+        }
+      : result.totalCostUsd !== undefined
+        ? { usage: { costUsd: result.totalCostUsd } }
+        : {}),
+  };
+}
+
 /**
  * Runs one envelope. Planning goes to `executePlanningEnvelope`; implementation is
  * worktree → provider → commit → validate. The v5 counterpart
@@ -93,7 +153,20 @@ export async function executeEnvelope(
       failureReason: `unknown providerId "${envelope.providerId}"`,
     };
   }
+  const calls: ProviderCall[] = [];
+  const provider = recordingProvider(deps.createProvider(providerConfig), calls);
+  const outcome = await executeWithProvider(envelope, deps, repository, providerConfig, provider);
+  const last = calls.at(-1);
+  return last ? { ...outcome, execution: executionRecord(providerConfig, last) } : outcome;
+}
 
+async function executeWithProvider(
+  envelope: JobEnvelope,
+  deps: ExecutorDeps,
+  repository: WorkerConfig["repositories"][number],
+  providerConfig: WorkerProviderConfig,
+  provider: WorkerProvider,
+): Promise<ExecutionOutcome> {
   const onUsage = deps.onUsage
     ? (usage: UsageReading) => deps.onUsage?.(providerConfig, usage)
     : undefined;
@@ -101,7 +174,7 @@ export async function executeEnvelope(
   if (envelope.kind === "planning") {
     return executePlanningEnvelope(envelope, {
       repository,
-      provider: deps.createProvider(providerConfig),
+      provider,
       worktreesRoot: deps.worktreesRoot,
       logPath: deps.config.logPath,
       signal: deps.signal,
@@ -147,7 +220,7 @@ export async function executeEnvelope(
 
   let workerResult: WorkerResult;
   try {
-    workerResult = await deps.createProvider(providerConfig).run(
+    workerResult = await provider.run(
       {
         prompt: buildImplementPrompt({
           title: issue.summary,
