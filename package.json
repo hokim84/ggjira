@@ -22,7 +22,7 @@
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^13.0.3",
     "cross-spawn": "^7.0.6",
     "fastify": "^5.12.5",
     "pino": "^9.5.0",
