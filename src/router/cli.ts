@@ -18,6 +18,7 @@ import { AdminClient } from "./admin-client.js";
 import { type CheckItem, runRouterCheck } from "./check.js";
 import { loadRouterConfig, type RouterConfig } from "./config.js";
 import type { LabelMigrationPlan, LabelMigrationResult } from "./label-migration.js";
+import type { IssueOptInView, SetOptInResult } from "./issue-opt-in.js";
 import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
 import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
@@ -50,6 +51,8 @@ export const ROUTER_USAGE = `ggjira router <command>
   jobs list [--state <s>] [--limit <n>] [--cursor <c>] | show <jobId>
        cancel <jobId> | retry <jobId> | resolve <jobId>
   reports list | retry <batchId>
+  issue show <KEY> | opt-in <KEY> on|off  an issue's AI participation (label mode): show why it
+                                         would not start, or add/remove the opt-in label
   reconcile
   backup
   migrate-labels plan --workspace <id> --label <l> --to-do <status> --review <status> [--out <f>]
@@ -452,6 +455,61 @@ async function reports(parsed: ParsedArgs, io: CliIo): Promise<number> {
   throw new UsageError(`unknown reports subcommand "${sub}"`);
 }
 
+function printIssueOptIn(io: CliIo, view: IssueOptInView): void {
+  io.out(`${view.issueKey}  ${view.summary}`);
+  io.out(`  status:   ${view.statusName}`);
+  io.out(`  labels:   ${view.labels.length ? view.labels.join(", ") : "(none)"}`);
+  io.out(
+    view.optInLabel
+      ? `  opt-in:   ${view.optedIn ? "on" : "off"} (label "${view.optInLabel}")`
+      : `  opt-in:   n/a (workspace "${view.workspaceId}" is in legacy mode)`,
+  );
+  if (view.openJob) {
+    io.out(`  job:      ${view.openJob.jobId} (${view.openJob.kind}, ${view.openJob.state})`);
+  } else if (view.blockers.length === 0) {
+    io.out("  next:     Router may start it on its next pass");
+  } else {
+    for (const blocker of view.blockers) {
+      const missing = blocker.missing?.length ? ` [${blocker.missing.join(", ")}]` : "";
+      io.out(`  blocked:  ${blocker.message}${missing}`);
+    }
+  }
+}
+
+/** `issue show|opt-in` (M4-03): the opt-in label is the only thing it writes. */
+async function issue(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const sub = requirePositional(parsed, 1, "issue subcommand (show|opt-in)");
+  const key = requirePositional(parsed, 2, "issue key").toUpperCase();
+  const endpoint = `/issues/${encodeURIComponent(key)}/opt-in`;
+  if (sub === "show") {
+    const view = await client.get<IssueOptInView>(endpoint);
+    if (parsed.values.json) printJson(io, view);
+    else printIssueOptIn(io, view);
+    return 0;
+  }
+  if (sub === "opt-in") {
+    const wanted = requirePositional(parsed, 3, "on|off");
+    if (wanted !== "on" && wanted !== "off")
+      throw new UsageError(`expected on|off, got "${wanted}"`);
+    const result = await client.put<SetOptInResult>(endpoint, { enabled: wanted === "on" });
+    if (parsed.values.json) printJson(io, result);
+    else {
+      io.out(
+        result.outcome === "unchanged"
+          ? `${key} already has opt-in ${wanted}; nothing was written`
+          : `${key}: opt-in ${wanted}, confirmed by re-reading the issue`,
+      );
+      printIssueOptIn(io, result.view);
+      if (wanted === "off" && result.view.openJob) {
+        io.out("  Router cancels or asks the open job to stop on its next check (within seconds).");
+      }
+    }
+    return 0;
+  }
+  throw new UsageError(`unknown issue subcommand "${sub}"`);
+}
+
 function requireOption(parsed: ParsedArgs, name: string): string {
   const value = stringOption(parsed, name);
   if (!value) throw new UsageError(`missing --${name}`);
@@ -552,6 +610,8 @@ export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
       );
     case "reports":
       return reports(parseCommandArgs(args, COMMON_OPTIONS), io);
+    case "issue":
+      return issue(parseCommandArgs(args, COMMON_OPTIONS), io);
     case "migrate-labels":
       return migrateLabels(
         parseCommandArgs(args, {

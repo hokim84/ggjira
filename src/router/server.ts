@@ -5,6 +5,7 @@ import type { z } from "zod";
 import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
+  AdminIssueOptInRequestSchema,
   AdminJiraProjectRequestSchema,
   AdminLabelMigrationApplyRequestSchema,
   AdminLabelMigrationPlanRequestSchema,
@@ -405,6 +406,16 @@ function registerAdminRoutes(
         ),
       );
 
+      scope.get<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
+        admin.issueOptIn(request.params.key),
+      );
+      scope.put<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
+        admin.setIssueOptIn(
+          request.params.key,
+          parseBody(AdminIssueOptInRequestSchema, request.body).enabled,
+          actorOf(request),
+        ),
+      );
       scope.get("/config", async () => admin.readConfig());
       scope.put("/config", async (request) =>
         admin.updateConfig((request.body as ParsedBody | undefined)?.parsed, actorOf(request)),

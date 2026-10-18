@@ -139,6 +139,7 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 | `router reports list/retry` | `/reports…` | 막힌 보고 배치 재대기 |
 | (API만) | `GET /holds/readiness` | 계약이 불완전해 시작하지 않은 구현 요청과 안내 댓글 상태(ADR 0034) |
 | `router migrate-labels plan/apply` | `POST /migrations/label/plan`, `…/apply` | legacy workspace의 이슈를 label 흐름으로 옮김. plan은 읽기 전용 제안이고, apply는 사람이 `approved`로 표시한 항목만 이슈별로 처리·재조회·감사 기록한다(ADR 0037) |
+| `router issue show/opt-in` (웹 UI 이슈) | `GET/PUT /issues/:key/opt-in` | label 모드 이슈의 opt-in 라벨만 부분 수정으로 붙이거나 떼고, 재조회로 확인한 뒤 성공으로 답한다. 조회는 시작되지 않는 이유를 함께 준다(ADR 0039) |
 | `router reconcile` | `POST /reconcile` | sync lane에서 즉시 1회 실행 |
 | `router backup` | `POST /backup` | SQLite online backup을 `<db dir>/backups/`에 저장 |
 | (웹 UI) | `GET/PUT /config`, `POST /config/apply`, `POST /check` | 설정 파일 조회, 검증 후 저장(`.bak`)과 즉시 적용, 손으로 고친 파일 적용, 저장된 설정으로 `router check` |
@@ -157,7 +158,7 @@ push 직전에 `authorize`(stage `push`)로 권한을 다시 확인한다(ADR 00
 
 `router serve`는 `web/router-ui/`(빌드 없는 정적 HTML/JS)를 `/ui/`에서 서빙한다(`src/router/web-ui.ts`).
 화면은 대시보드(`/status`), 워커(5초 폴링, 페어링 코드, enable/disable/revoke, LLM 플랜 사용량),
-설정 편집, Jira 점검이다.
+이슈(AI 참여 확인·켜기/끄기, ADR 0039), 설정 편집, Jira 점검이다.
 모두 admin token으로 위 관리 API만 호출한다. Jev API 키는 입력만 받고 되돌려주지 않는 칸으로 설정한다
 (`PUT /secrets/jev`, `router.env`에 기록, ADR 0031). GitHub 토큰도 같은 방식이고(`PUT /secrets/github-token`),
 GitHub 영역은 추적 중인 PR과 마지막 확인 결과, "지금 확인"(`POST /github/poll`)을 보여 준다(ADR 0032). 설정은 저장 즉시 `RouterDaemon.applyConfig`로 적용된다

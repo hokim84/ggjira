@@ -524,6 +524,19 @@ label 모드 workspace에서는 AI 전용 상태 없이 일반 상태 흐름을 
   다시 붙이면 새 승인이다.
 - 재작업: 검토 → 할 일로 옮기면 새 job이다.
 
+### 이슈별 AI 참여 켜고 끄기 (ADR 0039)
+
+웹 UI 이슈 화면 또는 `ggjira router issue show KEY` / `ggjira router issue opt-in KEY on|off`. opt-in 라벨만
+바꾸고 다른 라벨은 그대로 둔다. 응답은 Jira를 다시 읽어 확인한 결과다.
+
+- `blocked:` 줄(웹 UI의 Router 항목)이 시작되지 않는 이유다. `not_requested`는 상태를, `no_assignee`는
+  담당자를, `readiness_hold`는 빠진 절을, `approval_held`·`inputs_changed`는 새 승인(라벨을 껐다 켜기)을 요구한다.
+- `409 not_label_mode`: legacy workspace다. 상태로 요청한다.
+- `502 unconfirmed`: 쓰기 결과를 확인하지 못했다. Jira에서 이슈의 라벨을 직접 보고 다시 조회한다.
+- `502 jira_forbidden`: Router의 Jira 계정에 그 이슈 편집 권한이 없다.
+- 누가 언제 바꿨는지: `audit_log`의 `issue.opt_in.*`(성공·변경 없음·실패 모두). actor는 호출자가 선언한
+  이름이고 인증은 공유 admin token이다.
+
 시작되지 않을 때: `ggjira router check --issue KEY`가 opt-in 라벨 유무와 전이 가능 여부를 보여 준다. Router
 로그 `pass:"reconcile"`의 `held`/`skipped`에 이유가 있다(담당자 없음, 하위 이슈의 계약 누락 등).
 

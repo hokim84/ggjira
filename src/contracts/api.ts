@@ -285,6 +285,10 @@ export const AdminLabelMigrationApplyRequestSchema = z.object({
   ),
 });
 
+/** `PUT /api/v1/admin/issues/:key/opt-in` — adds (`true`) or removes (`false`) the workspace's
+ *  opt-in label on one issue; the issue's other labels are kept (M4-03, ADR 0039). */
+export const AdminIssueOptInRequestSchema = z.object({ enabled: z.boolean() });
+
 /** `POST /api/v1/admin/pairing-codes` — admin-token authenticated. The code is bound to a
  *  `workerId` already declared in Router config's `workers[]` policy list. */
 export const AdminCreatePairingCodeRequestSchema = z.object({

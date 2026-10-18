@@ -26,6 +26,14 @@ import {
   planLabelMigration,
 } from "./label-migration.js";
 import type { PullRequestPollReport } from "./github.js";
+import {
+  IssueOptInError,
+  type IssueOptInErrorCode,
+  type IssueOptInView,
+  readIssueOptIn,
+  type SetOptInResult,
+  setIssueOptIn,
+} from "./issue-opt-in.js";
 import { SecretValueSchema } from "./secrets.js";
 import {
   type AttemptRow,
@@ -236,6 +244,25 @@ function approvalRules(workspace: WorkspaceConfig) {
 
 function elapsedMs(since: string | null, now: string): number | null {
   return since ? Math.max(0, Date.parse(now) - Date.parse(since)) : null;
+}
+
+const OPT_IN_ERROR_STATUS: Record<IssueOptInErrorCode, AdminError["status"]> = {
+  invalid_issue_key: 400,
+  unknown_project: 404,
+  unknown_issue: 404,
+  not_label_mode: 409,
+  jira_forbidden: 502,
+  jira_rate_limited: 502,
+  jira_error: 502,
+  unconfirmed: 502,
+};
+
+function toAdminError(error: unknown): AdminError {
+  if (error instanceof AdminError) return error;
+  if (error instanceof IssueOptInError) {
+    return new AdminError(OPT_IN_ERROR_STATUS[error.code], error.code, error.message);
+  }
+  return new AdminError(502, "jira_error", error instanceof Error ? error.message : String(error));
 }
 
 function backupFileName(now: string): string {
@@ -718,6 +745,54 @@ export class AdminService {
       }
       throw error;
     }
+  }
+
+  // --- AI participation per issue (M4-03, ADR 0039) ----------------------------------------
+
+  /** The issue's opt-in label, status and what keeps Router from starting it (read-only). */
+  async issueOptIn(issueKey: string): Promise<IssueOptInView> {
+    try {
+      return await readIssueOptIn(this.optInDeps(), issueKey);
+    } catch (error) {
+      throw toAdminError(error);
+    }
+  }
+
+  /**
+   * Adds or removes the workspace's opt-in label on one issue, leaving its other labels alone.
+   * Every attempt is audited — refused ones too — with the authentication behind it: the shared
+   * admin token, whose actor name the caller declares, never the issue assignee's own identity.
+   */
+  async setIssueOptIn(issueKey: string, enabled: boolean, actor: string): Promise<SetOptInResult> {
+    const audit = (outcome: string, detail: Record<string, unknown>) =>
+      appendAudit(this.db, {
+        at: this.now(),
+        actor,
+        action: `issue.opt_in.${outcome}`,
+        subject: issueKey,
+        detail: { requested: enabled ? "on" : "off", authentication: "admin-token", ...detail },
+      });
+    try {
+      const { before, ...result } = await setIssueOptIn(this.optInDeps(), issueKey, enabled);
+      const { view } = result;
+      audit(result.outcome === "unchanged" ? "unchanged" : enabled ? "added" : "removed", {
+        workspaceId: view.workspaceId,
+        label: view.optInLabel,
+        labelsBefore: before,
+        labelsAfter: view.labels,
+        ...(result.confirmedAfterError ? { confirmedAfterError: true } : {}),
+        ...(view.openJob ? { openJob: view.openJob } : {}),
+      });
+      return result;
+    } catch (error) {
+      const adminError = toAdminError(error);
+      audit("failed", { error: adminError.code, message: adminError.message });
+      throw adminError;
+    }
+  }
+
+  private optInDeps() {
+    return { db: this.db, jira: this.deps.jira, config: this.config };
   }
 
   private requireWorkspace(workspaceId: string): WorkspaceConfig {

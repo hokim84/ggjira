@@ -289,6 +289,12 @@ main {
 .usage-reset {
   min-width: 0;
 }
+.blockers {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.3rem;
+}
 .worker-actions {
   display: flex;
   gap: 0.4rem;
