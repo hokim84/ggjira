@@ -43,11 +43,20 @@ function toPairingCodeRow(row: Record<string, unknown>): PairingCodeRow {
   };
 }
 
+/** 12 random bytes as base64url, never starting with "-": the code is passed as
+ *  `--pairing-code <code>`, and a leading dash makes the CLI read it as another option. */
+function randomCode(): string {
+  for (;;) {
+    const code = randomBytes(12).toString("base64url");
+    if (!code.startsWith("-")) return code;
+  }
+}
+
 export function createPairingCode(
   db: Database.Database,
   input: CreatePairingCodeInput,
 ): PairingCodeRow {
-  const code = input.genCode ? input.genCode() : randomBytes(12).toString("base64url");
+  const code = input.genCode ? input.genCode() : randomCode();
   const expiresAt = new Date(
     Date.parse(input.now) + (input.ttlMs ?? PAIRING_CODE_TTL_MS),
   ).toISOString();

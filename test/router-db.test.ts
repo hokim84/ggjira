@@ -13,6 +13,7 @@ import {
   WorkerAlreadyLeasedError,
 } from "../src/router/db/attempts.js";
 import { currentSchemaVersion } from "../src/router/db/migrate.js";
+import { createPairingCode } from "../src/router/db/pairing.js";
 import { openRouterDb } from "../src/router/db/connection.js";
 import {
   createJob,
@@ -316,6 +317,19 @@ describe("Router SQLite store", () => {
         transitionAttemptState(db, "attempt-1", "running", "2026-01-01T00:00:11.000Z"),
       ).toThrow(InvalidAttemptStateTransitionError);
       expect(getAttempt(db, "attempt-1")?.state).toBe("succeeded");
+    });
+  });
+
+  describe("pairing codes", () => {
+    it("never start with a dash, which the CLI would read as an option", () => {
+      // About 1 in 64 random base64url codes starts with "-"; 2000 codes all but surely include one.
+      for (let i = 0; i < 2000; i++) {
+        const { code } = createPairingCode(db, {
+          workerId: `worker-${i}`,
+          now: "2026-01-01T00:00:00.000Z",
+        });
+        expect(code.startsWith("-")).toBe(false);
+      }
     });
   });
 });
