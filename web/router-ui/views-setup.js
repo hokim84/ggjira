@@ -184,10 +184,10 @@ export function renderSetup(root) {
       });
       mode.addEventListener("change", () => {
         if (ws.workflow.mode === "label") {
-          delete ws.workflow.planningStatus;
-          delete ws.workflow.needsDecisionStatus;
+          ws.workflow.planningStatus = undefined;
+          ws.workflow.needsDecisionStatus = undefined;
         } else {
-          delete ws.workflow.optInLabel;
+          ws.workflow.optInLabel = undefined;
         }
         drawStatuses();
       });

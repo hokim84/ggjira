@@ -515,10 +515,10 @@ export async function renderConfig(root, ctx) {
     mode.addEventListener("change", () => {
       if (ws.workflow.mode === "label") {
         // Not used in label mode; the config would be rejected with them set.
-        delete ws.workflow.planningStatus;
-        delete ws.workflow.needsDecisionStatus;
+        ws.workflow.planningStatus = undefined;
+        ws.workflow.needsDecisionStatus = undefined;
       } else {
-        delete ws.workflow.optInLabel;
+        ws.workflow.optInLabel = undefined;
       }
       workspaces.redraw();
     });
