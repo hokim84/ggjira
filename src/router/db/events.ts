@@ -17,6 +17,8 @@ export interface RecordEventInput {
   payload: unknown;
   /** ISO timestamp. Caller-supplied so tests can use a fake clock. */
   now: string;
+  /** Records the event as already processed (one that wakes no reconcile). */
+  processedAt?: string;
 }
 
 /** Thrown when the same (siteId, webhookDeliveryId) pair was already recorded
@@ -48,12 +50,13 @@ export function recordEvent(db: Database.Database, input: RecordEventInput): Eve
   try {
     db.prepare(
       `INSERT INTO events (id, site_id, webhook_delivery_id, received_at, processed_at, payload)
-       VALUES (?, ?, ?, ?, NULL, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(
       input.id,
       input.siteId,
       input.webhookDeliveryId,
       input.now,
+      input.processedAt ?? null,
       JSON.stringify(input.payload),
     );
   } catch (error) {
