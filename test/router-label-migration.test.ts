@@ -154,6 +154,16 @@ describe("legacy → label migration", () => {
     expect((await router.jira.getIssue("KAN-3")).statusName).toBe(REVIEW);
   });
 
+  it("refuses a target status the project does not have", async () => {
+    router.jira.seedProjectStatuses("KAN", [REQUEST_STATUS, TODO, "검토 중"]);
+    const response = await router.adminCall("POST", "/migrations/label/plan", {
+      workspaceId: "ws1",
+      target: TARGET,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ message: expect.stringContaining('"Review"') });
+  });
+
   it("refuses a target To Do that is a legacy request status", async () => {
     const response = await router.adminCall("POST", "/migrations/label/plan", {
       workspaceId: "ws1",

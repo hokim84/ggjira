@@ -150,6 +150,18 @@ export async function planLabelMigration(input: {
       ),
     ),
   ];
+  for (const projectKey of workspace.projectKeys) {
+    // An empty list means Jira did not tell; apply would then fail per issue instead.
+    const known = (await input.jira.listProjectStatuses(projectKey)).map((s) => s.normalize("NFC"));
+    const missing = [target.toDoStatus, target.reviewStatus].filter(
+      (status) => known.length > 0 && !known.includes(status.normalize("NFC")),
+    );
+    if (missing.length > 0) {
+      throw new LabelMigrationError(
+        `project ${projectKey} has no status ${missing.map((s) => `"${s}"`).join(", ")} (it has: ${known.join(", ")})`,
+      );
+    }
+  }
   const projects = workspace.projectKeys.map(jqlString).join(", ");
   const issues = await input.jira.searchIssues(
     `project in (${projects}) AND status in (${statuses.map(jqlString).join(", ")}) ORDER BY created ASC`,
