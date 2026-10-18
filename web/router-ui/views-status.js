@@ -2,6 +2,16 @@
 
 import { admin } from "./api.js";
 import { clear, fill, copyButton, duration, errorNotice, h, notice, relativeTime } from "./dom.js";
+import { openIssue } from "./views-issues.js";
+
+const ATTENTION_KINDS = {
+  failed: "실행 실패",
+  decision_needed: "결정 필요",
+  scope_deviation: "범위 이탈",
+  review_required: "개별 검토 필요",
+  readiness_hold: "계약 보완 필요",
+  report_blocked: "Jira 반영 막힘",
+};
 
 const JOB_STATE_LABELS = {
   waiting: "대기(조건)",
@@ -25,8 +35,38 @@ function card(label, value, tone) {
   );
 }
 
+/** Open attention items (M4-09), newest first; each opens its issue view. */
+function attentionList(items) {
+  if (!items.length) return h("p", { class: "muted" }, "지금 확인할 항목이 없습니다.");
+  return h(
+    "ul",
+    { class: "blockers" },
+    items
+      .slice(0, 20)
+      .map((item) =>
+        h(
+          "li",
+          {},
+          h(
+            "button",
+            { type: "button", class: "btn btn-small", onclick: () => openIssue(item.issueKey) },
+            item.issueKey,
+          ),
+          " ",
+          h("strong", {}, ATTENTION_KINDS[item.kind] || item.kind),
+          item.occurrences > 1 ? ` · ${item.occurrences}회` : "",
+          h("span", { class: "muted" }, ` · ${relativeTime(item.lastSeenAt)}`),
+          h("div", { class: "hint" }, item.reason),
+        ),
+      ),
+  );
+}
+
 export async function renderDashboard(root) {
-  const status = await admin("GET", "/status");
+  const [status, attention] = await Promise.all([
+    admin("GET", "/status"),
+    admin("GET", "/attention"),
+  ]);
   const { jobs, workers, queue, webhooks, reports, recoveryRequired } = status;
   fill(
     root,
@@ -52,7 +92,10 @@ export async function renderDashboard(root) {
       ),
       card("막힌 Jira 보고", reports.blocked, reports.blocked ? "bad" : null),
       card("복구 필요 작업", recoveryRequired, recoveryRequired ? "bad" : null),
+      card("확인 필요", status.attention.open, status.attention.open ? "bad" : null),
     ),
+    h("h2", {}, "확인 필요 항목"),
+    attentionList(attention.items),
     h("h2", {}, "작업 상태"),
     Object.keys(jobs).length === 0
       ? h("p", { class: "muted" }, "아직 작업이 없습니다.")

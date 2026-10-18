@@ -47,6 +47,8 @@ import { recordPullRequest } from "./db/pull-requests.js";
 import { insertReportBatch } from "./db/report-steps.js";
 import { recordResult, ResultConflictError } from "./db/results.js";
 import { recordReviewTarget } from "./db/review-targets.js";
+import { type AttentionOutcome, recordAttention, resolveAttention } from "./db/attention.js";
+import { resultAttention } from "./attention.js";
 import { assessResult } from "./review-gate.js";
 import {
   findWorkerByTokenHash,
@@ -607,24 +609,66 @@ export class WorkerService {
         now,
       });
     }
+    const incident = review ? this.recordResultIncident(job, result, review, now) : undefined;
+    const steps = buildResultSteps({
+      job,
+      attemptId: attempt.id,
+      finalState,
+      result,
+      workspace,
+      config: this.config,
+      snapshot,
+      ...(review ? { review } : {}),
+    });
     insertReportBatch(this.db, {
       batchId: result.resultId,
       resultId: result.resultId,
       jobId: job.id,
       attemptId: attempt.id,
       issueKey: job.issueKey,
-      steps: buildResultSteps({
-        job,
-        attemptId: attempt.id,
-        finalState,
-        result,
-        workspace,
-        config: this.config,
-        snapshot,
-        ...(review ? { review } : {}),
-      }),
+      // M4-09: the same unresolved incident again (a retry that failed the same way) is counted
+      // on its attention item; Jira already has the comment. Labels and moves still apply.
+      steps: incident === "repeated" ? steps.filter((step) => step.kind !== "comment") : steps,
       now,
     });
+  }
+
+  /**
+   * M4-09: a newer result settles the review an older one asked for, and a finished run settles
+   * an earlier failure; then this result's own incident is recorded, if it has one.
+   */
+  private recordResultIncident(
+    job: JobRow,
+    result: JobResult,
+    review: NonNullable<ReturnType<typeof assessResult>>,
+    now: string,
+  ): AttentionOutcome | undefined {
+    resolveAttention(this.db, {
+      issueKey: job.issueKey,
+      kinds: ["review_required"],
+      resolution: `superseded by result ${result.resultId}`,
+      now,
+    });
+    if (result.status === "succeeded" || result.status === "planned") {
+      resolveAttention(this.db, {
+        issueKey: job.issueKey,
+        kinds: ["failed"],
+        resolution: `a later run finished (result ${result.resultId})`,
+        now,
+      });
+    }
+    const attention = resultAttention(result, review);
+    if (!attention) return undefined;
+    return recordAttention(this.db, {
+      issueKey: job.issueKey,
+      approvalId: job.approvalId,
+      kind: attention.kind,
+      cause: attention.cause,
+      severity: "immediate",
+      reason: attention.reason,
+      evidence: attention.evidence,
+      now,
+    }).outcome;
   }
 
   /**

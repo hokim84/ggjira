@@ -20,6 +20,7 @@ import { loadRouterConfig, type RouterConfig } from "./config.js";
 import type { LabelMigrationPlan, LabelMigrationResult } from "./label-migration.js";
 import type { IssueOptInView, SetOptInResult } from "./issue-opt-in.js";
 import type { ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
+import type { AttentionItemRow } from "./db/attention.js";
 import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
 import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
@@ -55,6 +56,7 @@ export const ROUTER_USAGE = `ggjira router <command>
   issue show <KEY> | opt-in <KEY> on|off  an issue's AI participation (label mode): show why it
                                          would not start, or add/remove the opt-in label
   issue reviews <KEY>                    results pinned for review, and merges seen against them
+  attention [--all|--resolved] [--issue KEY]  what a human must look at (open by default)
   reconcile
   backup
   migrate-labels plan --workspace <id> --label <l> --to-do <status> --review <status> [--out <f>]
@@ -371,6 +373,7 @@ function printStatus(io: CliIo, status: RouterStatus): void {
     `webhook delay:     ${status.webhooks.delayMs === null ? "-" : `${Math.round(status.webhooks.delayMs / 1000)}s`}`,
   );
   io.out(`blocked reports:   ${status.reports.blocked}`);
+  io.out(`needs attention:   ${status.attention.open}`);
 }
 
 async function workers(parsed: ParsedArgs, io: CliIo): Promise<number> {
@@ -549,6 +552,31 @@ async function issue(parsed: ParsedArgs, io: CliIo): Promise<number> {
   throw new UsageError(`unknown issue subcommand "${sub}"`);
 }
 
+/** `attention` (M4-09): read-only list of attention items. */
+async function attention(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const query = new URLSearchParams();
+  query.set("status", parsed.values.all ? "all" : parsed.values.resolved ? "resolved" : "open");
+  const issueKey = stringOption(parsed, "issue");
+  if (issueKey) query.set("issue", issueKey);
+  const { items } = await client.get<{ items: AttentionItemRow[] }>(`/attention?${query}`);
+  if (parsed.values.json) {
+    printJson(io, items);
+    return 0;
+  }
+  if (items.length === 0) io.out("nothing needs attention");
+  for (const item of items) {
+    const times = item.occurrences > 1 ? ` x${item.occurrences} since ${item.firstSeenAt}` : "";
+    io.out(
+      `${item.status === "open" ? "!" : "-"} ${item.issueKey}  ${item.kind}  ${item.lastSeenAt}${times}`,
+    );
+    io.out(`    ${item.reason}`);
+    if (item.previousId) io.out(`    recurred after ${item.previousId}`);
+    if (item.resolution) io.out(`    resolved ${item.resolvedAt}: ${item.resolution}`);
+  }
+  return 0;
+}
+
 function requireOption(parsed: ParsedArgs, name: string): string {
   const value = stringOption(parsed, name);
   if (!value) throw new UsageError(`missing --${name}`);
@@ -651,6 +679,16 @@ export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
       return reports(parseCommandArgs(args, COMMON_OPTIONS), io);
     case "issue":
       return issue(parseCommandArgs(args, COMMON_OPTIONS), io);
+    case "attention":
+      return attention(
+        parseCommandArgs(args, {
+          ...COMMON_OPTIONS,
+          all: { type: "boolean" },
+          resolved: { type: "boolean" },
+          issue: { type: "string" },
+        }),
+        io,
+      );
     case "migrate-labels":
       return migrateLabels(
         parseCommandArgs(args, {

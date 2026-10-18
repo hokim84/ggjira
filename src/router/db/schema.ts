@@ -404,3 +404,36 @@ export const REVIEW_TARGET_STATEMENTS: readonly string[] = [
   )`,
   "CREATE INDEX IF NOT EXISTS idx_review_records_issue ON review_records (issue_key)",
 ];
+
+/**
+ * Migration 12 (M4-09, ADR 0041). One row per occurrence of something a human has to look at:
+ * a failed run, a decision or scope stop, a result that needs individual review, a request held
+ * for its contract, a Jira report Router could not apply. `incident_key` (issue + kind + cause)
+ * groups repeats: while a row is open, the same incident only bumps `occurrences`/`last_seen_at`.
+ * Once resolved, the same incident is a new row linked through `previous_id`. Nothing reads this
+ * table to decide whether to run anything.
+ */
+export const ATTENTION_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS attention_items (
+    id TEXT PRIMARY KEY,
+    incident_key TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    approval_id TEXT,
+    kind TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('immediate', 'standard')),
+    reason TEXT NOT NULL,
+    evidence TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    occurrences INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL CHECK (status IN ('open', 'resolved')),
+    resolved_at TEXT,
+    resolution TEXT,
+    previous_id TEXT REFERENCES attention_items (id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_attention_open_incident
+    ON attention_items (incident_key) WHERE status = 'open'`,
+  "CREATE INDEX IF NOT EXISTS idx_attention_issue ON attention_items (issue_key)",
+  "CREATE INDEX IF NOT EXISTS idx_attention_status ON attention_items (status)",
+];

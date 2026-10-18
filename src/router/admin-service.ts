@@ -46,6 +46,12 @@ import { oldestUnprocessedEventAt } from "./db/events.js";
 import { recordAdminHold } from "./db/holds.js";
 import { listOpenReadinessHolds, type ReadinessHoldRow } from "./db/readiness-holds.js";
 import {
+  type AttentionItemRow,
+  type AttentionKind,
+  countOpenAttention,
+  listAttentionItems,
+} from "./db/attention.js";
+import {
   listReviewRecords,
   listReviewTargets,
   type ReviewRecordRow,
@@ -143,6 +149,8 @@ export interface RouterStatus {
   recoveryRequired: number;
   webhooks: { oldestUnprocessedAt: string | null; delayMs: number | null };
   reports: { blocked: number };
+  /** Open attention items: what a human must look at now (M4-09). */
+  attention: { open: number };
 }
 
 export interface AdminConfigView {
@@ -885,6 +893,23 @@ export class AdminService {
       recoveryRequired: jobs.recovery_required ?? 0,
       webhooks: { oldestUnprocessedAt, delayMs: elapsedMs(oldestUnprocessedAt, now) },
       reports: { blocked: blocked.size },
+      attention: { open: countOpenAttention(this.db) },
+    };
+  }
+
+  /** Attention items (M4-09), newest activity first. Read-only; resolving happens on its own when
+   *  the cause goes away (a new approval, a later success, a matched merge, a cleared report). */
+  attention(filter: { status?: string; issueKey?: string; kind?: string }): {
+    items: AttentionItemRow[];
+  } {
+    const status =
+      filter.status === "all" ? undefined : filter.status === "resolved" ? "resolved" : "open";
+    return {
+      items: listAttentionItems(this.db, {
+        ...(status ? { status } : {}),
+        ...(filter.issueKey ? { issueKey: filter.issueKey.toUpperCase() } : {}),
+        ...(filter.kind ? { kind: filter.kind as AttentionKind } : {}),
+      }),
     };
   }
 

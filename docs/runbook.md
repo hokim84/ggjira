@@ -593,6 +593,24 @@ label 모드 workspace에서는 AI 전용 상태 없이 일반 상태 흐름을 
 
 AI 전용 상태를 Jira 워크플로에서 지우는 것은 전환 조건이 아니다. 충분히 관찰한 뒤 따로 한다.
 
+## 29. 확인 필요 항목 (ADR 0041)
+
+웹 UI 대시보드의 "확인 필요", `ggjira router status`의 `needs attention`, `ggjira router attention`이 사람이
+지금 봐야 할 것이다. 같은 사건은 하나로 묶이고 횟수(`x3`)가 늘어난다.
+
+| 종류 | 뜻 | 할 일 | 해소 시점 |
+|---|---|---|---|
+| `failed` | 실행 실패·시간 초과 | 이슈 댓글의 이유를 고치고 다시 요청 | 같은 이슈의 성공, 또는 새 승인 |
+| `decision_needed` | 결정 대기 | 설명에 결정을 반영하고 다시 요청 | 새 승인 |
+| `scope_deviation` | 범위 이탈로 커밋 전 중단 | 계약을 고치거나 범위를 줄여 다시 요청 | 새 승인 |
+| `review_required` | 고위험·미검증·커밋 없음 등 개별 검토 | 결과를 직접 확인 | 검토 커밋과 같은 PR 머지, 새 결과, 새 승인 |
+| `readiness_hold` | 계약 절이 빠져 시작 안 함 | 설명에 Acceptance Criteria·Verification 추가 | 계약이 채워짐 |
+| `report_blocked` | Jira 반영이 막힘 | 원인(워크플로·권한)을 고치고 `router reports retry` | 재시도가 반영됨 |
+
+- 해소는 기록일 뿐이다. 해소됐다고 실행이 시작되지 않는다. 실행은 Jira의 새 요청(승인)만 시작한다.
+- `--all`이나 `--resolved`로 해소 이력을 본다. "recurred after"는 해소된 같은 사건의 재발이다.
+- 같은 이유의 반복 실패는 Jira 댓글을 다시 달지 않는다. 이유가 바뀌면 새 댓글이 달린다.
+
 ## 28. Jira 웹훅 진단 (ADR 0038)
 
 Router는 서명이 맞는 웹훅의 이벤트 종류·이슈 키·프로젝트·바뀐 필드만 `events`에 저장한다. 이슈 본문·댓글·

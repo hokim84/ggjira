@@ -34,6 +34,8 @@ import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
 import { inputHashMatches } from "./approval.js";
 import { reRequestHint } from "./workflow-mode.js";
+import { recordAttention, resolveAttention } from "./db/attention.js";
+import { SETTLED_BY_NEW_APPROVAL } from "./attention.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 import {
   checkJobAgainstJira,
@@ -279,11 +281,28 @@ async function reconcileIssue(
       missing: decision.missing ?? [],
       now,
     });
+    // M4-09: every pass that still finds it held is one more occurrence, never another comment.
+    recordAttention(deps.db, {
+      issueKey: issue.key,
+      approvalId,
+      kind: "readiness_hold",
+      cause: [...(decision.missing ?? [])].sort().join(","),
+      severity: "immediate",
+      reason: "the implementation request lacks contract sections and was not started",
+      evidence: { missing: [...(decision.missing ?? [])].sort() },
+      now,
+    });
     report.held.push({ issueKey: issue.key, target: "human", reason: decision.reason });
     return;
   }
   // Any other outcome means the contract gap (if there was one) is no longer what holds it.
   resolveReadinessHolds(deps.db, issue.key, now);
+  resolveAttention(deps.db, {
+    issueKey: issue.key,
+    kinds: ["readiness_hold"],
+    resolution: "the request no longer lacks contract sections",
+    now,
+  });
 
   if (isRouteDispatch(decision)) {
     const job = createJob(deps.db, {
@@ -300,6 +319,7 @@ async function reconcileIssue(
       now,
     });
     report.jobsCreated.push(job.id);
+    settleOnNewApproval(deps.db, issue.key, approvalId, now);
     return;
   }
 
@@ -317,10 +337,28 @@ async function reconcileIssue(
       now,
     });
     report.jobsCreated.push(job.id);
+    settleOnNewApproval(deps.db, issue.key, approvalId, now);
     return;
   }
 
   report.held.push({ issueKey: issue.key, target: decision.target, reason: decision.reason });
+}
+
+/** M4-09: a fresh approval of the issue settles what earlier runs left for a human. Bookkeeping
+ *  only — the approval itself, not the resolution, is what lets the new job run. */
+function settleOnNewApproval(
+  db: Database.Database,
+  issueKey: string,
+  approvalId: string,
+  now: string,
+): void {
+  resolveAttention(db, {
+    issueKey,
+    kinds: SETTLED_BY_NEW_APPROVAL,
+    resolution: `approved again (${approvalId})`,
+    exceptApprovalId: approvalId,
+    now,
+  });
 }
 
 /** What the assignment pass needs — no Jira, so `jobs/next` can run it on demand for one worker

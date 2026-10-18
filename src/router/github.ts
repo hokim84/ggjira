@@ -11,6 +11,7 @@ import {
   recordPullRequestCheck,
 } from "./db/pull-requests.js";
 import { insertReportBatch } from "./db/report-steps.js";
+import { resolveAttention } from "./db/attention.js";
 import {
   appendReviewRecord,
   getReviewTargetForAttempt,
@@ -149,6 +150,14 @@ export function handlePullRequestClosed(
       detail: { repo: row.repo, number: row.number, ...(judged ? { reason: judged.reason } : {}) },
       at: now,
     });
+    if (judged?.outcome === "matched" || judged?.outcome === "unverified") {
+      resolveAttention(db, {
+        issueKey: row.issueKey,
+        kinds: ["review_required"],
+        resolution: `pull request merged by ${event.by ? `github:${event.by}` : "github"}`,
+        now,
+      });
+    }
     if (job && workspace) {
       insertReportBatch(db, {
         batchId: pullRequestBatchId(row.repo, row.number),

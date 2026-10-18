@@ -290,19 +290,33 @@ function decisionTransition(input: ResultJournalInput): ReportStepSpec[] {
   return to ? [finishTransition(input, to)] : [];
 }
 
+/** How a human asks for the job again: a fresh approval (ADR 0019, ADR 0037). */
+function reRequest(input: ResultJournalInput): string {
+  const status = `move the issue back to "${approvalStatusFor(input.job.kind, input.workspace)}"`;
+  const label = optInLabelOf(input.workspace);
+  return label ? `${status}, or remove and re-add the "${label}" label` : status;
+}
+
+/**
+ * Change → impact → what the human does → evidence (M4-09). A retry that fails the same way is
+ * counted on its attention item instead of posting this again (src/router/worker-service.ts).
+ */
 function failureSteps(
   input: ResultJournalInput,
   summary: string,
   reason: string,
 ): ReportStepSpec[] {
+  const { workflow } = input.workspace;
   const lines = [
     input.finalState === "timed_out" ? "Execution timed out." : "Execution failed.",
-    "",
-    "Summary:",
-    summary || "(no summary)",
+    `Impact: the issue stays in "${workflow.inProgressStatus}" with the "${input.config.reporting.failureLabel}" label, and GGJIRA does not run it again under this approval.`,
+    `Next: fix the cause, then ${reRequest(input)}.`,
     "",
     "Failure Reason:",
     reason,
+    "",
+    "Summary:",
+    summary || "(no summary)",
   ];
   if (input.result.blockingIssue) lines.push("", "Blocking Issue:", input.result.blockingIssue);
   const evidence = input.result.localEvidence;
@@ -313,12 +327,7 @@ function failureSteps(
     if (evidence.worktreePath) lines.push(`- worktree: ${evidence.worktreePath}`);
     lines.push(`- cleanup: ${evidence.cleanup}`);
   }
-  lines.push(
-    "",
-    `To run it again, move the issue back to "${approvalStatusFor(input.job.kind, input.workspace)}".`,
-    "",
-    signature(input.job, input.attemptId),
-  );
+  lines.push("", signature(input.job, input.attemptId));
   // ADR 0021: the issue stays in `inProgressStatus`; the label is what marks it failed.
   return [
     { kind: "comment", params: { body: lines.join("\n") } },

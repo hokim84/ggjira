@@ -42,6 +42,136 @@ const BLOCKERS = {
   ],
 };
 
+const REVIEW_CLASS = {
+  immediate: ["개별 검토 필요", "badge-bad"],
+  standard: ["일반 검토 대기", "badge-ok"],
+};
+
+const RISK_LABELS = {
+  high: "고위험",
+  not_matched: "규칙 불일치(저위험 확정 아님)",
+  unknown: "미확인",
+  not_applicable: "해당 없음",
+};
+
+const COMMIT_LABELS = {
+  committed: "커밋",
+  no_commit: "커밋 없음",
+  unknown: "미보고",
+  not_applicable: "해당 없음",
+};
+
+const ATTENTION_KINDS = {
+  failed: "실행 실패",
+  decision_needed: "결정 필요",
+  scope_deviation: "범위 이탈",
+  review_required: "개별 검토 필요",
+  readiness_hold: "계약 보완 필요",
+  report_blocked: "Jira 반영 막힘",
+};
+
+/** Opens the issue view on `key` (used by the dashboard's attention list). */
+export function openIssue(key) {
+  rememberKey(key);
+  location.hash = "#/issues";
+}
+
+/** The current review target (M4-11): which queue, why, which commit, and the high-risk call. */
+function reviewSection(targets) {
+  const target = targets.find((entry) => !entry.supersededBy);
+  if (!target) return null;
+  const { assessment } = target;
+  const [label, tone] = REVIEW_CLASS[target.reviewClass] || [target.reviewClass, "badge-muted"];
+  const commit = assessment.commit;
+  return h(
+    "section",
+    { class: "panel" },
+    h("h2", {}, "검토 대상 ", h("span", { class: `badge ${tone}` }, label)),
+    h(
+      "dl",
+      { class: "worker-meta" },
+      h("dt", {}, "결과"),
+      h("dd", {}, `${target.kind} · ${target.resultStatus} · ${target.createdAt}`),
+      h("dt", {}, "커밋"),
+      h(
+        "dd",
+        {},
+        COMMIT_LABELS[commit.state] || commit.state,
+        commit.headSha ? h("code", {}, ` ${commit.headSha.slice(0, 12)}`) : null,
+        commit.location ? h("span", { class: "muted" }, ` ${commit.location}`) : null,
+      ),
+      h("dt", {}, "고위험"),
+      h(
+        "dd",
+        {},
+        RISK_LABELS[assessment.risk.status] || assessment.risk.status,
+        h("span", { class: "muted" }, ` — ${assessment.risk.basis}`),
+        assessment.risk.policyVersion
+          ? h("span", { class: "muted" }, ` (규칙 ${assessment.risk.policyVersion})`)
+          : null,
+      ),
+      h("dt", {}, "acceptance"),
+      h(
+        "dd",
+        {},
+        assessment.verification.reported
+          ? `통과 ${assessment.verification.pass} · 실패 ${assessment.verification.fail} · 미검증 ${assessment.verification.notVerified}`
+          : "보고 없음",
+      ),
+      assessment.reasons.length ? h("dt", {}, "사유") : null,
+      assessment.reasons.length
+        ? h(
+            "dd",
+            {},
+            h(
+              "ul",
+              { class: "blockers" },
+              assessment.reasons.map((reason) => h("li", {}, reason.detail)),
+            ),
+          )
+        : null,
+    ),
+    h(
+      "small",
+      { class: "hint" },
+      "표시만 합니다. 여기서 승인하거나 완료 처리하지 않습니다. PR 머지는 이 커밋과 같을 때만 완료로 옮겨집니다.",
+    ),
+  );
+}
+
+/** Attention items for the issue (M4-09): open first, then the history. */
+function attentionSection(items) {
+  if (!items.length) return null;
+  return h(
+    "section",
+    { class: "panel" },
+    h("h2", {}, "주의 항목"),
+    h(
+      "ul",
+      { class: "blockers" },
+      items.map((item) =>
+        h(
+          "li",
+          {},
+          h(
+            "span",
+            { class: `badge ${item.status === "open" ? "badge-bad" : "badge-muted"}` },
+            item.status === "open" ? "미해결" : "해소",
+          ),
+          " ",
+          h("strong", {}, ATTENTION_KINDS[item.kind] || item.kind),
+          item.occurrences > 1 ? ` · ${item.occurrences}회` : "",
+          h("div", { class: "hint" }, item.reason),
+          item.previousId ? h("div", { class: "hint" }, "이전에 해소된 같은 사건의 재발") : null,
+          item.resolution
+            ? h("div", { class: "hint" }, `해소: ${item.resolution} (${item.resolvedAt})`)
+            : null,
+        ),
+      ),
+    ),
+  );
+}
+
 function readLastKey() {
   try {
     return sessionStorage.getItem(LAST_KEY) || "";
@@ -68,6 +198,7 @@ export function renderIssues(root, ctx) {
     value: readLastKey(),
   });
   const resultEl = h("div");
+  const historyEl = h("div");
   const messageEl = h("div");
   let current = null;
   let busy = false;
@@ -201,8 +332,18 @@ export function renderIssues(root, ctx) {
   }
 
   async function load(key) {
+    const encoded = encodeURIComponent(key);
+    // Router's own records do not need Jira, so they show even when the Jira read fails.
+    Promise.all([
+      admin("GET", `/issues/${encoded}/reviews`),
+      admin("GET", `/attention?status=all&issue=${encoded}`),
+    ])
+      .then(([reviews, attention]) =>
+        fill(historyEl, reviewSection(reviews.targets), attentionSection(attention.items)),
+      )
+      .catch(() => clear(historyEl));
     try {
-      draw(await admin("GET", `/issues/${encodeURIComponent(key)}/opt-in`));
+      draw(await admin("GET", `/issues/${encoded}/opt-in`));
     } catch (error) {
       if (error.status === 401) return ctx.logout();
       current = null;
@@ -285,6 +426,7 @@ export function renderIssues(root, ctx) {
     form,
     messageEl,
     resultEl,
+    historyEl,
   );
   // Picks up label/status changes made in Jira itself; skipped while a write is in flight.
   ctx.every(15000, () => {
