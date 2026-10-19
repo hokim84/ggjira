@@ -664,3 +664,23 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 - DB 백업을 복원하는 것은 마지막 수단이다. 백업 이후의 job·결과·보고 저널이 사라지므로, 복원 전에 그 사이 Jira
   댓글·전이와 push된 브랜치를 `audit_log`와 Jira에서 대조해 둔다.
 - label 모드 전환 자체의 되돌리기는 §27 "legacy → label 전환" 7단계를 따른다.
+
+## 33. Docker·VM 없이 이 PC에서 띄우기 (Windows 배치 파일)
+
+레포 루트의 배치 파일을 더블클릭하거나 명령 프롬프트에서 실행한다. 빌드 없이 `node --import tsx src\cli.ts …`로
+돈다(처음 한 번 `npm install`). Node.js 24 이상이 필요하다.
+
+| 파일 | 하는 일 |
+|---|---|
+| `run-router.bat` | `router serve`. 설정은 `router.config.json`(또는 `GGJIRA_ROUTER_CONFIG`). 없으면 셋업 모드(§20). 뒤에 붙인 인자는 그대로 넘긴다(예: `run-router.bat --port 8788`) |
+| `run-worker.bat` | `worker start`. 설정은 `worker.config.json`(또는 `GGJIRA_WORKER_CONFIG`). 처음에는 Router 주소·LLM·페어링 코드를 묻는다(§18) |
+| `run-all.bat` | Router 창을 열고 `/health`가 응답하면 Worker 창을 연다. 이미 응답하는 Router가 있으면 Worker만 연다 |
+
+- 멈추기: 각 창에서 Ctrl+C(워커는 1회: 현재 작업 후 종료, 2회: 즉시) 또는 창 닫기. 에러로 끝나면 창이 멈춰
+  메시지를 보여 준다.
+- 같은 PC면 워커 설정의 `routerUrl`은 `http://127.0.0.1:8787`이다(`http://`는 localhost만 허용).
+- 이 PC의 Router는 Jira 웹훅을 받을 수 없다(외부에서 127.0.0.1로 못 들어온다). 60초마다 하는 보완 조회로 요청을
+  찾으므로 반영이 최대 1분 늦다. 바로 보려면 `ggjira router reconcile`을 쓴다.
+- `run-all.bat`의 포트는 Router 설정의 `http.port`(없으면 8787)에서 읽는다. 두 번 실행하면 워커가 하나 더 뜬다.
+- 실제 Jira·LLM CLI를 쓰는 실행이다. 시험만 하려면 `GGJIRA_ROUTER_CONFIG`·`GGJIRA_WORKER_CONFIG`를 없는 경로로
+  두고 띄우면 셋업 모드와 워커 첫 실행 질문까지만 간다.
