@@ -96,6 +96,19 @@ describe("executionRecord", () => {
     });
   });
 
+  it("names no model when a Codex provider leaves the choice to Codex's own config", () => {
+    const codex = WorkerProviderConfigSchema.parse({ id: "codex", type: "codex" });
+    expect(codex.model).toBeUndefined();
+    expect(WorkerProviderConfigSchema.parse({ id: "claude" }).model).toBe("sonnet");
+    const record = executionRecord(codex, { result: run({}) });
+    expect(record).not.toHaveProperty("model");
+    expect(record).not.toHaveProperty("modelSource");
+    expect(executionRecord(codex, { result: run({ model: "gpt-x" }) })).toMatchObject({
+      model: "gpt-x",
+      modelSource: "reported",
+    });
+  });
+
   it("keeps a failed or crashed call, with whatever usage it reported", () => {
     expect(
       executionRecord(provider, {

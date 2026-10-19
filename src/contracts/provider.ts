@@ -29,7 +29,9 @@ export const WorkerProviderConfigSchema = z
     id: z.string().min(1),
     type: z.enum(["claude-code", "codex"]).default("claude-code"),
     command: z.string().min(1).optional(),
-    model: z.string().min(1).default("sonnet"),
+    /** Claude Code defaults to `sonnet`. Codex without a model uses the account's own default from
+     *  `~/.codex/config.toml`: a ChatGPT-account login rejects models it does not offer. */
+    model: z.string().min(1).optional(),
     timeoutMs: z
       .number()
       .int()
@@ -41,5 +43,6 @@ export const WorkerProviderConfigSchema = z
   .transform((provider) => ({
     ...provider,
     command: provider.command ?? (provider.type === "codex" ? "codex" : "claude"),
+    model: provider.model ?? (provider.type === "codex" ? undefined : "sonnet"),
   }));
 export type WorkerProviderConfig = z.infer<typeof WorkerProviderConfigSchema>;

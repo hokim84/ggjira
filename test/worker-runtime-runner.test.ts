@@ -126,7 +126,7 @@ describe("WorkerRunner against a live Router", () => {
 
   async function makeRunner(
     provider: WorkerProvider,
-    opts: { fetch?: FetchLike; token?: string } = {},
+    opts: { fetch?: FetchLike; token?: string; sleep?: (ms: number) => Promise<void> } = {},
   ): Promise<{ runner: WorkerRunner; spool: ResultSpool; token: string }> {
     let token = opts.token;
     if (!token) {
@@ -152,6 +152,7 @@ describe("WorkerRunner against a live Router", () => {
       worktreesRoot: path.join(workDir, "worktrees"),
       heartbeatIntervalMs: 20,
       leaseLossMs: 300,
+      ...(opts.sleep ? { sleep: opts.sleep } : {}),
     });
     return { runner, spool, token };
   }
@@ -264,6 +265,44 @@ describe("WorkerRunner against a live Router", () => {
 
     expect(provider.aborted).toBe(true);
     expect(getJob(router.db, jobId)?.state).toBe("cancelled");
+  });
+
+  it("keeps trying to connect while Router is unreachable, then connects", async () => {
+    let refusals = 2;
+    const controller = new AbortController();
+    const startingFetch: FetchLike = async (input, init) => {
+      if (!input.endsWith("/workers/session")) return fetch(input, init);
+      if (refusals > 0) {
+        refusals -= 1;
+        throw new TypeError("fetch failed");
+      }
+      // Connected: end the run before it starts polling.
+      controller.abort();
+      return fetch(input, init);
+    };
+    const waits: number[] = [];
+    const { runner } = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()), {
+      fetch: startingFetch,
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    });
+
+    await runner.run(controller.signal);
+
+    expect(refusals).toBe(0);
+    expect(waits).toEqual([5_000, 5_000]);
+    expect(router.db.prepare("SELECT COUNT(*) AS n FROM worker_sessions").get()).toEqual({ n: 1 });
+  });
+
+  it("stops when Router refuses the worker's credential instead of retrying", async () => {
+    const { runner } = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()), {
+      token: "not-a-real-token",
+      sleep: async () => {
+        throw new Error("must not retry a 4xx");
+      },
+    });
+    await expect(runner.run(new AbortController().signal)).rejects.toMatchObject({ status: 401 });
   });
 
   it("aborts on its own after losing contact with Router for the lease-loss window", async () => {

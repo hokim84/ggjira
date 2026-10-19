@@ -28,7 +28,7 @@ describe("workflow rules (ADR 0044, ADR 0047)", () => {
   it("asks for a new approval the way each kind is approved", () => {
     expect(reRequestHint(testWorkspace)).toContain(PLAN_REVIEW_STATUS);
     expect(reRequestHint(testWorkspace, "planning")).toBe(
-      `move the issue to "${REQUEST_STATUS}" again`,
+      `move the issue out of "${REQUEST_STATUS}" and back into it`,
     );
   });
 

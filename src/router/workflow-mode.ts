@@ -30,7 +30,7 @@ export function reRequestHint(
   const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
   return kind === "implementation"
     ? `move the issue to "${planReviewStatus}" and then to "${inProgressStatus}" to run the approved plan again, or to "${requestStatus}" to plan it again`
-    : `move the issue to "${requestStatus}" again`;
+    : `move the issue out of "${requestStatus}" and back into it`;
 }
 
 /** Whether a dependency no longer blocks the issue that names it: only `doneStatus`, or a result a

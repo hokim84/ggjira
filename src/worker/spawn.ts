@@ -1,6 +1,51 @@
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 
 const DEFAULT_KILL_GRACE_MS = 5000;
+
+/** The script an npm `.cmd` shim runs: `"%dp0%\node_modules\…\bin\codex.js" %*`. */
+const NPM_SHIM_SCRIPT = /"%~?dp0%?\\([^"]+?\.[cm]?js)"/i;
+
+/**
+ * Finds what `spawn` should run for a CLI name on Windows. Without a shell, `spawn` only finds
+ * `.exe`/`.com` files, and Node refuses to run `.cmd`/`.bat` at all, but npm installs CLIs such
+ * as `codex` as a `.cmd` shim that runs a Node script. So a bare name is looked up through PATH
+ * and PATHEXT, and an npm shim runs its script with this Node directly. Going through cmd.exe
+ * instead would re-parse the prompt argument. Elsewhere, and when nothing matches, the command
+ * is returned unchanged so `spawn` reports its own error.
+ */
+export function resolveCommand(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[] } {
+  if (platform !== "win32") return { command, args };
+  const envValue = (name: string) =>
+    Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1] ?? "";
+  const extensions = (envValue("PATHEXT") || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((ext) => ext.toLowerCase())
+    .filter((ext) => [".com", ".exe", ".bat", ".cmd"].includes(ext));
+  const hasDir = command.includes("/") || command.includes("\\");
+  const dirs = hasDir ? [""] : envValue("PATH").split(path.delimiter).filter(Boolean);
+  const names = path.extname(command) ? [command] : extensions.map((ext) => `${command}${ext}`);
+  for (const dir of dirs) {
+    for (const name of names) {
+      const file = dir ? path.join(dir, name) : name;
+      if (!existsSync(file)) continue;
+      if (!/\.(cmd|bat)$/i.test(file)) return { command: file, args };
+      const script = NPM_SHIM_SCRIPT.exec(readFileSync(file, "utf-8"))?.[1];
+      if (!script) return { command: file, args };
+      return {
+        command: process.execPath,
+        args: [path.join(path.dirname(file), ...script.split("\\")), ...args],
+      };
+    }
+  }
+  return { command, args };
+}
 
 export interface SpawnRunOptions {
   command: string;
@@ -84,7 +129,8 @@ export function runProcessWithTimeout(opts: SpawnRunOptions): Promise<SpawnRunRe
   const killGraceMs = opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
 
   return new Promise<SpawnRunResult>((resolve) => {
-    const child = spawn(opts.command, opts.args, {
+    const resolved = resolveCommand(opts.command, opts.args);
+    const child = spawn(resolved.command, resolved.args, {
       cwd: opts.cwd,
       // Process-group leader on POSIX so `killProcessTree` can signal `-pid`. On Windows,
       // `detached` would only open a separate console; `taskkill /T` walks the tree instead.

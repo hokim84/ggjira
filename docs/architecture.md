@@ -227,10 +227,13 @@ DB와 루프 없이 `/ui/`와 `/api/v1/setup/*`만 제공하고, 콘솔에 찍�
   `--append-system-prompt`로 넘긴다.
 - `CodexCliProvider`: `codex exec --json --output-last-message <file>`을 쓴다. 시스템 프롬프트와
   스키마는 프롬프트 본문에 넣는다. 실제 `codex` CLI로는 아직 검증하지 않았다(ADR 0010).
+  `providers[].model`이 없으면 `-m`을 넘기지 않아 Codex 자신의 설정(`~/.codex/config.toml`)이 고른 모델을
+  쓴다. ChatGPT 계정 로그인은 제공하지 않는 모델을 거절하기 때문이다. Claude Code의 기본 모델은 `sonnet`이다.
 
 프로세스 제어는 `src/worker/spawn.ts`가 한다. timeout이 나면 트리 종료를 요청하고 5초 뒤 강제
-종료한다. Windows는 `taskkill /T`, POSIX는 프로세스 그룹을 쓴다. `FakeWorkerProvider`는 테스트
-전용이다.
+종료한다. Windows는 `taskkill /T`, POSIX는 프로세스 그룹을 쓴다. Windows에서는 명령 이름을
+PATH·PATHEXT로 찾고, npm `.cmd` 셰임이면 그 Node 스크립트를 직접 실행한다(셸을 거치지 않는다).
+`FakeWorkerProvider`는 테스트 전용이다.
 
 ## 배포
 

@@ -220,6 +220,21 @@ npm run dev -- worker start      # 이후: 바로 실행
   `ggjira`라는 단어는 넣지 않는다. 설치하려면 `npm run build && npm link`.
 - **`LLM CLI를 찾지 못했습니다`**: `claude` 또는 `codex`를 설치하고 로그인한 뒤 다시 실행한다. 코드는 LLM을
   고른 뒤에야 쓰므로 같은 코드를 다시 쓸 수 있다(10분 안).
+- **실행 실패 `Failed to spawn worker: spawn codex ENOENT`(Windows)**: npm으로 설치한 `codex`는
+  `codex.cmd` 셰임이라 셸 없는 `spawn`이 찾지 못한다. 워커는 PATH·PATHEXT로 찾고 npm 셰임이면 그 Node
+  스크립트를 직접 실행한다(`src/worker/spawn.ts` `resolveCommand`). 이 메시지가 계속 나오면 `where codex`로
+  워커를 띄운 터미널의 PATH에 있는지 보고, 없으면 워커 설정 `providers[].command`에 실행 파일 경로를 적는다.
+  워커를 재시작한 뒤 이슈를 요청 상태 밖으로 옮겼다가 다시 요청 상태로 옮긴다(실패한 승인으로는 다시
+  실행하지 않는다).
+- **Codex 실행 실패 `The '<model>' model is not supported when using Codex with a ChatGPT account`**: 워커
+  설정 `providers[].model`에 계정이 쓸 수 없는 모델이 적혀 있다. 지우면 Codex 설정(`~/.codex/config.toml`의
+  `model`)을 따른다. 예전 버전은 Codex에도 Claude 기본값 `sonnet`을 넘겼다. 실제 원인은 워커 로그
+  `data\worker-logs\<jobId>-<attemptId>.jsonl`의 `turn.failed`에 있다. 실패 요약의 `rmcp ... /mcp` 오류는
+  Codex 설정의 다른 MCP 서버가 꺼져 있다는 경고일 뿐이다.
+- **워커 로그에 `Router is not reachable; retrying in 5s`**: 워커가 시작할 때나 Router가 다시 시작되는 동안
+  Router에 연결하지 못했다. 워커는 끝나지 않고 연결될 때까지 5초마다 다시 시도한다(예전에는 `fetch failed`로
+  바로 끝났다). 계속되면 Router가 떠 있는지(`run-router.bat` 창, `http://127.0.0.1:8787/ui/`)와 워커 설정의
+  `routerUrl`을 확인한다. Router가 4xx로 거절하면(예: 토큰 폐기) 재시도하지 않고 끝난다.
 - **`페어링 코드가 맞지 않거나 만료됐습니다`**: 웹 UI에서 새 코드를 받아 입력한다(같은 질문을 다시 한다).
 - **`터미널에서 실행하면 설정을 차례로 묻습니다`**: 서비스나 CI처럼 물을 수 없는 곳이다.
   `--router`, `--pairing-code`, `--provider claude-code|codex`를 주고, 저장소는 `cloneUrl`로 받는다.
