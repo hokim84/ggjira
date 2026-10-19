@@ -24,12 +24,12 @@ const FORM_KEYS = new Set([
 
 const STATUS_FIELDS = [
   ["requestStatus", "요청 상태", "사람이 AI에게 맡길 때 옮기는 상태"],
-  ["inProgressStatus", "진행 상태", "워커가 시작하면 Router가 옮김"],
+  ["inProgressStatus", "진행 상태", "사람과 AI가 함께 쓰는 작업 상태"],
   ["reviewStatus", "검토 상태", "작업이 끝나면 Router가 옮김. 사람이 확인 후 완료 처리"],
   [
     "planReviewStatus",
     "계획 검토 상태",
-    "delegation: 계획이 사람을 기다리는 상태. 여기서 진행 상태로 옮기면 그 계획을 승인",
+    "계획이 사람의 검토를 기다리는 상태. 여기서 진행 상태로 옮기면 그 계획을 승인",
   ],
   ["planningStatus", "계획 요청 상태", "비우면 PM 계획을 쓰지 않음", true],
   [
@@ -46,8 +46,7 @@ const STATUS_FIELDS = [
   ],
 ];
 
-/** Statuses only the legacy workflow has (ADR 0037: label mode plans and asks for decisions without
- *  dedicated statuses; ADR 0044: delegation mode plans every request from its request status). */
+/** Legacy-only planning and decision statuses. */
 const LEGACY_ONLY_STATUS_FIELDS = new Set(["planningStatus", "needsDecisionStatus"]);
 
 /** Statuses only the delegation workflow has (ADR 0044). */
@@ -59,9 +58,6 @@ function statusFieldUsed(mode, key) {
   if (LEGACY_ONLY_STATUS_FIELDS.has(key)) return !mode || mode === "legacy";
   return true;
 }
-
-const MODE_HINT =
-  "label: opt-in 라벨이 붙은 이슈만 일반 할 일/진행/검토/완료 상태로 처리. delegation: 요청 상태로 옮기면 항상 계획부터 하고, 계획 검토 → 진행으로 옮겨야 실행(라벨 무관). 비우면 AI 전용 상태(legacy)";
 
 const HOP_BADGES = {
   ok: ["badge-ok", "연결됨"],
@@ -521,32 +517,17 @@ export async function renderConfig(root, ctx) {
     );
   }
 
-  /** ADR 0037/0044: legacy (AI-only statuses), label (opt-in label on the ordinary workflow) or
-   *  delegation (delegated by status, always planned first). */
-  function modeFields(i) {
-    const ws = state.workspaces[i];
-    const mode = field(state, `workspaces.${i}.workflow.mode`, "AI 참여 방식", {
-      kind: "select",
-      options: ["label", "delegation"],
-      optional: true,
-      hint: MODE_HINT,
-    });
-    mode.addEventListener("change", () => {
-      // Fields another mode does not use; the config would be rejected with them set.
-      for (const [key] of STATUS_FIELDS) {
-        if (!statusFieldUsed(ws.workflow.mode, key)) ws.workflow[key] = undefined;
-      }
-      if (ws.workflow.mode !== "label") ws.workflow.optInLabel = undefined;
-      workspaces.redraw();
-    });
-    if (ws.workflow.mode !== "label") return [mode];
-    return [
-      mode,
-      field(state, `workspaces.${i}.workflow.optInLabel`, "opt-in 라벨", {
-        placeholder: "ai-enabled",
-        hint: "이 라벨이 붙은 이슈만 AI가 맡습니다. 라벨을 떼면 진행 중인 실행도 취소됩니다",
-      }),
-    ];
+  function workflowNotice(ws) {
+    return ws.workflow.mode === "delegation"
+      ? h(
+          "p",
+          { class: "muted" },
+          "요청 상태로 옮기면 계획부터 시작하고, 계획 검토 → 작업 중으로 옮기면 승인된 계획을 실행합니다.",
+        )
+      : notice(
+          "info",
+          "기존 상태 설정을 유지 중입니다. 계획 우선 위임으로 전환하려면 운영 안내의 전환 절차를 따르세요.",
+        );
   }
 
   function workflowBlock(i) {
@@ -575,7 +556,7 @@ export async function renderConfig(root, ctx) {
       ),
       info?.loading ? h("p", { class: "muted" }, `${projectKey} 상태를 불러오는 중…`) : null,
       info?.error ? errorNotice({ message: `${projectKey}: ${info.error}` }) : null,
-      h("div", { class: "grid" }, modeFields(i)),
+      workflowNotice(ws),
       h(
         "div",
         { class: "grid" },
@@ -616,7 +597,7 @@ export async function renderConfig(root, ctx) {
         workflowBlock(i),
       ];
     },
-    () => ({ id: "", repositoryId: "", projectKeys: [], workflow: {} }),
+    () => ({ id: "", repositoryId: "", projectKeys: [], workflow: { mode: "delegation" } }),
     "workspace 추가",
   );
 
@@ -683,7 +664,7 @@ export async function renderConfig(root, ctx) {
       "Jira 프로젝트와 저장소, 상태 흐름을 묶습니다. 상태 이름과 순서는 Jira 워크플로에 맞춰 자유롭게 정하면 되고, 아래에서 Router가 하는 전이가 워크플로에 있는지 바로 확인합니다.",
       workspaces,
     ),
-    section("계획(PM)", "계획 요청 상태를 쓸 때만 필요합니다.", planningFields),
+    section("계획(PM)", "계획에서 생성할 하위 작업의 유형과 개수를 설정합니다.", planningFields),
     section(
       "GitHub PR 머지 → 완료",
       "워커가 연 PR이 머지되면 이슈를 검토 상태에서 '완료 상태'로 옮깁니다. 웹훅으로 바로 알고, 놓친 것은 주기적으로 GitHub에 확인합니다.",

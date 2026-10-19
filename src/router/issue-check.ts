@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
-import { type IssueRequirements, readIssueRequirements } from "../issue/requirements.js";
 import type { IssueSnapshot, PlanningContext } from "../contracts/envelope.js";
 import type { JobKind } from "../contracts/protocol.js";
+import { type IssueRequirements, readIssueRequirements } from "../issue/requirements.js";
 import { JiraApiError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraComment, JiraIssue } from "../jira/types.js";
@@ -21,18 +21,11 @@ import {
   inputHashMatches,
 } from "./approval.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
-import {
-  approvalStatusFor,
-  hasOptIn,
-  isDelegationMode,
-  isLabelMode,
-  optInLabelOf,
-  resolveJobKind,
-} from "./workflow-mode.js";
 import { type ApprovalRow, getApproval, upsertApproval } from "./db/approvals.js";
 import type { JobRow } from "./db/jobs.js";
 import { getActivePlanDeployment } from "./db/plan-delegation.js";
 import { taskApprovalId } from "./report-journal.js";
+import { approvalStatusFor, isDelegationMode, resolveJobKind } from "./workflow-mode.js";
 
 /** An issue's approval as Jira shows it right now. */
 export interface IssueApproval {
@@ -81,18 +74,11 @@ export async function readIssueApproval(
     resolveJobKind({
       workspace,
       issue,
-      requirements,
-      planTask,
-      parentPlanHasTasks:
-        isLabelMode(workspace) && !planTask && !issue.isSubtask
-          ? await hasPlanTasks(jira, issue.key)
-          : false,
     });
   const approvalId = await computeApprovalId(
     jira,
     issue,
     approvalStatusFor(resolvedKind, workspace),
-    optInLabelOf(workspace),
   );
   const inputHash = computeInputHash({ kind: resolvedKind, issue, requirements, planTask });
   const legacyInputHash = computeLegacyInputHash(requirements, planTask);
@@ -186,14 +172,6 @@ async function readDelegatedApproval(
     throw new NotDelegatedError(`${issue.key}'s plan approval changed`);
   }
   return { kind: "implementation", approvalId: deployment.approvalId };
-}
-
-/** Whether the issue is the parent of a GGJIRA plan that split it into tasks. */
-async function hasPlanTasks(jira: JiraGateway, issueKey: string): Promise<boolean> {
-  const plan = PlanMetadataSchema.safeParse(
-    await jira.getIssueProperty(issueKey, PLAN_PROPERTY_KEY),
-  );
-  return plan.success && plan.data.taskIds.length > 0;
 }
 
 /** A plan task is runnable only under its parent's current plan version (the v4 runtime's check,
@@ -365,9 +343,6 @@ export async function checkJobAgainstJira(
   }
   if (!issue.assigneeAccountId) {
     return { verdict: "revoked", reason: `${issue.key} lost its human assignee` };
-  }
-  if (!hasOptIn(issue, workspace)) {
-    return { verdict: "revoked", reason: `${issue.key} no longer carries the opt-in label` };
   }
 
   let approval: IssueApproval;

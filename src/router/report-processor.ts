@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { ReadinessGap } from "../issue/readiness.js";
 import { JiraApiError, StatusNotReachableError, TransitionNotFoundError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
@@ -9,13 +10,7 @@ import {
   readPlanTaskMetadata,
 } from "../pm/metadata.js";
 import { PlanApplyError, renderParentPlan, renderTaskDescription } from "../pm/plan-render.js";
-import type { ReadinessGap } from "../issue/readiness.js";
 import { computeApprovalId, computeDelegationApprovalIds } from "./approval.js";
-import {
-  listPendingReadinessNotices,
-  markReadinessNotice,
-  type ReadinessHoldRow,
-} from "./db/readiness-holds.js";
 import {
   listAttentionItems,
   normalizeCause,
@@ -23,14 +18,19 @@ import {
   resolveAttentionItem,
 } from "./db/attention.js";
 import {
+  type ReadinessHoldRow,
+  listPendingReadinessNotices,
+  markReadinessNotice,
+} from "./db/readiness-holds.js";
+import {
+  type ReportStepRow,
+  type ReportStepStatus,
   getReportStep,
   isReportStepBlocked,
   isReportStepSettled,
   listBlockedReportSteps,
   listJobIdsWithReportWork,
   listJobReportSteps,
-  type ReportStepRow,
-  type ReportStepStatus,
   updateReportStep,
 } from "./db/report-steps.js";
 import type {
@@ -166,6 +166,12 @@ async function runTransition(
   step: ReportStepRow,
   params: TransitionParams,
 ): Promise<StepOutcome> {
+  if (Object.hasOwn(params, "optInLabel")) {
+    return {
+      status: "skipped",
+      reason: "obsolete label authorization; reconcile manually before retrying",
+    };
+  }
   const issue = await jira.getIssue(params.issueKey ?? step.issueKey);
   if (issue.statusName === params.to) return { status: "applied" };
   if (!params.from.includes(issue.statusName)) {
@@ -199,7 +205,7 @@ async function approvalStillStands(
     if (!run) return false;
     return (await computeApprovalId(jira, issue, rule.inProgressStatus)) === run.entryId;
   }
-  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus, params.optInLabel);
+  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus);
   return approvalId === params.approvalId;
 }
 

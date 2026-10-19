@@ -10,12 +10,12 @@ import {
 } from "../src/router/delegation-migration.js";
 import {
   DONE_STATUS,
-  LABEL_IN_PROGRESS_STATUS,
-  LABEL_REVIEW_STATUS,
-  LABEL_TRANSITIONS,
-  labelWorkspace,
-  OPT_IN_LABEL,
+  MIGRATION_IN_PROGRESS_STATUS,
+  MIGRATION_REVIEW_STATUS,
+  MIGRATION_TRANSITIONS,
   TODO_STATUS,
+  UNRELATED_LABEL,
+  migrationWorkspace,
 } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 
@@ -23,7 +23,7 @@ const REQUEST = "AI 계획 요청";
 const PLAN_REVIEW = "계획 검토 대기";
 const TARGET = { requestStatus: REQUEST, planReviewStatus: PLAN_REVIEW };
 const TRANSITIONS = [
-  ...LABEL_TRANSITIONS,
+  ...MIGRATION_TRANSITIONS,
   ...[REQUEST, PLAN_REVIEW].map((status) => ({
     id: `t-${status}`,
     name: status,
@@ -32,14 +32,14 @@ const TRANSITIONS = [
 ];
 
 /** The label workspace after the switch: same shared statuses, plus the delegation ones. */
-const delegationOfLabel: WorkspaceConfig = {
-  ...labelWorkspace,
+const delegationOfLegacy: WorkspaceConfig = {
+  ...migrationWorkspace,
   workflow: {
     mode: "delegation",
     requestStatus: REQUEST,
     planReviewStatus: PLAN_REVIEW,
-    inProgressStatus: LABEL_IN_PROGRESS_STATUS,
-    reviewStatus: LABEL_REVIEW_STATUS,
+    inProgressStatus: MIGRATION_IN_PROGRESS_STATUS,
+    reviewStatus: MIGRATION_REVIEW_STATUS,
     doneStatus: DONE_STATUS,
   },
 };
@@ -53,11 +53,11 @@ describe("delegation migration (ADR 0044)", () => {
   let router: RouterHarness;
 
   beforeEach(() => {
-    router = new RouterHarness({ config: { workspaces: [{ ...labelWorkspace }] } });
+    router = new RouterHarness({ config: { workspaces: [{ ...migrationWorkspace }] } });
     router.jira.seedProjectStatuses("KAN", [
       TODO_STATUS,
-      LABEL_IN_PROGRESS_STATUS,
-      LABEL_REVIEW_STATUS,
+      MIGRATION_IN_PROGRESS_STATUS,
+      MIGRATION_REVIEW_STATUS,
       DONE_STATUS,
       REQUEST,
       PLAN_REVIEW,
@@ -108,9 +108,9 @@ describe("delegation migration (ADR 0044)", () => {
   }
 
   it("lists what the switch means, refuses while a job may run, then starts nothing on its own (13)", async () => {
-    await seed("KAN-1", TODO_STATUS, [OPT_IN_LABEL]); // waited for AI under the label rules
-    await seed("KAN-2", LABEL_IN_PROGRESS_STATUS, [OPT_IN_LABEL]); // its job is still queued
-    await seed("KAN-3", LABEL_REVIEW_STATUS, [OPT_IN_LABEL]);
+    await seed("KAN-1", TODO_STATUS, [UNRELATED_LABEL]); // waited for AI under the label rules
+    await seed("KAN-2", MIGRATION_IN_PROGRESS_STATUS, [UNRELATED_LABEL]); // its job is still queued
+    await seed("KAN-3", MIGRATION_REVIEW_STATUS, [UNRELATED_LABEL]);
     await seed("KAN-4", REQUEST); // moved to the new request status before the switch
     const queued = createJob(router.db, {
       id: "job-2",
@@ -138,7 +138,7 @@ describe("delegation migration (ADR 0044)", () => {
     // Nothing in Jira moved, and no label was touched.
     expect(router.jira.transitions.map((move) => move.key)).toEqual(["KAN-2", "KAN-3", "KAN-4"]);
 
-    router.config.workspaces.splice(0, 1, delegationOfLabel);
+    router.config.workspaces.splice(0, 1, delegationOfLegacy);
     const report = await router.reconcile();
     expect(report.jobsCreated).toEqual([]);
     expect(report.held).toEqual([
@@ -171,7 +171,7 @@ describe("delegation migration (ADR 0044)", () => {
   });
 
   it("is reachable through the admin API", async () => {
-    await seed("KAN-1", TODO_STATUS, [OPT_IN_LABEL]);
+    await seed("KAN-1", TODO_STATUS, [UNRELATED_LABEL]);
     const response = await router.adminCall("POST", "/migrations/delegation/plan", {
       workspaceId: "ws1",
       target: TARGET,

@@ -20,32 +20,31 @@ export const testWorkspace: WorkspaceConfig = {
   },
 };
 
-/** A `label`-mode workspace (ADR 0037) on the ordinary four-status workflow. */
+/** A legacy workspace on shared status names, for migration tests. */
 export const TODO_STATUS = "To Do";
-export const LABEL_IN_PROGRESS_STATUS = "In Progress";
-export const LABEL_REVIEW_STATUS = "Review";
+export const MIGRATION_IN_PROGRESS_STATUS = "In Progress";
+export const MIGRATION_REVIEW_STATUS = "Review";
 export const DONE_STATUS = "Done";
-export const OPT_IN_LABEL = "ai-enabled";
+export const UNRELATED_LABEL = "ai-enabled";
 
-export const labelWorkspace: WorkspaceConfig = {
+export const migrationWorkspace: WorkspaceConfig = {
   id: "ws1",
   repositoryId: "repo1",
   projectKeys: ["KAN"],
   workflow: {
-    mode: "label",
-    optInLabel: OPT_IN_LABEL,
+    mode: "legacy",
     requestStatus: TODO_STATUS,
-    inProgressStatus: LABEL_IN_PROGRESS_STATUS,
-    reviewStatus: LABEL_REVIEW_STATUS,
+    inProgressStatus: MIGRATION_IN_PROGRESS_STATUS,
+    reviewStatus: MIGRATION_REVIEW_STATUS,
     doneStatus: DONE_STATUS,
   },
 };
 
 /** Every move between the four statuses, for seeding issues in a `label`-mode workspace. */
-export const LABEL_TRANSITIONS = [
+export const MIGRATION_TRANSITIONS = [
   TODO_STATUS,
-  LABEL_IN_PROGRESS_STATUS,
-  LABEL_REVIEW_STATUS,
+  MIGRATION_IN_PROGRESS_STATUS,
+  MIGRATION_REVIEW_STATUS,
   DONE_STATUS,
 ].map((status) => ({ id: `t-${status}`, name: `To ${status}`, toStatusName: status }));
 

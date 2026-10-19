@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadRouterConfig, RouterConfigError } from "../src/router/config.js";
+import { RouterConfigError, loadRouterConfig } from "../src/router/config.js";
 
 describe("loadRouterConfig", () => {
   let dataDir: string;
@@ -239,70 +239,6 @@ describe("loadRouterConfig", () => {
     expect(() => loadRouterConfig(configPath)).toThrow(RouterConfigError);
   });
 
-  describe("label mode (ADR 0037)", () => {
-    function labelConfig(workflow: Record<string, unknown>, extra: Record<string, unknown> = {}) {
-      return validConfig({
-        workspaces: [
-          {
-            id: "ws-1",
-            repositoryId: "repo-1",
-            projectKeys: ["KAN"],
-            workflow: {
-              mode: "label",
-              requestStatus: "To Do",
-              inProgressStatus: "In Progress",
-              reviewStatus: "Review",
-              ...workflow,
-            },
-          },
-        ],
-        ...extra,
-      });
-    }
-
-    it("accepts a label workspace and keeps legacy as the default", () => {
-      const config = loadRouterConfig(writeConfig(labelConfig({ optInLabel: " ai-enabled " })));
-      expect(config.workspaces[0]?.workflow).toMatchObject({
-        mode: "label",
-        optInLabel: "ai-enabled",
-      });
-      expect(loadRouterConfig(writeConfig(validConfig())).workspaces[0]?.workflow.mode).toBe(
-        undefined,
-      );
-    });
-
-    it.each([
-      ["without an opt-in label", {}, {}, /optInLabel is required/],
-      ["with a label containing spaces", { optInLabel: "ai enabled" }, {}, /cannot contain spaces/],
-      [
-        "with a planning status",
-        { optInLabel: "ai-enabled", planningStatus: "Plan" },
-        {},
-        /planningStatus is not used/,
-      ],
-      [
-        "with a decision status",
-        { optInLabel: "ai-enabled", needsDecisionStatus: "Decide" },
-        {},
-        /needsDecisionStatus is not used/,
-      ],
-      [
-        "whose label is the failure label",
-        { optInLabel: "AI-Failed" },
-        { reporting: { failureLabel: "ai-failed" } },
-        /reserved by GGJIRA \(reporting.failureLabel\)/,
-      ],
-      [
-        "whose label is the superseded marker",
-        { optInLabel: "ggjira-superseded" },
-        {},
-        /reserved by GGJIRA/,
-      ],
-    ])("rejects a label workspace %s", (_name, workflow, extra, message) => {
-      expect(() => loadRouterConfig(writeConfig(labelConfig(workflow, extra)))).toThrow(message);
-    });
-  });
-
   describe("delegation mode (ADR 0044)", () => {
     function delegationConfig(workflow: Record<string, unknown>) {
       return validConfig({
@@ -339,7 +275,7 @@ describe("loadRouterConfig", () => {
         { planReviewStatus: undefined },
         /planReviewStatus is required/,
       ],
-      ["with an opt-in label", { optInLabel: "ai-enabled" }, /optInLabel is not used/],
+      ["with an opt-in label", { optInLabel: "ai-enabled" }, /Unrecognized key/],
       ["with a planning status", { planningStatus: "Plan" }, /planningStatus is not used/],
       [
         "with a decision status",
@@ -362,9 +298,7 @@ describe("loadRouterConfig", () => {
 
     it("rejects a plan-review status outside delegation mode", () => {
       expect(() =>
-        loadRouterConfig(
-          writeConfig(delegationConfig({ mode: "label", optInLabel: "ai", planReviewStatus: "X" })),
-        ),
+        loadRouterConfig(writeConfig(delegationConfig({ mode: "legacy", planReviewStatus: "X" }))),
       ).toThrow(/planReviewStatus is only used in/);
     });
   });

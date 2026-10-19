@@ -519,80 +519,10 @@ Router와 워커는 `protocolVersion`이 같아야 한다. 다르면 426 `protoc
 4. 업그레이드 뒤 워커 로그에 `spooled result does not match this protocol version`이 보이면 2단계에서
    빠진 결과다. 파일은 spool에 그대로 있다. 내용을 확인한 뒤 해당 이슈를 다시 요청 상태로 옮긴다.
 
-## 27. label 모드: opt-in 라벨과 일반 상태 흐름 (ADR 0037)
+## 27. 라벨 기반 AI 참여 제거 (ADR 0046)
 
-label 모드 workspace에서는 AI 전용 상태 없이 일반 상태 흐름을 쓴다. 담당자가 있는 이슈가 할 일
-(`requestStatus`)에 있고 `optInLabel`이 붙어 있으면 Router가 맡는다. 설정 예:
-
-```json
-"workflow": {
-  "mode": "label",
-  "optInLabel": "ai-enabled",
-  "requestStatus": "해야 할 일",
-  "inProgressStatus": "진행 중",
-  "reviewStatus": "검토",
-  "doneStatus": "완료"
-}
-```
-
-`planningStatus`·`needsDecisionStatus`는 쓰지 않는다(있으면 설정 오류). opt-in 라벨은 대소문자를 구분하지
-않으며, `reporting.failureLabel`·`ggjira-superseded` 같은 GGJIRA 라벨과 같을 수 없다.
-
-### 동작
-
-- 시작: Acceptance Criteria·Verification이 있으면 구현, 없으면 PM 계획이 먼저 돈다. PM이 결과 하나로
-  보면 상위 이슈 설명에 계약을 채우고 검토 상태로 옮긴다. 계약을 확인한 뒤 할 일로 옮기면 구현이
-  시작된다. 여러 결과로 나누면 하위 이슈가 생기는데, 라벨은 붙지 않는다. 실행할 하위 이슈에 사람이
-  라벨을 붙인다. 하위 작업이 있는 상위 이슈를 다시 할 일로 옮기면 재계획한다.
-- 결정 요청·범위 이탈: 이슈는 진행 상태에 남고 댓글로 안내된다. 결정을 설명에 반영하고 할 일로 옮기면
-  새 승인으로 다시 시작된다.
-- 실패: 진행 상태에 남고 `ggjira-failed` 라벨이 붙는다. 같은 승인으로는 다시 돌지 않는다.
-- 라벨 제거: 대기 중이면 취소, 실행 중이면 중단을 요청한다(최대 5초 안에 확인). 이슈 상태는 그대로다.
-  다시 붙이면 새 승인이다.
-- 재작업: 검토 → 할 일로 옮기면 새 job이다.
-- 승인 뒤 요청 수정(제목·설명·계약): 대기 중이면 취소하고, 실행 중이면 중단을 요청한다. 늦게 온 결과는
-  반영하지 않는다. 같은 승인으로는 다시 돌지 않으며 로그 `held`에 "edited after it was approved"가 남는다.
-  고친 내용으로 실행하려면 할 일로 다시 옮기거나 라벨을 뗐다 다시 붙인다(새 승인, 새 입력 해시).
-
-### 이슈별 AI 참여 켜고 끄기 (ADR 0039)
-
-웹 UI 이슈 화면 또는 `ggjira router issue show KEY` / `ggjira router issue opt-in KEY on|off`. opt-in 라벨만
-바꾸고 다른 라벨은 그대로 둔다. 응답은 Jira를 다시 읽어 확인한 결과다.
-
-- `blocked:` 줄(웹 UI의 Router 항목)이 시작되지 않는 이유다. `not_requested`는 상태를, `no_assignee`는
-  담당자를, `readiness_hold`는 빠진 절을, `approval_held`·`inputs_changed`는 새 승인(라벨을 껐다 켜기)을 요구한다.
-- `409 not_label_mode`: legacy workspace다. 상태로 요청한다.
-- `502 unconfirmed`: 쓰기 결과를 확인하지 못했다. Jira에서 이슈의 라벨을 직접 보고 다시 조회한다.
-- `502 jira_forbidden`: Router의 Jira 계정에 그 이슈 편집 권한이 없다.
-- 누가 언제 바꿨는지: `audit_log`의 `issue.opt_in.*`(성공·변경 없음·실패 모두). actor는 호출자가 선언한
-  이름이고 인증은 공유 admin token이다.
-
-시작되지 않을 때: `ggjira router check --issue KEY`가 opt-in 라벨 유무와 전이 가능 여부를 보여 준다. Router
-로그 `pass:"reconcile"`의 `held`/`skipped`에 이유가 있다(담당자 없음, 하위 이슈의 계약 누락 등).
-
-### legacy → label 전환
-
-1. 기준선: `ggjira router backup`과 설정·비밀 파일 사본을 저장소 밖에 둔다. Git 태그만으로는 DB와 Jira가
-   복구되지 않는다.
-2. 제안(Jira를 바꾸지 않음):
-   `ggjira router migrate-labels plan --workspace <id> --label ai-enabled --to-do "<할 일>" --review "<검토>" --out plan.json`
-   - `add-label-and-request`: 요청·계획 요청 이슈. 라벨을 붙이고 할 일로 옮긴다.
-   - `move-to-review`: AI 작업 완료 이슈. 검토로 옮긴다.
-   - `manual`: 결정 대기, 진행 중, 계약이 이미 있는 계획 요청(label 모드에서는 구현으로 바뀜). 사람이 정한다.
-   - `blocked`: 아직 실행될 수 있는 job이 있다. 끝나기를 기다리거나 `jobs cancel`.
-3. `plan.json`을 검토하고 옮길 항목에만 `"approved": true`를 쓴다.
-4. 적용(workspace가 아직 legacy일 때): `ggjira router migrate-labels apply plan.json`. 이슈마다 결과를 출력하고
-   `audit_log`에 남긴다(`migration.label.*`). 계획 이후 바뀐 이슈는 건너뛰고, 실패한 이슈가 있어도 나머지는
-   계속한다. legacy는 라벨을 보지 않으므로 이 단계에서는 아무것도 시작되지 않는다. 실패한 항목은 원인을
-   고친 뒤 같은 파일로 다시 apply한다. 이미 옮긴 항목은 `skipped`로 나온다.
-5. 설정 전환: 웹 UI 설정에서 AI 참여 방식을 label로 바꾸고 opt-in 라벨과 일반 상태를 지정해 저장한다.
-   아직 실행될 수 있는 job(대기·임대·실행·중단 요청·복구 필요)이 그 workspace에 있으면
-   409 `workspace_busy`로 거절된다. 실패·시간 초과 job은 막지 않는다.
-6. 관찰: `ggjira router status`와 Router 로그로 새 job과 댓글이 한 번씩만 생기는지 확인한다.
-7. 되돌리기: 설정을 legacy로 되돌린다(같은 `workspace_busy` 규칙). 옮긴 이슈는 `audit_log`의 `migration.label.applied`
-   기록을 보고 골라서 되돌린다. 일괄 되돌리기는 없다.
-
-AI 전용 상태를 Jira 워크플로에서 지우는 것은 전환 조건이 아니다. 충분히 관찰한 뒤 따로 한다.
+라벨 참여 모드, opt-in 토글/API/CLI, label 이관 명령은 제거됐다. 상태 기반 위임은 §34를 따른다.
+기존 label 설정은 유효하지 않으며 자동으로 legacy/delegation으로 변환하지 않는다. 구 버전에서 배정을 중지하고 활성 작업과 미완료 보고를 정리한 뒤 상태·승인 이력을 대조해 전환한다.
 
 ## 28. Jira 웹훅 진단 (ADR 0038)
 
@@ -663,7 +593,7 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
   그동안의 검토 대상·주의 항목·사용량 기록은 남지만 갱신되지 않는다. PR 머지 → 완료는 ADR 0027 동작으로 돌아간다.
 - DB 백업을 복원하는 것은 마지막 수단이다. 백업 이후의 job·결과·보고 저널이 사라지므로, 복원 전에 그 사이 Jira
   댓글·전이와 push된 브랜치를 `audit_log`와 Jira에서 대조해 둔다.
-- label 모드 전환 자체의 되돌리기는 §27 "legacy → label 전환" 7단계를 따른다.
+- 라벨 방식으로 되돌리는 기능은 제거됐다. 버전 복구 시 Jira·DB·이후 실행 결과를 함께 대조한다(§27).
 
 ## 32. 검토 대기와 판단 (ADR 0043)
 
@@ -672,8 +602,7 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 
 - 판단: `ggjira router reviews judge <targetId> confirm|hold|rework [--note "사유"]`. 보류·재작업 요청은 사유가
   필요하고 Jira에 댓글 하나가 달린다. 확인은 Router에만 남고 `review_required` 주의 항목을 해소한다.
-- 판단은 아무것도 실행하지 않는다. 재작업 요청 뒤에도 이슈를 다시 요청 상태로 옮기거나(legacy) 라벨을 뗐다
-  붙여야(label) 새 실행이 시작된다. 확인했다고 완료로 가지 않는다.
+- 판단은 아무것도 실행하지 않는다. 재작업 요청 뒤에도 상태 기반으로 다시 요청해야 새 실행이 시작된다. 확인했다고 완료로 가지 않는다.
 - 판단자 이름은 웹 UI에 적은 이름 또는 CLI의 OS 사용자 이름이다(`admin:<이름>`, `admin-token`). 공유 token 뒤의
   자기 신고다.
 - 409 `stale_review_target`: 그 사이 같은 이슈의 새 결과가 나왔거나(`currentTargetId`가 새 대상), 이슈가 다시
@@ -717,7 +646,7 @@ delegation 모드 workspace에서는 라벨이 아무것도 시작하거나 멈�
 }
 ```
 
-다섯 상태는 서로 달라야 한다. `optInLabel`·`planningStatus`·`needsDecisionStatus`는 쓰지 않는다(있으면 설정 오류).
+다섯 상태는 서로 달라야 한다. `planningStatus`·`needsDecisionStatus`는 쓰지 않는다. 폐기된 opt-in 설정도 오류로 거절한다.
 `AI 계획 요청`·`계획 검토 대기`는 Jira 워크플로에 새로 만든다. 보드에서는 각 상태를 다른 컬럼에 매핑해 서로 다른
 단계가 한 컬럼에 숨지 않게 한다. `ggjira router check`와 웹 UI 설정의 "Router가 하는 전이"는 다음 전이를 확인한다.
 
@@ -765,16 +694,16 @@ delegation 모드 workspace에서는 라벨이 아무것도 시작하거나 멈�
   - 결정 대기 계획: 결정에 답하고 요청 상태로 옮긴다.
   - 이전 요청의 계획: 새 계획이 나올 때까지 기다리거나 다시 요청한다.
   - Jira의 계획 버전이 다름: 다시 요청한다.
-- 라벨을 바꾸는 이슈 화면 토글은 delegation workspace에서 `409 not_label_mode`다.
+- 이슈 화면은 읽기 전용이다. `GET /api/v1/admin/issues/:key`로 조회하며 라벨 변경 토글과 opt-in 엔드포인트는 없다.
 
-### label·legacy → delegation 전환
+### legacy → delegation 전환 (기존 label 설치는 먼저 §27 확인)
 
 1. 기준선: `ggjira router backup`과 설정·비밀 파일 사본을 저장소 밖에 둔다.
 2. Jira 워크플로에 `AI 계획 요청`·`계획 검토 대기` 상태와 전이를 추가한다(아직 아무도 쓰지 않는다).
 3. 제안(Jira를 바꾸지 않음):
    `ggjira router migrate-delegation plan --workspace <id> --request "AI 계획 요청" --plan-review "계획 검토 대기" --out plan.json`
    - `keep`: 사람의 작업이거나 그대로 둘 결과.
-   - `manual`: 이전 규칙에서 AI를 기다리던 이슈(라벨 + 할 일 등). 전환 뒤 아무것도 집어 가지 않는다. 맡길 이슈는
+   - `manual`: 이전 요청·계획 요청 상태에서 AI를 기다리던 이슈. 전환 뒤 아무것도 집어 가지 않는다. 맡길 이슈는
      전환 뒤 사람이 `AI 계획 요청`으로 옮긴다. 라벨만 있는 이슈를 일괄로 옮기지 않는다.
    - `blocked`: 아직 실행될 수 있는 job이 있다. 끝나기를 기다리거나 `jobs cancel`.
    이전 규칙이 쓰던 상태를 요청·계획 검토 상태로 고르면 `409 not_migratable`이다.
@@ -782,7 +711,7 @@ delegation 모드 workspace에서는 라벨이 아무것도 시작하거나 멈�
    Jira에는 아무것도 쓰지 않는다. 전환 시점에 이미 요청 상태에 있는 이슈의 요청과, 계획 검토 → 작업 중 이력을
    `admin_holds`(actor `migration:delegation`)에 남긴다. 그래서 전환이나 과거 이력이 새 요청·승인이 되지 않는다.
    `audit_log`에는 `migration.delegation.*`로 남는다. 다시 실행해도 같은 기준선이다.
-5. 설정 전환: 웹 UI 설정에서 AI 참여 방식을 delegation으로 바꾸고, 같은 요청·계획 검토 상태를 지정해 저장한다.
+5. 설정 전환: 설정 파일의 workflow.mode를 delegation으로 바꾸고, 같은 요청·계획 검토 상태를 지정해 적용한다. 새 Workspace는 웹 UI에서 delegation으로 생성되며 방식 선택 메뉴는 없다.
    실행될 수 있는 job이 있으면 409 `workspace_busy`다.
 6. 관찰: 첫 reconcile의 `held`에 "requested before the switch to delegation"이 나오면 기준선이 동작한 것이다.
    그 이슈를 맡기려면 요청 상태 밖으로 옮겼다가 다시 넣는다.

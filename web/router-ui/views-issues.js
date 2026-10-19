@@ -1,5 +1,4 @@
-// Issue view: one issue's AI participation (label mode, M4-04, ADR 0039; delegation mode,
-// ADR 0044 — where it stands, the next move in Jira, no label toggle).
+// Read-only issue status, delegation and review history.
 
 import { admin } from "./api.js";
 import { clear, errorNotice, fill, h, notice } from "./dom.js";
@@ -22,9 +21,8 @@ const JOB_STATE_LABELS = {
 /** A failed run keeps its approval's slot (ADR 0021): it does not run again by itself. */
 const STOPPED_JOB_STATES = new Set(["failed", "timed_out", "recovery_required"]);
 
-/** Why it would not start and what a person does about it (codes from src/router/issue-opt-in.ts). */
+/** Why it would not start and what a person does about it (codes from src/router/issue-view.ts). */
 const BLOCKERS = {
-  opt_in_missing: [() => "opt-in 라벨이 없습니다", "아래 버튼으로 AI 참여를 켜세요."],
   not_requested: [
     (view) => `요청 상태("${view.requestStatus}")가 아닙니다`,
     "AI에게 (다시) 맡길 때만 Jira에서 요청 상태로 옮기세요. 검토·완료 중이면 그대로 두면 됩니다.",
@@ -41,10 +39,6 @@ const BLOCKERS = {
   readiness_hold: [
     () => "구현 요청에 계약 절이 빠져 있습니다",
     "설명에 빠진 절을 채우면 다음 조회 때 시작됩니다.",
-  ],
-  not_label_mode: [
-    () => "legacy workspace입니다",
-    "AI 전용 상태로 요청합니다. 라벨은 쓰이지 않습니다.",
   ],
 };
 
@@ -320,8 +314,6 @@ export function renderIssues(root, ctx) {
   const resultEl = h("div");
   const historyEl = h("div");
   const messageEl = h("div");
-  let current = null;
-  let busy = false;
 
   function blockerList(view) {
     if (view.openJob) {
@@ -342,11 +334,9 @@ export function renderIssues(root, ctx) {
           ? h(
               "div",
               { class: "hint" },
-              view.mode === "label"
-                ? "같은 승인으로는 다시 돌지 않습니다. 원인을 고친 뒤 요청 상태로 다시 옮기거나 AI 참여를 껐다 켜세요."
-                : view.mode === "delegation"
-                  ? "같은 승인으로는 다시 돌지 않습니다. 같은 계획으로 다시: 계획 검토 → 진행. 범위를 바꾸려면 요청 상태로 옮겨 다시 계획하세요."
-                  : "같은 승인으로는 다시 돌지 않습니다. 원인을 고친 뒤 요청 상태로 다시 옮기세요.",
+              view.mode === "delegation"
+                ? "같은 승인으로는 다시 돌지 않습니다. 같은 계획으로 다시: 계획 검토 → 진행. 범위를 바꾸려면 요청 상태로 옮겨 다시 계획하세요."
+                : "같은 승인으로는 다시 돌지 않습니다. 원인을 고친 뒤 요청 상태로 다시 옮기세요.",
             )
           : null,
       );
@@ -376,37 +366,7 @@ export function renderIssues(root, ctx) {
     );
   }
 
-  function toggle(view) {
-    if (view.mode !== "label") return null;
-    const turnOn = !view.optedIn;
-    const button = h(
-      "button",
-      {
-        type: "button",
-        class: turnOn ? "btn btn-primary" : "btn btn-danger",
-        disabled: busy,
-        onclick: () => setOptIn(view.issueKey, turnOn),
-      },
-      busy ? "Jira에 반영하는 중…" : turnOn ? "AI 참여 켜기" : "AI 참여 끄기",
-    );
-    return h(
-      "div",
-      { class: "worker-actions" },
-      button,
-      h(
-        "small",
-        { class: "hint" },
-        turnOn
-          ? `라벨 "${view.optInLabel}"만 붙입니다. 실행 승인이 아니며, 요청 상태·담당자·계약 조건이 맞아야 시작합니다.`
-          : view.openJob && !STOPPED_JOB_STATES.has(view.openJob.state)
-            ? `라벨 "${view.optInLabel}"을 뗍니다. 열린 작업은 몇 초 안에 취소되거나 중단 요청됩니다. 이미 push된 변경은 되돌리지 않습니다.`
-            : `라벨 "${view.optInLabel}"만 뗍니다. 다른 라벨은 그대로 둡니다.`,
-      ),
-    );
-  }
-
   function draw(view) {
-    current = view;
     fill(
       resultEl,
       h(
@@ -430,11 +390,7 @@ export function renderIssues(root, ctx) {
             { class: "worker-badges" },
             view.mode === "delegation"
               ? h("span", { class: "badge badge-muted" }, "상태 위임")
-              : view.mode !== "label"
-                ? h("span", { class: "badge badge-muted" }, "legacy")
-                : view.optedIn
-                  ? h("span", { class: "badge badge-ok" }, "AI 참여 켜짐")
-                  : h("span", { class: "badge badge-muted" }, "AI 참여 꺼짐"),
+              : h("span", { class: "badge badge-muted" }, "legacy"),
           ),
         ),
         h(
@@ -465,7 +421,6 @@ export function renderIssues(root, ctx) {
           h("dt", {}, "Router"),
           h("dd", {}, view.delegation && !view.openJob ? "열린 작업 없음" : blockerList(view)),
         ),
-        toggle(view),
       ),
     );
   }
@@ -486,45 +441,10 @@ export function renderIssues(root, ctx) {
       )
       .catch(() => clear(historyEl));
     try {
-      draw(await admin("GET", `/issues/${encoded}/opt-in`));
+      draw(await admin("GET", `/issues/${encoded}`));
     } catch (error) {
       if (error.status === 401) return ctx.logout();
-      current = null;
       fill(resultEl, errorNotice(error));
-    }
-  }
-
-  async function setOptIn(key, enabled) {
-    if (busy) return;
-    busy = true;
-    clear(messageEl);
-    if (current) draw(current);
-    try {
-      const result = await admin("PUT", `/issues/${encodeURIComponent(key)}/opt-in`, { enabled });
-      busy = false;
-      draw(result.view);
-      messageEl.append(
-        result.outcome === "unchanged"
-          ? notice(
-              "info",
-              `이미 AI 참여가 ${enabled ? "켜져" : "꺼져"} 있습니다(Jira에서 먼저 바뀐 것 같습니다). 아무것도 쓰지 않았습니다.`,
-            )
-          : notice(
-              "ok",
-              `AI 참여를 ${enabled ? "켰습니다" : "껐습니다"}. Jira에서 다시 읽어 확인했습니다.`,
-            ),
-      );
-    } catch (error) {
-      busy = false;
-      if (error.status === 401) return ctx.logout();
-      messageEl.append(
-        errorNotice(
-          error.code === "unconfirmed"
-            ? { message: `${error.message} — 반영 여부를 확인하지 못했습니다. 다시 조회해 보세요.` }
-            : error,
-        ),
-      );
-      await load(key);
     }
   }
 
@@ -539,7 +459,7 @@ export function renderIssues(root, ctx) {
       h(
         "small",
         { class: "hint" },
-        "label 방식 workspace에서는 AI 참여(opt-in 라벨)를 켜거나 끄고, delegation 방식에서는 위임 단계와 다음에 옮길 상태를 봅니다.",
+        "이슈의 현재 작업과 보류 이유, 상태 기반 위임 단계와 다음 행동을 확인합니다.",
       ),
     ),
     h(
@@ -573,6 +493,6 @@ export function renderIssues(root, ctx) {
   );
   // Picks up label/status changes made in Jira itself; skipped while a write is in flight.
   ctx.every(15000, () => {
-    if (!busy && keyInput.value.trim()) load(keyInput.value.trim().toUpperCase());
+    if (keyInput.value.trim()) load(keyInput.value.trim().toUpperCase());
   });
 }

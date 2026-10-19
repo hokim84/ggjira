@@ -37,7 +37,7 @@ describe("M4 bookkeeping makes no model calls", () => {
     "router/review-gate.ts",
     "router/review-judgment.ts",
     "router/attention.ts",
-    "router/issue-opt-in.ts",
+    "router/issue-view.ts",
     "router/github.ts",
     "router/db/execution-records.ts",
     "router/db/attention.ts",

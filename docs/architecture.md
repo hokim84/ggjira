@@ -51,23 +51,15 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 
 ## 승인과 배정
 
-workspace마다 `workflow.mode`가 있다(ADR 0037, `src/router/workflow-mode.ts`). 기본값 `legacy`는 AI
-전용 상태(요청·계획 요청·결정 대기)로 일한다. `label`은 일반 할 일/진행/검토/완료 흐름에서
-`workflow.optInLabel`이 붙은 이슈만 맡는다. 계획 요청 상태와 결정 대기 상태는 없다.
-`delegation`(ADR 0044)은 상태로 위임하고 항상 계획부터 한다. 아래 "delegation 모드"에서 따로 설명한다.
+workspace마다 `workflow.mode`가 있다. 기본값 `legacy`는 기존 요청·계획 요청 상태를 구별한다.
+`delegation`(ADR 0044)은 상태로 위임하고 항상 계획부터 한다. 라벨 참여 정책은 제거됐다(ADR 0046).
 
-1. 후보: workspace별 JQL이다. legacy는 `project in (...) AND status in (request, planning)`이고,
-   label은 `status = 할 일 AND labels = <optInLabel>`이다(코드에서도 라벨을 다시 확인). v4 메타 이슈
-   라벨은 제외한다.
-2. 승인 id: 요청 상태에 진입한 changelog 항목(`src/router/approval.ts`)이다. label 모드에서는 할 일
-   진입과 opt-in 라벨 추가 가운데 마지막 항목이다. 라벨을 떼었다 다시 붙이면 새 승인이다.
-   job 종류도 label 모드에서는 상태가 아니라 요청이 정한다. Acceptance Criteria·Verification이 없는
-   상위 이슈와 이미 하위 작업으로 나뉜 상위 이슈는 계획 job이다. plan-task와 Jira 하위 이슈는 항상 구현
-   job이다(계약이 없으면 준비 보류). 입력 hash(v2,
-   ADR 0035)는 job 종류·제목·설명 전체·파싱한 계약·plan-task 위치를 정규화해 만든다. 댓글·라벨·
-   상태·Assignee는 넣지 않는다. 업그레이드 전에 만든 job은 닫힐 때까지 v1 해시로 비교한다. 같은 승인
-   id에서 입력이 바뀌면 열린 job을 취소하고 그 승인을 보류한다(`admin_holds`,
-   `router:inputs-changed`). 재승인해야 다시 실행된다.
+1. 후보: workspace의 요청 상태로 조회한다. legacy는 요청·계획 요청 상태, delegation은 요청 상태만 조회한다.
+   승인된 계획의 구현은 Router 배포 기록으로 찾는다. v4 메타 이슈 라벨은 제외한다.
+2. 승인 id: 요청 상태 진입 또는 delegation의 계획 승인 전이 사건이다. 라벨 편집은 승인을 만들지 않는다.
+   입력 hash(v2, ADR 0035)는 job 종류·제목·설명·파싱한 계약·plan-task 위치로 만든다.
+   댓글·라벨·상태·Assignee는 포함하지 않는다. 이전 job은 닫힐 때까지 v1 해시와도 비교한다.
+   같은 승인에서 입력이 바뀌면 열린 job을 취소하고 그 승인을 보류한다(`admin_holds`).
 3. `RuleDecisionProvider`: 인간 Assignee, 계획 버전(부모의 현재 계획일 때만), 의존성, capability,
    구현 요청의 준비 상태(Acceptance Criteria·Verification, ADR 0034), 실행-Agent 필드 고정을 본다.
    결과는 `planning | implementation | wait | human | ignore`다. 준비가 안 된 구현 요청은
@@ -146,15 +138,14 @@ start 허가 ──▶ [start:<attempt>]   승인 상태 → inProgressStatus
 result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제거 → reviewStatus
                                     실패: 댓글 + ggjira-failed (inProgressStatus 유지)
                                     결정 요청: 댓글 → needsDecisionStatus ?? reviewStatus
-                                      (label 모드: 전이 없음, 진행 상태 유지, ADR 0037)
                                       (계획: plan.decision / 구현: 이탈·결정·증거 위치, ADR 0036)
                                     계획: 부모 계획 블록 → 하위 이슈 생성(마커) → plan-task
                                           → ggjira.plan → superseded → 댓글 → reviewStatus
 중단 확인 ───▶ [recovered:<attempt>] "적용된 것 없음" 댓글
 ```
 
-상태 전이 단계는 승인 상태·approvalId와 함께 label 모드의 opt-in 라벨을 기록해 두고, 실행 직전 같은
-규칙으로 승인을 다시 계산한다. 각 단계는 쓰기 전에 Jira를 다시 읽는다. 결과가 불명확한 쓰기는 `uncertain`으로 두고 재조회로
+상태 전이 단계는 승인 상태·approvalId와 승인 규칙을 기록하고 실행 직전 재검증한다.
+폐기된 라벨 승인 필드가 있는 과거 전이는 skipped로 남기고 자동 재실행하지 않는다. 각 단계는 쓰기 전에 Jira를 다시 읽는다. 결과가 불명확한 쓰기는 `uncertain`으로 두고 재조회로
 확정한다. 확정할 수 없는 하위 이슈 생성은 `recovery_required`로 둔다. 명확한 거부는 `failed`다.
 `failed`와 `recovery_required`는 관리자의 `reports retry`로만 풀린다. 이 재시도는 워커를 다시
 실행하지 않는다.
@@ -173,11 +164,10 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 | `router jobs list/show/cancel/retry/resolve` | `/jobs…` | list는 keyset 페이지네이션. retry는 Jira 승인을 재확인한 뒤 새 attempt를 만든다. resolve는 중단 확인 |
 | `router reports list/retry` | `/reports…` | 막힌 보고 배치 재대기 |
 | (API만) | `GET /holds/readiness` | 계약이 불완전해 시작하지 않은 구현 요청과 안내 댓글 상태(ADR 0034) |
-| `router migrate-labels plan/apply` | `POST /migrations/label/plan`, `…/apply` | legacy workspace의 이슈를 label 흐름으로 옮김. plan은 읽기 전용 제안이고, apply는 사람이 `approved`로 표시한 항목만 이슈별로 처리·재조회·감사 기록한다(ADR 0037) |
-| `router issue show/opt-in` (웹 UI 이슈) | `GET/PUT /issues/:key/opt-in` | label 모드 이슈의 opt-in 라벨만 부분 수정으로 붙이거나 떼고, 재조회로 확인한 뒤 성공으로 답한다. 조회는 시작되지 않는 이유를 함께 준다(ADR 0039) |
 | `router usage` | `GET /executions` | 결과마다 provider 호출(모델·호출 id·종료 사유·토큰·비용)과 원래 요구사항·실행 유형·원인 분류. 미보고는 NULL(ADR 0042) |
 | `router attention` | `GET /attention` | 주의 항목(실패·결정·범위 이탈·개별 검토·계약 보완·막힌 보고). 같은 사건은 횟수로 묶고 해소·재발 이력을 남긴다(ADR 0041) |
 | `router issue reviews` | `GET /issues/:key/reviews` | 검토 대상(최신·대체됨)과 PR 머지·판단 기록. 읽기 전용(ADR 0040) |
+| `router issue show` (웹 UI 이슈) | `GET /issues/:key` | 현재 상태·보류 이유·위임 단계의 읽기 전용 조회 |
 | `router reviews` (웹 UI 검토) | `GET /reviews` | 판단을 기다리는 현재 검토 대상(`pending`·`held`). 분류·상태·책임자·부모로 거름(ADR 0043) |
 | `router reviews judge` | `POST /reviews/:targetId/judgments` | 확인·보류·재작업 요청 기록. 오래된 대상은 409. 상태 이동·머지·승인 없음(ADR 0043) |
 | `router reconcile` | `POST /reconcile` | sync lane에서 즉시 1회 실행 |
@@ -244,3 +234,11 @@ DB와 루프 없이 `/ui/`와 `/api/v1/setup/*`만 제공하고, 콘솔에 찍�
   loopback만 예외다.
 - `docker compose -f docker-compose.test.yml run --rm --build check`는 Linux에서 check 전체를
   돌린다. 여기에는 Router 하나와 Fake 워커 둘의 통합 시나리오가 포함된다.
+
+## 기본 프롬프트 조회
+
+관리자 API `GET /api/v1/admin/prompts`와 웹 UI 프롬프트 메뉴는 PM/구현 Agent의 현재 기본 지침, 합성 입력 예시, 출력 스키마를 읽기 전용으로 제공한다. 실행 builder를 재사용하며 실제 이슈나 과거 실행은 조회하지 않는다(ADR 0045).
+
+## 상태 기반 참여만 지원 (ADR 0046)
+
+라벨 기반 참여·승인·철회와 라벨 이관 경로는 제거했다. 지원 모드는 legacy와 delegation이며, 폐기된 mode/opt-in 설정은 검증 오류다. 이슈 진단은 GET /api/v1/admin/issues/:key로 읽기만 한다. 과거 opt-in 승인 정보가 포함된 미완료 상태 전이는 재실행하지 않고 skipped로 남겨 운영자가 대조한다. 일반 실패·대체·메타 라벨은 위임 기능과 별개로 유지한다.

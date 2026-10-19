@@ -3,39 +3,38 @@ import { userInfo } from "node:os";
 import path from "node:path";
 import {
   type CliIo,
-  formatTable,
   type ParsedArgs,
+  UsageError,
+  formatTable,
   parseCommandArgs,
   printCheckItems,
   requirePositional,
   stringOption,
-  UsageError,
 } from "../cli-io.js";
 import { JiraClient } from "../jira/client.js";
 import { rootLogger } from "../logger.js";
-import type { AdminBlockedBatch, AdminWorkerView, RouterStatus } from "./admin-service.js";
 import { AdminClient } from "./admin-client.js";
+import type { AdminBlockedBatch, AdminWorkerView, RouterStatus } from "./admin-service.js";
 import { type CheckItem, runRouterCheck } from "./check.js";
-import { loadRouterConfig, type RouterConfig } from "./config.js";
-import type { LabelMigrationPlan, LabelMigrationResult } from "./label-migration.js";
-import type { DelegationMigrationPlan, DelegationMigrationResult } from "./delegation-migration.js";
-import type { IssueOptInView, SetOptInResult } from "./issue-opt-in.js";
-import type { ReviewQueueItem, ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
-import type { AttentionItemRow } from "./db/attention.js";
-import type { ExecutionRecordRow, ExecutionTotals } from "./db/execution-records.js";
 import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
+import { type RouterConfig, loadRouterConfig } from "./config.js";
 import { RouterDaemon } from "./daemon.js";
+import type { AttentionItemRow } from "./db/attention.js";
 import { openRouterDb } from "./db/connection.js";
+import type { ExecutionRecordRow, ExecutionTotals } from "./db/execution-records.js";
 import type { JobPage, JobRow } from "./db/jobs.js";
+import type { ReviewQueueItem, ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
+import type { DelegationMigrationPlan, DelegationMigrationResult } from "./delegation-migration.js";
+import type { IssueView } from "./issue-view.js";
 import {
   GITHUB_TOKEN_ENV,
   JEV_API_KEY_ENV,
+  type RouterEnvSecrets,
+  RouterSecretsError,
   loadRouterGithubSecrets,
   loadRouterJevApiKey,
   loadRouterSecrets,
   parseEnvFile,
-  type RouterEnvSecrets,
-  RouterSecretsError,
 } from "./secrets.js";
 import { buildSetupServer } from "./setup-server.js";
 
@@ -55,9 +54,7 @@ export const ROUTER_USAGE = `ggjira router <command>
   jobs list [--state <s>] [--limit <n>] [--cursor <c>] | show <jobId>
        cancel <jobId> | retry <jobId> | resolve <jobId>
   reports list | retry <batchId>
-  issue show <KEY> | opt-in <KEY> on|off  an issue's AI participation: where it stands (delegation
-                                         mode), or why it would not start and the opt-in label
-                                         (label mode)
+  issue show <KEY>                      read-only issue status, delegation stage and blockers
   issue reviews <KEY>                    results pinned for review, and merges seen against them
   attention [--all|--resolved] [--issue KEY]  what a human must look at (open by default)
   reviews [--immediate|--standard] [--held|--all] [--assignee <accountId>] [--parent KEY]
@@ -68,9 +65,6 @@ export const ROUTER_USAGE = `ggjira router <command>
   usage [--issue KEY [--children]] [--json]   provider calls and token usage per result
   reconcile
   backup
-  migrate-labels plan --workspace <id> --label <l> --to-do <status> --review <status> [--out <f>]
-  migrate-labels apply <plan file>       move a legacy workspace onto the label workflow
-                                         (ADR 0037); apply runs only "approved": true entries
   migrate-delegation plan --workspace <id> --request <status> --plan-review <status> [--out <f>]
   migrate-delegation apply <plan file>   record the baseline before switching a workspace to
                                          status delegation (ADR 0044); moves nothing in Jira`;
@@ -473,7 +467,7 @@ async function reports(parsed: ParsedArgs, io: CliIo): Promise<number> {
   throw new UsageError(`unknown reports subcommand "${sub}"`);
 }
 
-function printIssueOptIn(io: CliIo, view: IssueOptInView): void {
+function printIssueView(io: CliIo, view: IssueView): void {
   io.out(`${view.issueKey}  ${view.summary}`);
   io.out(`  status:   ${view.statusName}`);
   io.out(`  labels:   ${view.labels.length ? view.labels.join(", ") : "(none)"}`);
@@ -497,11 +491,6 @@ function printIssueOptIn(io: CliIo, view: IssueOptInView): void {
     }
     return;
   }
-  io.out(
-    view.optInLabel
-      ? `  opt-in:   ${view.optedIn ? "on" : "off"} (label "${view.optInLabel}")`
-      : `  opt-in:   n/a (workspace "${view.workspaceId}" is in legacy mode)`,
-  );
   if (view.openJob) {
     io.out(`  job:      ${view.openJob.jobId} (${view.openJob.kind}, ${view.openJob.state})`);
   } else if (view.blockers.length === 0) {
@@ -543,10 +532,10 @@ function printReviews(
   }
 }
 
-/** `issue show|opt-in|reviews` (M4-03, M4-11): the opt-in label is the only thing it writes. */
+/** Read-only issue status and review records. */
 async function issue(parsed: ParsedArgs, io: CliIo): Promise<number> {
   const client = adminClient(parsed, io);
-  const sub = requirePositional(parsed, 1, "issue subcommand (show|opt-in|reviews)");
+  const sub = requirePositional(parsed, 1, "issue subcommand (show|reviews)");
   const key = requirePositional(parsed, 2, "issue key").toUpperCase();
   if (sub === "reviews") {
     const view = await client.get<{ targets: ReviewTargetRow[]; records: ReviewRecordRow[] }>(
@@ -556,30 +545,11 @@ async function issue(parsed: ParsedArgs, io: CliIo): Promise<number> {
     else printReviews(io, view);
     return 0;
   }
-  const endpoint = `/issues/${encodeURIComponent(key)}/opt-in`;
+  const endpoint = `/issues/${encodeURIComponent(key)}`;
   if (sub === "show") {
-    const view = await client.get<IssueOptInView>(endpoint);
+    const view = await client.get<IssueView>(endpoint);
     if (parsed.values.json) printJson(io, view);
-    else printIssueOptIn(io, view);
-    return 0;
-  }
-  if (sub === "opt-in") {
-    const wanted = requirePositional(parsed, 3, "on|off");
-    if (wanted !== "on" && wanted !== "off")
-      throw new UsageError(`expected on|off, got "${wanted}"`);
-    const result = await client.put<SetOptInResult>(endpoint, { enabled: wanted === "on" });
-    if (parsed.values.json) printJson(io, result);
-    else {
-      io.out(
-        result.outcome === "unchanged"
-          ? `${key} already has opt-in ${wanted}; nothing was written`
-          : `${key}: opt-in ${wanted}, confirmed by re-reading the issue`,
-      );
-      printIssueOptIn(io, result.view);
-      if (wanted === "off" && result.view.openJob) {
-        io.out("  Router cancels or asks the open job to stop on its next check (within seconds).");
-      }
-    }
+    else printIssueView(io, view);
     return 0;
   }
   throw new UsageError(`unknown issue subcommand "${sub}"`);
@@ -715,59 +685,6 @@ function requireOption(parsed: ParsedArgs, name: string): string {
   return value;
 }
 
-/** `migrate-labels plan|apply` (ADR 0037, runbook §27): plan writes a reviewable file, apply runs
- *  only the entries a human marked `"approved": true`. */
-async function migrateLabels(parsed: ParsedArgs, io: CliIo): Promise<number> {
-  const client = adminClient(parsed, io);
-  const sub = requirePositional(parsed, 1, "migrate-labels subcommand (plan|apply)");
-  if (sub === "plan") {
-    const plan = await client.post<LabelMigrationPlan>("/migrations/label/plan", {
-      workspaceId: requireOption(parsed, "workspace"),
-      target: {
-        optInLabel: requireOption(parsed, "label"),
-        toDoStatus: requireOption(parsed, "to-do"),
-        reviewStatus: requireOption(parsed, "review"),
-      },
-    });
-    const out = stringOption(parsed, "out");
-    if (out) writeFileSync(out, `${JSON.stringify(plan, null, 2)}\n`);
-    else printJson(io, plan);
-    if (!parsed.values.json) {
-      for (const line of formatTable(
-        ["ISSUE", "STATUS", "ACTION", "REASON"],
-        plan.entries.map((e) => [e.issueKey, e.status, e.action, e.reason]),
-      )) {
-        io.out(line);
-      }
-      if (out) {
-        io.out(
-          `\nWrote ${out}. Nothing was changed in Jira. Set "approved": true on the entries to apply, then run: ggjira router migrate-labels apply ${out}`,
-        );
-      }
-    }
-    return 0;
-  }
-  if (sub === "apply") {
-    const file = requirePositional(parsed, 2, "plan file");
-    const plan = JSON.parse(readFileSync(file, "utf-8")) as LabelMigrationPlan;
-    const { results } = await client.post<{ results: LabelMigrationResult[] }>(
-      "/migrations/label/apply",
-      plan,
-    );
-    if (parsed.values.json) printJson(io, results);
-    else {
-      for (const line of formatTable(
-        ["ISSUE", "ACTION", "OUTCOME", "DETAIL"],
-        results.map((r) => [r.issueKey, r.action, r.outcome, r.detail]),
-      )) {
-        io.out(line);
-      }
-    }
-    return results.some((result) => result.outcome === "failed") ? 1 : 0;
-  }
-  throw new UsageError(`unknown migrate-labels subcommand "${sub}"`);
-}
-
 /** `migrate-delegation plan|apply` (ADR 0044, runbook §34): plan lists what the switch means per
  *  issue; apply records the baseline. Neither moves anything in Jira. */
 async function migrateDelegation(parsed: ParsedArgs, io: CliIo): Promise<number> {
@@ -896,18 +813,6 @@ export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
           assignee: { type: "string" },
           parent: { type: "string" },
           note: { type: "string" },
-        }),
-        io,
-      );
-    case "migrate-labels":
-      return migrateLabels(
-        parseCommandArgs(args, {
-          ...COMMON_OPTIONS,
-          workspace: { type: "string" },
-          label: { type: "string" },
-          "to-do": { type: "string" },
-          review: { type: "string" },
-          out: { type: "string" },
         }),
         io,
       );

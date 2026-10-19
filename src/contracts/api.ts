@@ -248,7 +248,7 @@ export const AdminWorkflowCheckRequestSchema = z.object({
   projectKey: z.string().min(1),
   workflow: z.object({
     /** Which hops Router makes depends on the mode (`delegation` has its own, ADR 0044). */
-    mode: z.enum(["legacy", "label", "delegation"]).optional(),
+    mode: z.enum(["legacy", "delegation"]).optional(),
     requestStatus: z.string().min(1),
     inProgressStatus: z.string().min(1),
     reviewStatus: z.string().min(1),
@@ -257,37 +257,6 @@ export const AdminWorkflowCheckRequestSchema = z.object({
     needsDecisionStatus: z.string().min(1).optional(),
     doneStatus: z.string().min(1).optional(),
   }),
-});
-
-const LabelMigrationTargetSchema = z.object({
-  optInLabel: z.string().trim().min(1).regex(/^\S+$/, "a Jira label cannot contain spaces"),
-  toDoStatus: z.string().min(1),
-  reviewStatus: z.string().min(1),
-});
-
-/** `POST /api/v1/admin/migrations/label/plan` — read-only proposal for moving a legacy workspace's
- *  issues onto the label workflow (ADR 0037). */
-export const AdminLabelMigrationPlanRequestSchema = z.object({
-  workspaceId: z.string().min(1),
-  target: LabelMigrationTargetSchema,
-});
-
-/** `POST /api/v1/admin/migrations/label/apply` — a reviewed plan; only `approved` entries run. */
-export const AdminLabelMigrationApplyRequestSchema = z.object({
-  workspaceId: z.string().min(1),
-  target: LabelMigrationTargetSchema,
-  createdAt: z.string(),
-  entries: z.array(
-    z.object({
-      issueKey: z.string().min(1),
-      summary: z.string(),
-      status: z.string(),
-      labels: z.array(z.string()),
-      action: z.enum(["add-label-and-request", "move-to-review", "manual", "blocked"]),
-      reason: z.string(),
-      approved: z.boolean(),
-    }),
-  ),
 });
 
 const DelegationMigrationTargetSchema = z.object({
@@ -319,10 +288,6 @@ export const AdminDelegationMigrationApplyRequestSchema = z.object({
     }),
   ),
 });
-
-/** `PUT /api/v1/admin/issues/:key/opt-in` — adds (`true`) or removes (`false`) the workspace's
- *  opt-in label on one issue; the issue's other labels are kept (M4-03, ADR 0039). */
-export const AdminIssueOptInRequestSchema = z.object({ enabled: z.boolean() });
 
 /** `POST /api/v1/admin/reviews/:targetId/judgments` (F01, ADR 0043). A record only; a hold or a
  *  rework needs a note, which Router posts to Jira with the declared name. */

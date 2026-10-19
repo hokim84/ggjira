@@ -118,65 +118,6 @@ describe("computeDelegationApprovalIds (ADR 0044)", () => {
   });
 });
 
-describe("computeApprovalId in label mode (ADR 0037)", () => {
-  const TODO = "To Do";
-  const LABEL = "ai-enabled";
-
-  async function seeded(labels: string[] = []): Promise<FakeJiraGateway> {
-    const jira = new FakeJiraGateway();
-    jira.seedIssue({ key: "KAN-1", statusName: "Backlog", labels }, [
-      { id: "1", name: "Request", toStatusName: TODO },
-      { id: "2", name: "Park", toStatusName: "Backlog" },
-    ]);
-    return jira;
-  }
-
-  const approvalOf = async (jira: FakeJiraGateway) =>
-    computeApprovalId(jira, await jira.getIssue("KAN-1"), TODO, LABEL);
-
-  it("is the label being added when that came after the move to To Do", async () => {
-    const jira = await seeded();
-    await jira.transitionIssueToStatus("KAN-1", TODO);
-    await jira.addLabel("KAN-1", LABEL);
-    const changelog = await jira.getIssueChangelog("KAN-1");
-    expect(await approvalOf(jira)).toBe(changelog[1]?.id);
-  });
-
-  it("is the move to To Do when the label was already there", async () => {
-    const jira = await seeded();
-    await jira.addLabel("KAN-1", LABEL);
-    await jira.transitionIssueToStatus("KAN-1", TODO);
-    const changelog = await jira.getIssueChangelog("KAN-1");
-    expect(await approvalOf(jira)).toBe(changelog[1]?.id);
-  });
-
-  it("changes when the label is removed and added again", async () => {
-    const jira = await seeded();
-    await jira.transitionIssueToStatus("KAN-1", TODO);
-    await jira.addLabel("KAN-1", LABEL);
-    const first = await approvalOf(jira);
-    await jira.removeLabel("KAN-1", LABEL);
-    await jira.addLabel("KAN-1", LABEL);
-    expect(await approvalOf(jira)).not.toBe(first);
-  });
-
-  it("ignores edits to other labels, and matches the label case-insensitively", async () => {
-    const jira = await seeded();
-    await jira.addLabel("KAN-1", "AI-Enabled");
-    await jira.transitionIssueToStatus("KAN-1", TODO);
-    const approval = await approvalOf(jira);
-    await jira.addLabel("KAN-1", "frontend");
-    await jira.removeLabel("KAN-1", "frontend");
-    expect(await approvalOf(jira)).toBe(approval);
-  });
-
-  it("falls back to the creation sentinel for an issue created in To Do with the label", async () => {
-    const jira = new FakeJiraGateway();
-    jira.seedIssue({ key: "KAN-1", statusName: TODO, labels: [LABEL] });
-    expect(await approvalOf(jira)).toBe("created:KAN-1");
-  });
-});
-
 function requirements(overrides: Partial<IssueRequirements> = {}): IssueRequirements {
   return {
     objective: "Do the thing",

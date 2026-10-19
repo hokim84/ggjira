@@ -5,13 +5,10 @@ import type { z } from "zod";
 import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
-  AdminIssueOptInRequestSchema,
   AdminReviewJudgmentRequestSchema,
   AdminJiraProjectRequestSchema,
   AdminDelegationMigrationApplyRequestSchema,
   AdminDelegationMigrationPlanRequestSchema,
-  AdminLabelMigrationApplyRequestSchema,
-  AdminLabelMigrationPlanRequestSchema,
   AdminWorkflowCheckRequestSchema,
   AdminSecretRequestSchema,
   type ApiErrorResponse,
@@ -43,6 +40,7 @@ import {
 } from "./github.js";
 import { recordGithubDelivery } from "./db/pull-requests.js";
 import { registerWebUi } from "./web-ui.js";
+import { getPromptCatalog } from "./prompt-catalog.js";
 import { WorkerApiError, type WorkerService } from "./worker-service.js";
 
 const SIGNATURE_HEADER = "x-hub-signature";
@@ -332,6 +330,10 @@ function registerAdminRoutes(
           return reply.code(201).send(service.createPairingCode(body.workerId));
         });
       }
+      scope.get("/prompts", async (_request, reply) =>
+        reply.header("cache-control", "no-store").send(getPromptCatalog()),
+      );
+
       if (!admin) return;
 
       type IdParams = { Params: { id: string } };
@@ -408,17 +410,6 @@ function registerAdminRoutes(
         admin.retryReportBatch(request.params.id, actorOf(request)),
       );
 
-      scope.post("/migrations/label/plan", async (request) => {
-        const body = parseBody(AdminLabelMigrationPlanRequestSchema, request.body);
-        return admin.planLabelMigration(body.workspaceId, body.target);
-      });
-      scope.post("/migrations/label/apply", async (request) =>
-        admin.applyLabelMigration(
-          parseBody(AdminLabelMigrationApplyRequestSchema, request.body),
-          actorOf(request),
-        ),
-      );
-
       scope.post("/migrations/delegation/plan", async (request) => {
         const body = parseBody(AdminDelegationMigrationPlanRequestSchema, request.body);
         return admin.planDelegationMigration(body.workspaceId, body.target);
@@ -430,8 +421,8 @@ function registerAdminRoutes(
         ),
       );
 
-      scope.get<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
-        admin.issueOptIn(request.params.key),
+      scope.get<{ Params: { key: string } }>("/issues/:key", async (request) =>
+        admin.issueView(request.params.key),
       );
       scope.get<{ Params: { key: string } }>("/issues/:key/reviews", async (request) =>
         admin.issueReviews(request.params.key),
@@ -477,13 +468,6 @@ function registerAdminRoutes(
             ...(request.query.issue ? { issueKey: request.query.issue } : {}),
             ...(request.query.kind ? { kind: request.query.kind } : {}),
           }),
-      );
-      scope.put<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
-        admin.setIssueOptIn(
-          request.params.key,
-          parseBody(AdminIssueOptInRequestSchema, request.body).enabled,
-          actorOf(request),
-        ),
       );
       scope.get("/config", async () => admin.readConfig());
       scope.put("/config", async (request) =>

@@ -14,11 +14,11 @@ import {
   DELEGATION_REQUEST_STATUS,
   DELEGATION_TODO_STATUS,
   DELEGATION_TRANSITIONS,
-  delegationWorkspace,
-  issueDescription,
   PLAN_REVIEW_STATUS,
   RESULT_REVIEW_STATUS,
   SHARED_IN_PROGRESS_STATUS,
+  delegationWorkspace,
+  issueDescription,
 } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
 
@@ -503,7 +503,7 @@ describe("delegation mode (ADR 0044)", () => {
     seed("KAN-1");
     const stage = async () =>
       (
-        (await router.adminCall("GET", "/issues/KAN-1/opt-in")).json() as {
+        (await router.adminCall("GET", "/issues/KAN-1")).json() as {
           mode: string;
           delegation: { stage: string; plan: { taskIds: string[] } | null };
         }
@@ -515,9 +515,8 @@ describe("delegation mode (ADR 0044)", () => {
     await approve("KAN-1");
     expect((await stage()).stage).toBe("coordinating");
 
-    const toggle = await router.adminCall("PUT", "/issues/KAN-1/opt-in", { enabled: true });
-    expect(toggle.statusCode).toBe(409);
-    expect(toggle.json()).toMatchObject({ error: "not_label_mode" });
+    const toggle = await router.adminCall("PUT", "/issues/KAN-1", { enabled: true });
+    expect(toggle.statusCode).toBe(404);
   });
 
   it("says why a run failed and what to do; removing the label resumes nothing (11)", async () => {

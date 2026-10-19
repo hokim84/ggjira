@@ -1,7 +1,7 @@
 import type { JiraGateway } from "../jira/gateway.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { checkWorkflowHops } from "./workflow-check.js";
-import { hasOptIn, isDelegationMode, isLabelMode, optInLabelOf } from "./workflow-mode.js";
+import { isDelegationMode } from "./workflow-mode.js";
 
 /**
  * `ggjira router check`: confirms the Router config matches the real Jira before `serve`
@@ -97,11 +97,8 @@ async function checkProject(
     });
   }
 
-  // A `label`-mode workspace plans too (any request without a contract, ADR 0037), and a
-  // `delegation`-mode one plans every request (ADR 0044).
-  const labelMode = isLabelMode(workspace);
   const delegationMode = isDelegationMode(workspace);
-  if (workspace.workflow.planningStatus || labelMode || delegationMode) {
+  if (workspace.workflow.planningStatus || delegationMode) {
     const subtaskType = config.planning.subtaskIssueType;
     const found = issueTypes.find((type) => type.name.normalize("NFC") === subtaskType);
     items.push(
@@ -112,14 +109,13 @@ async function checkProject(
             message: `${where}: planning.subtaskIssueType "${subtaskType}" is not a subtask type of this project`,
           },
     );
-    // The REST API does not expose a workflow's initial status, so this stays a manual check. In
-    // `label` mode a new subtask carries no opt-in label, so its initial status does not matter.
+    // The REST API does not expose a workflow's initial status; check it manually.
     if (delegationMode)
       items.push({
         level: "warn",
         message: `${where}: confirm by hand that a new "${subtaskType}" can move to "${workspace.workflow.inProgressStatus}" — Router moves the tasks of an approved plan there (ADR 0044)`,
       });
-    else if (!labelMode)
+    else
       items.push({
         level: "warn",
         message: `${where}: confirm by hand that a new "${subtaskType}" starts in a status other than "${workspace.workflow.requestStatus}" — otherwise every PM subtask would be dispatched before a human approves it`,
@@ -174,17 +170,6 @@ async function checkSampleIssue(
       message: `issue ${issueKey}: project ${issue.projectKey ?? "?"} is not in any workspace`,
     });
     return;
-  }
-  const optIn = optInLabelOf(workspace);
-  if (optIn) {
-    items.push(
-      hasOptIn(issue, workspace)
-        ? { level: "ok", message: `issue ${issueKey} carries the opt-in label "${optIn}"` }
-        : {
-            level: "warn",
-            message: `issue ${issueKey} has no opt-in label "${optIn}"; Router will not pick it up`,
-          },
-    );
   }
   const transitions = await jira.getTransitions(issueKey);
   const reachable = transitions.map((t) => t.toStatusName.normalize("NFC"));

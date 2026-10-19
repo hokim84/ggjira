@@ -3,13 +3,13 @@ import type { JobResult } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import type { WorkspaceConfig } from "../src/router/config.js";
 import { assessResult, reviewPolicyVersion } from "../src/router/review-gate.js";
-import { labelWorkspace } from "./helpers/router-fixtures.js";
+import { testWorkspace } from "./helpers/router-fixtures.js";
 
 const BASE = "a".repeat(40);
 const HEAD = "b".repeat(40);
 
 const workspace: WorkspaceConfig = {
-  ...labelWorkspace,
+  ...testWorkspace,
   review: {
     highRiskPaths: [
       { name: "migrations", paths: ["db/migrations/**"] },
@@ -116,7 +116,7 @@ describe("assessResult", () => {
   });
 
   it("says unknown — not low — without rules or without changed paths", () => {
-    expect(assess(result(), labelWorkspace).risk).toMatchObject({
+    expect(assess(result(), testWorkspace).risk).toMatchObject({
       status: "unknown",
       policyVersion: null,
       basis: "the workspace has no review.highRiskPaths",
@@ -209,6 +209,6 @@ describe("assessResult", () => {
       },
     };
     expect(reviewPolicyVersion(reordered)).toBe(reviewPolicyVersion(workspace));
-    expect(reviewPolicyVersion(labelWorkspace)).toBeNull();
+    expect(reviewPolicyVersion(testWorkspace)).toBeNull();
   });
 });

@@ -3,13 +3,12 @@ import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import { computeDelegationApprovalIds } from "./approval.js";
 import type { WorkspaceConfig } from "./config.js";
-import { getOpenJobForIssue, getOpenJobs } from "./db/jobs.js";
 import { getApprovalHoldActor, recordAdminHold } from "./db/holds.js";
-import { hasOptIn, isDelegationMode, optInLabelOf } from "./workflow-mode.js";
+import { getOpenJobForIssue, getOpenJobs } from "./db/jobs.js";
+import { isDelegationMode } from "./workflow-mode.js";
 
 /**
- * Moving a `legacy` or `label` workspace onto status delegation (ADR 0044, runbook §34). Like the
- * label migration (src/router/label-migration.ts) it runs while the workspace is still on its old
+ * Moving a `legacy` workspace onto status delegation (ADR 0044, runbook §34). It runs while the workspace is still on its old
  * mode, in two steps:
  *
  * 1. `planDelegationMigration` (read-only) lists the workspace's issues with what the switch means
@@ -104,14 +103,12 @@ function classify(
   if (job && job.state !== "failed" && job.state !== "timed_out") {
     return { action: "blocked", reason: `job ${job.id} is ${job.state}` };
   }
-  const waitingForAi =
-    (issue.statusName === requestStatus || issue.statusName === planningStatus) &&
-    hasOptIn(issue, workspace);
+  const waitingForAi = issue.statusName === requestStatus || issue.statusName === planningStatus;
   if (waitingForAi) {
-    const label = optInLabelOf(workspace);
     return {
       action: "manual",
-      reason: `requested under the old rules${label ? ` (label "${label}")` : ""}; after the switch nothing picks it up — move it to the request status to delegate it`,
+      reason:
+        "requested under the old rules; after the switch nothing picks it up — move it to the request status to delegate it",
     };
   }
   if (issue.statusName === inProgressStatus && job) {

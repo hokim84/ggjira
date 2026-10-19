@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import type { JiraGateway } from "../jira/gateway.js";
-import type { JiraChangelogEntry, JiraChangelogItem, JiraIssue } from "../jira/types.js";
 import type { JobKind } from "../contracts/protocol.js";
 import { computeExecutionInputHash, isLegacyInputHash } from "../issue/input-hash.js";
 import type { IssueRequirements } from "../issue/requirements.js";
+import type { JiraGateway } from "../jira/gateway.js";
+import type { JiraChangelogEntry, JiraChangelogItem, JiraIssue } from "../jira/types.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
-import { labelsInclude } from "./workflow-mode.js";
 
 /**
  * Identifies *which* entry into `requestStatus` this job is for
@@ -17,23 +16,15 @@ import { labelsInclude } from "./workflow-mode.js";
  * `requestStatus` (§3 "생성부터 요청 상태였던 이슈는 생성 이벤트를 사용한다") — a plain
  * `updated` timestamp is explicitly not used as the approval identifier.
  *
- * With `optInLabel` (a `label`-mode workspace, ADR 0037) the request is made by the label and the
- * status together, so the approval is whichever came last: entering `requestStatus` or adding the
- * label. Removing the label and adding it again is therefore a new approval, never the old one.
  */
 export async function computeApprovalId(
   jira: JiraGateway,
   issue: JiraIssue,
   requestStatus: string,
-  optInLabel?: string,
 ): Promise<string> {
   const changelog = await jira.getIssueChangelog(issue.key);
   const approvingEntries = changelog.filter((entry) =>
-    entry.items.some(
-      (item) =>
-        (item.field === "status" && item.toString === requestStatus) ||
-        (optInLabel !== undefined && item.field === "labels" && addsLabel(item, optInLabel)),
-    ),
+    entry.items.some((item) => item.field === "status" && item.toString === requestStatus),
   );
   if (approvingEntries.length === 0) {
     return `created:${issue.key}`;
@@ -94,14 +85,6 @@ export async function computeDelegationApprovalIds(
     requestApprovalId: request?.id ?? `created:${issue.key}`,
     planApprovalId: approval?.id ?? null,
   };
-}
-
-/** Jira records a label edit as the space-separated label lists before and after it. */
-function addsLabel(item: JiraChangelogItem, label: string): boolean {
-  const split = (value: string | null) => (value ?? "").split(/\s+/).filter(Boolean);
-  return (
-    labelsInclude(split(item.toString), label) && !labelsInclude(split(item.fromString), label)
-  );
 }
 
 /**

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { isRouteDispatch } from "../src/contracts/route.js";
 import type { IssueRequirements } from "../src/issue/requirements.js";
 import type { JiraIssue } from "../src/jira/types.js";
 import type { PlanTaskMetadata } from "../src/pm/metadata.js";
-import { RuleDecisionProvider, type RouteContext } from "../src/router/decision.js";
 import type { WorkspaceConfig } from "../src/router/config.js";
-import { isRouteDispatch } from "../src/contracts/route.js";
+import { type RouteContext, RuleDecisionProvider } from "../src/router/decision.js";
 import { resolveJobKind } from "../src/router/workflow-mode.js";
 
 const workspace: WorkspaceConfig = {
@@ -70,9 +70,6 @@ function context(overrides: Partial<RouteContext> = {}): RouteContext {
       resolveJobKind({
         workspace: base.workspace,
         issue: base.issue,
-        requirements: base.requirements,
-        planTask: base.planTask,
-        parentPlanHasTasks: false,
       }),
   };
 }

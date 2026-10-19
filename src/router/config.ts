@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { CloneUrlSchema } from "../contracts/api.js";
-import { SUPERSEDED_LABEL } from "../pm/plan-render.js";
 
 /** See src/config.ts's `nfc` for why status/transition names get normalized. */
 function nfc(value: string): string {
@@ -9,15 +8,6 @@ function nfc(value: string): string {
 }
 
 const nfcString = z.string().min(1).transform(nfc);
-
-/** How labels are compared: Jira keeps a label's case but searches it case-insensitively. */
-export function normalizeLabel(label: string): string {
-  return label.normalize("NFC").trim().toLowerCase();
-}
-
-/** Labels Router writes itself (the superseded marker) or reads as v4 meta issues
- *  (src/router/candidates.ts); the failure label is configurable and checked separately. */
-const ROUTER_RESERVED_LABELS = [SUPERSEDED_LABEL, "ggjira-agent", "ggjira-workspace"];
 
 /**
  * The request -> in-progress -> review loop for one workspace
@@ -30,11 +20,6 @@ const ROUTER_RESERVED_LABELS = [SUPERSEDED_LABEL, "ggjira-agent", "ggjira-worksp
  * *current* status equals it get planning jobs instead of implementation
  * jobs. Leaving it unset disables planning for the workspace entirely.
  *
- * `mode: "label"` (ADR 0037) replaces the AI-only statuses with an opt-in label on the team's
- * ordinary workflow: `requestStatus` is then the ordinary "To Do", an issue takes part only while
- * it carries `optInLabel`, and planning vs. implementation is decided by the request itself
- * (src/router/workflow-mode.ts), so `planningStatus`/`needsDecisionStatus` are not used.
- *
  * `mode: "delegation"` (ADR 0044) delegates by status instead: moving an issue to `requestStatus`
  * ("AI plan request") always starts with planning, a plan waits for a human in `planReviewStatus`,
  * and moving it from there to the shared `inProgressStatus` approves that plan. Labels play no part.
@@ -42,15 +27,7 @@ const ROUTER_RESERVED_LABELS = [SUPERSEDED_LABEL, "ggjira-agent", "ggjira-worksp
 const WorkflowStatusSchema = z
   .object({
     /** Unset means "legacy": the status-based workflow above. */
-    mode: z.enum(["legacy", "label", "delegation"]).optional(),
-    /** The label that opts an issue in to AI work in `label` mode. Jira labels carry no spaces. */
-    optInLabel: z
-      .string()
-      .trim()
-      .min(1)
-      .regex(/^\S+$/, "a Jira label cannot contain spaces")
-      .transform(nfc)
-      .optional(),
+    mode: z.enum(["legacy", "delegation"]).optional(),
     requestStatus: nfcString,
     inProgressStatus: nfcString,
     reviewStatus: nfcString,
@@ -63,6 +40,7 @@ const WorkflowStatusSchema = z
      *  merged (ADR 0027). Unset: a merge is only commented on. */
     doneStatus: nfcString.optional(),
   })
+  .strict()
   .superRefine((workflow, ctx) => {
     if (workflow.doneStatus && workflow.doneStatus === workflow.reviewStatus) {
       ctx.addIssue({
@@ -77,23 +55,6 @@ const WorkflowStatusSchema = z
         path: ["planningStatus"],
         message: "workflow.planningStatus must differ from workflow.requestStatus",
       });
-    }
-    if (workflow.mode === "label") {
-      if (!workflow.optInLabel) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["optInLabel"],
-          message: 'workflow.optInLabel is required when workflow.mode is "label"',
-        });
-      }
-      for (const field of ["planningStatus", "needsDecisionStatus"] as const) {
-        if (!workflow[field]) continue;
-        ctx.addIssue({
-          code: "custom",
-          path: [field],
-          message: `workflow.${field} is not used in "label" mode; remove it (ADR 0037)`,
-        });
-      }
     }
     if (workflow.mode !== "delegation" && workflow.planReviewStatus) {
       ctx.addIssue({
@@ -110,7 +71,7 @@ const WorkflowStatusSchema = z
           message: 'workflow.planReviewStatus is required when workflow.mode is "delegation"',
         });
       }
-      for (const field of ["optInLabel", "planningStatus", "needsDecisionStatus"] as const) {
+      for (const field of ["planningStatus", "needsDecisionStatus"] as const) {
         if (!workflow[field]) continue;
         ctx.addIssue({
           code: "custom",
@@ -337,26 +298,6 @@ export const RouterConfigSchema = z
           path: ["workspaces", index, "workflow", "inProgressStatus"],
           message: "workflow.inProgressStatus must differ from workflow.requestStatus",
         });
-      }
-      // The opt-in label must never be one Router itself adds or removes, or Router's own report
-      // would opt an issue in (or out).
-      const optIn = workspace.workflow.optInLabel;
-      if (optIn) {
-        const reserved = new Map<string, string>([
-          [normalizeLabel(config.reporting.failureLabel), "reporting.failureLabel"],
-          ...ROUTER_RESERVED_LABELS.map((label): [string, string] => [
-            normalizeLabel(label),
-            label,
-          ]),
-        ]);
-        const clash = reserved.get(normalizeLabel(optIn));
-        if (clash) {
-          ctx.addIssue({
-            code: "custom",
-            path: ["workspaces", index, "workflow", "optInLabel"],
-            message: `workflow.optInLabel "${optIn}" is reserved by GGJIRA (${clash})`,
-          });
-        }
       }
     });
 

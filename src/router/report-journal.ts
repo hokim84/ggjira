@@ -4,25 +4,24 @@ import {
   renderDecisionRequest,
   renderImplementationDecisionRequest,
 } from "../pm/decision-render.js";
-import type { Plan } from "../pm/plan.js";
 import {
   PlanApplyError,
   type PlanTask,
+  SUPERSEDED_LABEL,
   planTaskIds,
   renderTaskDescription,
-  SUPERSEDED_LABEL,
   validateTaskGraph,
 } from "../pm/plan-render.js";
+import type { Plan } from "../pm/plan.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
-import type { NewReportStep } from "./db/report-steps.js";
 import type { JobRow } from "./db/jobs.js";
+import type { NewReportStep } from "./db/report-steps.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import type { ReviewAssessment } from "./review-gate.js";
 import {
   approvalStatusFor,
   decisionTransitionTarget,
   isDelegationMode,
-  optInLabelOf,
   reRequestHint,
 } from "./workflow-mode.js";
 
@@ -42,9 +41,6 @@ export interface TransitionParams {
   from: string[];
   approvalStatus: string;
   approvalId: string;
-  /** Set for a `label`-mode workspace (ADR 0037): the approval is then re-derived with the opt-in
-   *  label. Steps journaled before it have none and are judged by the status alone. */
-  optInLabel?: string;
   /** Set for a `delegation`-mode implementation (ADR 0044), whose approval is not an entry into
    *  `approvalStatus`. Steps journaled without it keep the rule they were written under. */
   approvalRule?: ApprovalRule;
@@ -171,7 +167,6 @@ function transition(
   to: string,
   from: string[],
 ): ReportStepSpec {
-  const optInLabel = optInLabelOf(workspace);
   const approvalRule = delegatedApprovalRule(job, workspace);
   return {
     kind: "transition",
@@ -180,7 +175,6 @@ function transition(
       from,
       approvalStatus: approvalStatusFor(job.kind, workspace),
       approvalId: job.approvalId,
-      ...(optInLabel ? { optInLabel } : {}),
       ...(approvalRule ? { approvalRule } : {}),
     },
   };
@@ -463,8 +457,7 @@ function decisionReplyStatus(input: ResultJournalInput, kind: JobKind): string {
 function reRequest(input: ResultJournalInput): string {
   if (isDelegationMode(input.workspace)) return reRequestHint(input.workspace, input.job.kind);
   const status = `move the issue back to "${approvalStatusFor(input.job.kind, input.workspace)}"`;
-  const label = optInLabelOf(input.workspace);
-  return label ? `${status}, or remove and re-add the "${label}" label` : status;
+  return status;
 }
 
 /**
