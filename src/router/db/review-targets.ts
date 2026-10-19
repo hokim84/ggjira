@@ -195,3 +195,185 @@ export function listReviewRecords(db: Database.Database, issueKey: string): Revi
       .all(issueKey) as Array<Record<string, unknown>>
   ).map(toRecord);
 }
+
+export function getReviewRecord(db: Database.Database, id: number): ReviewRecordRow | undefined {
+  const row = db.prepare("SELECT * FROM review_records WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? toRecord(row) : undefined;
+}
+
+// --- review queue (F01, ADR 0043) ------------------------------------------------------------
+
+/** What a human decided about one target from the review screen. Recording only (ADR 0043). */
+export const JUDGMENT_ACTIONS = ["confirm", "hold", "rework"] as const;
+export type JudgmentAction = (typeof JUDGMENT_ACTIONS)[number];
+
+export function judgmentRecordAction(action: JudgmentAction): string {
+  return `judgment.${action}`;
+}
+
+/**
+ * Where a current target stands in the queue, derived from its records:
+ * - `pending`: nobody judged it yet; `held`: the latest judgment is a hold.
+ * - `confirmed` / `rework_requested`: judged; it leaves the queue (a rework comes back as a new
+ *   target once the next result arrives).
+ * - `merged`: its pull request was merged with the reviewed head (or one that could not be compared).
+ * - `outdated`: the issue's approval changed since the run; judging it is refused.
+ */
+export const REVIEW_QUEUE_STATES = [
+  "pending",
+  "held",
+  "confirmed",
+  "rework_requested",
+  "merged",
+  "outdated",
+] as const;
+export type ReviewQueueState = (typeof REVIEW_QUEUE_STATES)[number];
+
+export interface ReviewQueueItem {
+  target: ReviewTargetRow;
+  state: ReviewQueueState;
+  /** The latest judgment on the target, if any. */
+  judgment: ReviewRecordRow | null;
+  /** From the approval snapshot the run used, as far as it is still stored (no Jira call). */
+  issue: { summary: string | null; assigneeAccountId: string | null; parentKey: string | null };
+  /** From the stored result. */
+  result: {
+    summary: string | null;
+    branch: string | null;
+    pullRequest: { repo: string; number: number; url: string } | null;
+    changes: string[];
+  };
+}
+
+export interface ReviewQueueFilter {
+  reviewClass?: ReviewClass;
+  /** Default: `pending` and `held`, the items still waiting on a human. */
+  states?: readonly ReviewQueueState[];
+  assigneeAccountId?: string;
+  parentKey?: string;
+}
+
+const WAITING_STATES: readonly ReviewQueueState[] = ["pending", "held"];
+
+/** The latest judgment recorded against one target. */
+export function latestJudgment(
+  db: Database.Database,
+  targetId: string,
+): ReviewRecordRow | undefined {
+  const row = db
+    .prepare(
+      "SELECT * FROM review_records WHERE target_id = ? AND action LIKE 'judgment.%' ORDER BY id DESC LIMIT 1",
+    )
+    .get(targetId) as Record<string, unknown> | undefined;
+  return row ? toRecord(row) : undefined;
+}
+
+function mergedWithTarget(db: Database.Database, targetId: string): boolean {
+  return (
+    db
+      .prepare(
+        `SELECT 1 FROM review_records WHERE target_id = ? AND action = 'pull_request.merged'
+         AND outcome IN ('matched', 'unverified') LIMIT 1`,
+      )
+      .get(targetId) !== undefined
+  );
+}
+
+interface StoredSnapshot {
+  issue?: { summary?: string; assigneeAccountId?: string | null; parentKey?: string | null };
+}
+
+interface StoredResult {
+  summary?: string;
+  branch?: string;
+  pullRequest?: { repo: string; number: number; url: string };
+  changes?: string[];
+}
+
+function parseJson<T>(text: string | null | undefined): T | undefined {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The current (not superseded) review targets with where each stands, newest first. Cancelled
+ * runs are not reviewable. Reads Router's DB only.
+ */
+export function listReviewQueue(
+  db: Database.Database,
+  filter: ReviewQueueFilter = {},
+): ReviewQueueItem[] {
+  const states = new Set(filter.states ?? WAITING_STATES);
+  const rows = db
+    .prepare(
+      `SELECT t.*, a.approval_id AS current_approval_id, a.input_snapshot AS snapshot,
+              r.payload AS result_payload
+       FROM review_targets t
+       LEFT JOIN approvals a ON a.issue_key = t.issue_key
+       LEFT JOIN results r ON r.id = t.id
+       WHERE t.superseded_by IS NULL AND t.final_state <> 'cancelled'
+       ORDER BY t.created_at DESC, t.rowid DESC`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  const items: ReviewQueueItem[] = [];
+  for (const row of rows) {
+    const target = toTarget(row);
+    if (filter.reviewClass && target.reviewClass !== filter.reviewClass) continue;
+    const snapshot = parseJson<StoredSnapshot>(row.snapshot as string | null)?.issue;
+    const issue = {
+      summary: snapshot?.summary ?? null,
+      assigneeAccountId: snapshot?.assigneeAccountId ?? null,
+      parentKey: snapshot?.parentKey ?? null,
+    };
+    if (filter.assigneeAccountId && issue.assigneeAccountId !== filter.assigneeAccountId) continue;
+    if (filter.parentKey && issue.parentKey !== filter.parentKey) continue;
+    const judgment = latestJudgment(db, target.id) ?? null;
+    const state = queueState(db, target, row.current_approval_id as string | null, judgment);
+    if (!states.has(state)) continue;
+    const result = parseJson<StoredResult>(row.result_payload as string | null);
+    items.push({
+      target,
+      state,
+      judgment,
+      issue,
+      result: {
+        summary: result?.summary ?? null,
+        branch: result?.branch ?? null,
+        pullRequest: result?.pullRequest
+          ? {
+              repo: result.pullRequest.repo,
+              number: result.pullRequest.number,
+              url: result.pullRequest.url,
+            }
+          : null,
+        changes: result?.changes ?? [],
+      },
+    });
+  }
+  return items;
+}
+
+function queueState(
+  db: Database.Database,
+  target: ReviewTargetRow,
+  currentApprovalId: string | null,
+  judgment: ReviewRecordRow | null,
+): ReviewQueueState {
+  if (mergedWithTarget(db, target.id)) return "merged";
+  if (judgment?.action === judgmentRecordAction("confirm")) return "confirmed";
+  if (judgment?.action === judgmentRecordAction("rework")) return "rework_requested";
+  if (currentApprovalId !== null && currentApprovalId !== target.approvalId) return "outdated";
+  if (judgment?.action === judgmentRecordAction("hold")) return "held";
+  return "pending";
+}
+
+/** How many current targets still wait on a human (`pending` or `held`). */
+export function countWaitingReviews(db: Database.Database): number {
+  return listReviewQueue(db).length;
+}

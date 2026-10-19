@@ -17,7 +17,12 @@ import type { NewReportStep } from "./db/report-steps.js";
 import type { JobRow } from "./db/jobs.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import type { ReviewAssessment } from "./review-gate.js";
-import { approvalStatusFor, decisionTransitionTarget, optInLabelOf } from "./workflow-mode.js";
+import {
+  approvalStatusFor,
+  decisionTransitionTarget,
+  optInLabelOf,
+  reRequestHint,
+} from "./workflow-mode.js";
 
 /**
  * Pure translation of "what happened" into the ordered Jira side effects Router owes an issue
@@ -225,6 +230,56 @@ export function buildPullRequestClosedSteps(input: {
     ...(input.merged && done
       ? [transition(job, workspace, done, [workspace.workflow.reviewStatus])]
       : []),
+  ]);
+}
+
+/** Batch id of the journal for one review judgment (F01), one per review record. */
+export function reviewJudgmentBatchId(recordId: number): string {
+  return `review:${recordId}`;
+}
+
+/**
+ * A human held a review target or asked for rework on the review screen (F01, ADR 0043). One
+ * comment, no status move: the judgment records what a person said; it approves, completes or
+ * reruns nothing. The name is what the caller declared behind the shared admin token.
+ */
+export function buildReviewJudgmentSteps(input: {
+  job: JobRow;
+  workspace: WorkspaceConfig;
+  action: "hold" | "rework";
+  attemptId: string;
+  headSha: string | null;
+  actor: string;
+  note: string;
+}): NewReportStep[] {
+  const { job, workspace } = input;
+  const subject = input.headSha
+    ? `the result of attempt ${input.attemptId} (commit ${input.headSha.slice(0, 12)})`
+    : `the result of attempt ${input.attemptId} (no commit)`;
+  const who = `${input.actor} (name declared with the shared admin token)`;
+  const body =
+    input.action === "hold"
+      ? [
+          `Review on hold: ${subject}.`,
+          `By ${who}.`,
+          "",
+          `Reason: ${input.note}`,
+          "",
+          "Nothing was approved or moved. The result stays waiting for review.",
+        ]
+      : [
+          `Rework requested: ${subject}.`,
+          `By ${who}.`,
+          "",
+          `Reason: ${input.note}`,
+          "",
+          `GGJIRA does not rerun it by itself. Next: ${reRequestHint(workspace)}.`,
+        ];
+  return toNewSteps([
+    {
+      kind: "comment",
+      params: { body: [...body, "", signature(job, input.attemptId)].join("\n") },
+    },
   ]);
 }
 

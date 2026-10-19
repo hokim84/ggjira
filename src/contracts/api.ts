@@ -216,6 +216,8 @@ export const ApiErrorResponseSchema = z.object({
   supportedProtocolVersion: z.number().int().optional(),
   /** Field-level validation problems (admin config updates). */
   issues: z.array(z.object({ path: z.string(), message: z.string() })).optional(),
+  /** Set when a review judgment named a stale target: the issue's current one (F01). */
+  currentTargetId: z.string().optional(),
 });
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 
@@ -288,6 +290,13 @@ export const AdminLabelMigrationApplyRequestSchema = z.object({
 /** `PUT /api/v1/admin/issues/:key/opt-in` — adds (`true`) or removes (`false`) the workspace's
  *  opt-in label on one issue; the issue's other labels are kept (M4-03, ADR 0039). */
 export const AdminIssueOptInRequestSchema = z.object({ enabled: z.boolean() });
+
+/** `POST /api/v1/admin/reviews/:targetId/judgments` (F01, ADR 0043). A record only; a hold or a
+ *  rework needs a note, which Router posts to Jira with the declared name. */
+export const AdminReviewJudgmentRequestSchema = z.object({
+  action: z.string().min(1),
+  note: z.string().optional(),
+});
 
 /** `POST /api/v1/admin/pairing-codes` — admin-token authenticated. The code is bound to a
  *  `workerId` already declared in Router config's `workers[]` policy list. */

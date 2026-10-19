@@ -47,19 +47,25 @@ const BLOCKERS = {
   ],
 };
 
-const REVIEW_CLASS = {
+export const REVIEW_CLASS = {
   immediate: ["개별 검토 필요", "badge-bad"],
   standard: ["일반 검토 대기", "badge-ok"],
 };
 
-const RISK_LABELS = {
+export const RISK_LABELS = {
   high: "고위험",
   not_matched: "규칙 불일치(저위험 확정 아님)",
   unknown: "미확인",
   not_applicable: "해당 없음",
 };
 
-const COMMIT_LABELS = {
+export const JUDGMENT_LABELS = {
+  "judgment.confirm": "확인",
+  "judgment.hold": "보류",
+  "judgment.rework": "재작업 요청",
+};
+
+export const COMMIT_LABELS = {
   committed: "커밋",
   no_commit: "커밋 없음",
   unknown: "미보고",
@@ -82,9 +88,12 @@ export function openIssue(key) {
 }
 
 /** The current review target (M4-11): which queue, why, which commit, and the high-risk call. */
-function reviewSection(targets) {
+function reviewSection(targets, records) {
   const target = targets.find((entry) => !entry.supersededBy);
   if (!target) return null;
+  const judgments = records.filter(
+    (record) => record.targetId === target.id && record.action.startsWith("judgment."),
+  );
   const { assessment } = target;
   const [label, tone] = REVIEW_CLASS[target.reviewClass] || [target.reviewClass, "badge-muted"];
   const commit = assessment.commit;
@@ -135,11 +144,30 @@ function reviewSection(targets) {
             ),
           )
         : null,
+      judgments.length ? h("dt", {}, "판단") : null,
+      judgments.length
+        ? h(
+            "dd",
+            {},
+            h(
+              "ul",
+              { class: "blockers" },
+              judgments.map((record) =>
+                h(
+                  "li",
+                  {},
+                  `${JUDGMENT_LABELS[record.action] || record.action} · ${record.actor ?? "?"} · ${record.at}`,
+                  record.detail?.note ? h("div", { class: "hint" }, record.detail.note) : null,
+                ),
+              ),
+            ),
+          )
+        : null,
     ),
     h(
       "small",
       { class: "hint" },
-      "표시만 합니다. 여기서 승인하거나 완료 처리하지 않습니다. PR 머지는 이 커밋과 같을 때만 완료로 옮겨집니다.",
+      "표시만 합니다. 판단(확인·보류·재작업 요청)은 검토 화면에서 남깁니다. PR 머지는 이 커밋과 같을 때만 완료로 옮겨집니다.",
     ),
   );
 }
@@ -358,7 +386,11 @@ export function renderIssues(root, ctx) {
       admin("GET", `/attention?status=all&issue=${encoded}`),
     ])
       .then(([reviews, attention]) =>
-        fill(historyEl, reviewSection(reviews.targets), attentionSection(attention.items)),
+        fill(
+          historyEl,
+          reviewSection(reviews.targets, reviews.records),
+          attentionSection(attention.items),
+        ),
       )
       .catch(() => clear(historyEl));
     try {

@@ -60,7 +60,8 @@ export class AdminClient {
     body?: unknown,
   ): Promise<T> {
     const headers: Record<string, string> = { authorization: `Bearer ${this.opts.adminToken}` };
-    if (this.opts.actor) headers["x-ggjira-actor"] = this.opts.actor;
+    // Percent-encoded: a header carries only ISO-8859-1, and user names need not be ASCII.
+    if (this.opts.actor) headers["x-ggjira-actor"] = encodeURIComponent(this.opts.actor);
     if (body !== undefined) headers["content-type"] = "application/json";
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1/admin${endpoint}`, {
       method,

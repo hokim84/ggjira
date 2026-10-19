@@ -107,7 +107,9 @@ patch와 worktree를 남기고 `needs_decision`으로 보고한다. 보고를 �
 `immediate`(실패·결정·이탈·고위험·`not_verified`·커밋 없음·커밋 미보고) 또는 `standard`다. 고위험은 workspace
 `review.highRiskPaths`와 실제 변경 경로의 대조, 그리고 에이전트 보고로 판단하고, 규칙 해시를 설정 버전으로 남긴다.
 PR 머지는 그 머지의 head가 최신 대상의 head와 같을 때만(또는 head를 비교할 수 없을 때) 완료로 옮기고,
-`review_records`에 actor·인증·head·일치 여부를 남긴다.
+`review_records`에 actor·인증·head·일치 여부를 남긴다. 사람의 판단(확인·보류·재작업 요청)도 검토 화면·CLI에서
+현재 대상에만 `review_records`로 남는다. 판단은 기록일 뿐이며 상태 이동·머지·승인을 만들지 않고, 보류와 재작업
+요청만 Jira 댓글 하나를 남긴다(ADR 0043, `src/router/review-judgment.ts`).
 
 결과의 `execution`은 provider 호출 하나를 기록한다(ADR 0042). Router는 저장한 결과마다(늦게 와 적용하지 않은
 결과 포함) `execution_records`에 결과 id 기준으로 한 번 남긴다.
@@ -156,7 +158,9 @@ result 저장 ─▶ [<resultId>]         성공: 댓글 → 실패 라벨 제�
 | `router issue show/opt-in` (웹 UI 이슈) | `GET/PUT /issues/:key/opt-in` | label 모드 이슈의 opt-in 라벨만 부분 수정으로 붙이거나 떼고, 재조회로 확인한 뒤 성공으로 답한다. 조회는 시작되지 않는 이유를 함께 준다(ADR 0039) |
 | `router usage` | `GET /executions` | 결과마다 provider 호출(모델·호출 id·종료 사유·토큰·비용)과 원래 요구사항·실행 유형·원인 분류. 미보고는 NULL(ADR 0042) |
 | `router attention` | `GET /attention` | 주의 항목(실패·결정·범위 이탈·개별 검토·계약 보완·막힌 보고). 같은 사건은 횟수로 묶고 해소·재발 이력을 남긴다(ADR 0041) |
-| `router issue reviews` | `GET /issues/:key/reviews` | 검토 대상(최신·대체됨)과 PR 머지 기록. 읽기 전용(ADR 0040) |
+| `router issue reviews` | `GET /issues/:key/reviews` | 검토 대상(최신·대체됨)과 PR 머지·판단 기록. 읽기 전용(ADR 0040) |
+| `router reviews` (웹 UI 검토) | `GET /reviews` | 판단을 기다리는 현재 검토 대상(`pending`·`held`). 분류·상태·책임자·부모로 거름(ADR 0043) |
+| `router reviews judge` | `POST /reviews/:targetId/judgments` | 확인·보류·재작업 요청 기록. 오래된 대상은 409. 상태 이동·머지·승인 없음(ADR 0043) |
 | `router reconcile` | `POST /reconcile` | sync lane에서 즉시 1회 실행 |
 | `router backup` | `POST /backup` | SQLite online backup을 `<db dir>/backups/`에 저장 |
 | (웹 UI) | `GET/PUT /config`, `POST /config/apply`, `POST /check` | 설정 파일 조회, 검증 후 저장(`.bak`)과 즉시 적용, 손으로 고친 파일 적용, 저장된 설정으로 `router check` |

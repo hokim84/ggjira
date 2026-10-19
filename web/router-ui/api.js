@@ -27,12 +27,13 @@ export class ApiError extends Error {
     this.status = status;
     this.code = body?.error;
     this.issues = body?.issues || [];
+    this.currentTargetId = body?.currentTargetId;
   }
 }
 
-export async function request(method, url, body) {
+export async function request(method, url, body, extraHeaders = {}) {
   const token = getToken();
-  const headers = {};
+  const headers = { ...extraHeaders };
   if (token) headers.authorization = `Bearer ${token}`;
   if (body !== undefined) headers["content-type"] = "application/json";
   const response = await fetch(url, {
@@ -54,7 +55,15 @@ export async function request(method, url, body) {
   return data;
 }
 
-export const admin = (method, path, body) => request(method, `/api/v1/admin${path}`, body);
+/** `actor`: the name recorded in audit and review records (the CLI sends the OS user name).
+ *  Percent-encoded: headers carry only ISO-8859-1 and names are often Korean. */
+export const admin = (method, path, body, actor) =>
+  request(
+    method,
+    `/api/v1/admin${path}`,
+    body,
+    actor ? { "x-ggjira-actor": encodeURIComponent(actor) } : {},
+  );
 export const setup = (method, path, body) => request(method, `/api/v1/setup${path}`, body);
 
 export async function health() {
