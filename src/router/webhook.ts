@@ -24,15 +24,76 @@ export function verifyJiraWebhookSignature(
   return timingSafeEqual(providedBuffer, expectedBuffer);
 }
 
+/**
+ * What Router keeps of a Jira webhook (ADR 0038). A webhook is only a "something changed" signal —
+ * every decision re-reads the issue from Jira — so the issue body, comments and user details in the
+ * payload are never stored.
+ */
+export interface JiraWebhookSummary {
+  webhookEvent: string | null;
+  issueKey: string | null;
+  projectKey: string | null;
+  /** Field names from the payload's changelog (e.g. "status", "labels"). */
+  changedFields: string[];
+}
+
+function stringAt(value: unknown, ...keys: string[]): string | null {
+  let current = value;
+  for (const key of keys) {
+    if (typeof current !== "object" || current === null) return null;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "string" ? current : null;
+}
+
+export function summarizeJiraWebhook(payload: unknown): JiraWebhookSummary {
+  const items = (payload as { changelog?: { items?: unknown } } | null)?.changelog?.items;
+  const issueKey = stringAt(payload, "issue", "key");
+  return {
+    webhookEvent: stringAt(payload, "webhookEvent"),
+    issueKey,
+    projectKey:
+      stringAt(payload, "issue", "fields", "project", "key") ??
+      issueKey?.match(/^([A-Z][A-Z0-9_]*)-\d+$/)?.[1] ??
+      null,
+    changedFields: Array.isArray(items)
+      ? [
+          ...new Set(
+            items
+              .map((item) => stringAt(item, "field"))
+              .filter((field): field is string => field !== null),
+          ),
+        ]
+      : [],
+  };
+}
+
+/**
+ * Whether a delivery should wake the reconcile pass. Comment events never change what Router would
+ * decide (comments are not part of an approval, and a decision reply only counts once the issue is
+ * requested again, which is its own event), and neither does an issue outside every workspace.
+ * Router's own transitions and label writes do wake it; the pass is idempotent, so they find
+ * nothing to do.
+ */
+export function isRelevantJiraWebhook(
+  summary: JiraWebhookSummary,
+  isWorkspaceProject: (projectKey: string) => boolean,
+): boolean {
+  if (summary.webhookEvent?.startsWith("comment_")) return false;
+  return summary.projectKey === null || isWorkspaceProject(summary.projectKey);
+}
+
 export interface IngestJiraWebhookEventInput {
   siteId: string;
   webhookDeliveryId: string;
   payload: unknown;
   /** ISO timestamp. Caller-supplied so tests can use a fake clock. */
   now: string;
+  /** Recorded as already processed: kept for dedup and diagnosis, but wakes no reconcile. */
+  ignored?: boolean;
 }
 
-export type IngestJiraWebhookEventResult = "accepted" | "duplicate";
+export type IngestJiraWebhookEventResult = "accepted" | "duplicate" | "ignored";
 
 /**
  * Persists an already-signature-verified webhook delivery, deduplicated by
@@ -53,8 +114,9 @@ export function ingestJiraWebhookEvent(
       webhookDeliveryId: input.webhookDeliveryId,
       payload: input.payload,
       now: input.now,
+      ...(input.ignored ? { processedAt: input.now } : {}),
     });
-    return "accepted";
+    return input.ignored ? "ignored" : "accepted";
   } catch (error) {
     if (error instanceof DuplicateEventError) return "duplicate";
     throw error;

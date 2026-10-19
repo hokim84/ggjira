@@ -1,12 +1,15 @@
 import type Database from "better-sqlite3";
 import {
   ADMIN_OPERATIONS_STATEMENTS,
+  ATTENTION_STATEMENTS,
+  EXECUTION_RECORD_STATEMENTS,
   GITHUB_STATEMENTS,
   JOB_ASSESSMENT_STATEMENTS,
   PROVIDER_USAGE_STATEMENTS,
   PULL_REQUEST_CHECK_STATEMENTS,
   READINESS_HOLD_STATEMENTS,
   REPORT_JOURNAL_STATEMENTS,
+  REVIEW_TARGET_STATEMENTS,
   WORKER_REPOSITORY_PATH_STATEMENTS,
   SCHEMA_STATEMENTS,
   WORKER_PROTOCOL_STATEMENTS,
@@ -95,6 +98,27 @@ const MIGRATIONS: readonly Migration[] = [
       "readiness_holds (implementation requests held for an incomplete contract, ADR 0034)",
     up(db) {
       for (const statement of READINESS_HOLD_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 11,
+    description: "review_targets, review_records (what a human reviews, pinned to a result; M4-11)",
+    up(db) {
+      for (const statement of REVIEW_TARGET_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 12,
+    description: "attention_items (what a human must look at, grouped by incident; M4-09)",
+    up(db) {
+      for (const statement of ATTENTION_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 13,
+    description: "execution_records (provider call and usage behind every result; M4-12)",
+    up(db) {
+      for (const statement of EXECUTION_RECORD_STATEMENTS) db.exec(statement);
     },
   },
 ];

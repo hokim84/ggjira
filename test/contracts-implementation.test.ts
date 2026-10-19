@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { JobResultSchema } from "../src/contracts/envelope.js";
 import {
   IMPLEMENTATION_REPORT_JSON_SCHEMA,
   ImplementationReportSchema,
@@ -47,6 +48,28 @@ describe("ImplementationReportSchema", () => {
       verification: [{ acceptance: "x", status: "probably", evidence: "" }],
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe("results from a protocol-2 worker before M4 (T14)", () => {
+  it("still parse: no git, no execution, no risks — read as unknown, never invented", () => {
+    const parsed = JobResultSchema.parse({
+      protocolVersion: 2,
+      jobId: "job-1",
+      attemptId: "attempt-1",
+      resultId: "result-1",
+      status: "succeeded",
+      summary: "done",
+      implementation: {
+        outcome: "completed",
+        summary: "done",
+        scopeDeviations: [],
+        verification: [{ acceptance: "x", status: "pass", evidence: "ok" }],
+      },
+    });
+    expect(parsed.git).toBeUndefined();
+    expect(parsed.execution).toBeUndefined();
+    expect(parsed.implementation?.risks).toEqual([]);
   });
 });
 

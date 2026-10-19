@@ -17,8 +17,16 @@ import {
   type ReadinessHoldRow,
 } from "./db/readiness-holds.js";
 import {
+  listAttentionItems,
+  normalizeCause,
+  recordAttention,
+  resolveAttentionItem,
+} from "./db/attention.js";
+import {
+  getReportStep,
   isReportStepBlocked,
   isReportStepSettled,
+  listBlockedReportSteps,
   listJobIdsWithReportWork,
   listJobReportSteps,
   type ReportStepRow,
@@ -165,7 +173,7 @@ async function runTransition(
       reason: `${issue.key} is in "${issue.statusName}", not ${params.from.map((s) => `"${s}"`).join(" or ")}; a human moved it`,
     };
   }
-  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus);
+  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus, params.optInLabel);
   if (approvalId !== params.approvalId) {
     return { status: "skipped", reason: `${issue.key} was re-approved since this job was created` };
   }
@@ -373,9 +381,54 @@ async function runStep(
  * (`failed`/`recovery_required`) holds back the rest of its batch but not later batches — a
  * failed start move must not keep the run's result from being reported.
  */
+/** M4-09: a step that went to `failed`/`recovery_required` is something an admin must act on. */
+function recordBlockedStep(deps: ReportProcessorDeps, step: ReportStepRow, reason: string): void {
+  recordAttention(deps.db, {
+    issueKey: step.issueKey,
+    approvalId: null,
+    kind: "report_blocked",
+    cause: `${step.batchId}:${step.kind}`,
+    severity: "immediate",
+    reason: "Router could not apply a Jira update; `router reports retry` after fixing the cause",
+    evidence: { batchId: step.batchId, step: step.kind, error: normalizeCause(reason) },
+    now: deps.now(),
+  });
+}
+
+/** Settles blocked-report items whose batch has nothing blocked any more (retried and applied). */
+function settleClearedReports(deps: ReportProcessorDeps): void {
+  const blocked = new Set(listBlockedReportSteps(deps.db).map((step) => step.batchId));
+  for (const item of listAttentionItems(deps.db, { status: "open", kind: "report_blocked" })) {
+    const batchId = (item.evidence as { batchId?: string } | null)?.batchId;
+    if (batchId && !blocked.has(batchId)) {
+      resolveAttentionItem(
+        deps.db,
+        item.id,
+        "the Jira update was applied after a retry",
+        deps.now(),
+      );
+    }
+  }
+}
+
 export async function processReportJournal(deps: ReportProcessorDeps): Promise<ReportPassReport> {
   const report: ReportPassReport = { applied: [], skipped: [], blocked: [], deferred: [] };
+  try {
+    await runReportJournal(deps, report);
+  } finally {
+    for (const entry of report.blocked) {
+      const step = getReportStep(deps.db, entry.stepId);
+      if (step) recordBlockedStep(deps, step, entry.reason);
+    }
+    settleClearedReports(deps);
+  }
+  return report;
+}
 
+async function runReportJournal(
+  deps: ReportProcessorDeps,
+  report: ReportPassReport,
+): Promise<void> {
   for (const jobId of listJobIdsWithReportWork(deps.db)) {
     const steps = listJobReportSteps(deps.db, jobId);
     const blockedBatches = new Set<string>();
@@ -453,7 +506,6 @@ export async function processReportJournal(deps: ReportProcessorDeps): Promise<R
       else report.skipped.push({ stepId: step.id, reason: outcome.reason });
     }
   }
-  return report;
 }
 
 const READINESS_SECTION: Record<ReadinessGap, string> = {

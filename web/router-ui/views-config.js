@@ -41,6 +41,10 @@ const STATUS_FIELDS = [
   ],
 ];
 
+/** Statuses only the legacy workflow has (ADR 0037: label mode plans and asks for decisions without
+ *  dedicated statuses). */
+const LEGACY_ONLY_STATUS_FIELDS = new Set(["planningStatus", "needsDecisionStatus"]);
+
 const HOP_BADGES = {
   ok: ["badge-ok", "연결됨"],
   missing: ["badge-bad", "전이 없음"],
@@ -499,11 +503,41 @@ export async function renderConfig(root, ctx) {
     );
   }
 
+  /** ADR 0037: legacy (AI-only statuses) or label (opt-in label on the ordinary workflow). */
+  function modeFields(i) {
+    const ws = state.workspaces[i];
+    const mode = field(state, `workspaces.${i}.workflow.mode`, "AI 참여 방식", {
+      kind: "select",
+      options: ["label"],
+      optional: true,
+      hint: "label: opt-in 라벨이 붙은 이슈만 일반 할 일/진행/검토/완료 상태로 처리. 비우면 AI 전용 상태(legacy)",
+    });
+    mode.addEventListener("change", () => {
+      if (ws.workflow.mode === "label") {
+        // Not used in label mode; the config would be rejected with them set.
+        ws.workflow.planningStatus = undefined;
+        ws.workflow.needsDecisionStatus = undefined;
+      } else {
+        ws.workflow.optInLabel = undefined;
+      }
+      workspaces.redraw();
+    });
+    if (ws.workflow.mode !== "label") return [mode];
+    return [
+      mode,
+      field(state, `workspaces.${i}.workflow.optInLabel`, "opt-in 라벨", {
+        placeholder: "ai-enabled",
+        hint: "이 라벨이 붙은 이슈만 AI가 맡습니다. 라벨을 떼면 진행 중인 실행도 취소됩니다",
+      }),
+    ];
+  }
+
   function workflowBlock(i) {
     const ws = state.workspaces[i];
     ws.workflow ||= {};
     const projectKey = ws.projectKeys?.[0];
     const info = jiraInfo.get(projectKey);
+    const labelMode = ws.workflow.mode === "label";
     const hopsEl = h("div", { class: "hops" });
     const block = h(
       "div",
@@ -525,11 +559,12 @@ export async function renderConfig(root, ctx) {
       ),
       info?.loading ? h("p", { class: "muted" }, `${projectKey} 상태를 불러오는 중…`) : null,
       info?.error ? errorNotice({ message: `${projectKey}: ${info.error}` }) : null,
+      h("div", { class: "grid" }, modeFields(i)),
       h(
         "div",
         { class: "grid" },
-        STATUS_FIELDS.map(([key, label, hint, optional]) =>
-          statusField(i, key, label, hint, optional),
+        STATUS_FIELDS.filter(([key]) => !labelMode || !LEGACY_ONLY_STATUS_FIELDS.has(key)).map(
+          ([key, label, hint, optional]) => statusField(i, key, label, hint, optional),
         ),
       ),
       h("h3", {}, "Router가 하는 전이"),

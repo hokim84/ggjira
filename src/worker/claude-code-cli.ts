@@ -8,6 +8,7 @@ import type {
   WorkerRunHooks,
 } from "./provider.js";
 import { runProcessWithTimeout } from "./spawn.js";
+import { type ClaudeCallInfo, readClaudeCallEvent } from "./call-usage.js";
 import { parseClaudeRateLimitEvent } from "./usage.js";
 
 export type ClaudeCodeEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -120,6 +121,11 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
 
   async run(request: WorkerRequest, hooks: WorkerRunHooks = {}): Promise<WorkerResult> {
     let finalResult: RawResultEvent | undefined;
+    let call: ClaudeCallInfo = {};
+    const callFields = () => ({
+      ...(call.model ? { model: call.model } : {}),
+      ...(call.usage ? { usage: call.usage } : {}),
+    });
 
     const result = await runProcessWithTimeout({
       command: this.command,
@@ -135,6 +141,7 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
           if (isRawResultEvent(parsed)) {
             finalResult = parsed;
           }
+          call = readClaudeCallEvent(call, parsed);
           const usage = parseClaudeRateLimitEvent(parsed);
           if (usage) hooks.onUsage?.(usage);
         } catch {
@@ -160,6 +167,7 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
         summary: `Worker timed out after ${request.timeoutMs}ms`,
         durationMs: result.durationMs,
         exitCode: result.code,
+        ...callFields(),
       };
     }
 
@@ -182,6 +190,7 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
         durationMs: result.durationMs,
         exitCode: result.code,
         ...(finalResult?.session_id ? { sessionId: finalResult.session_id } : {}),
+        ...callFields(),
       };
     }
 
@@ -196,6 +205,7 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
         ? { totalCostUsd: finalResult.total_cost_usd }
         : {}),
       ...(finalResult?.num_turns !== undefined ? { numTurns: finalResult.num_turns } : {}),
+      ...callFields(),
       ...(structuredOutput !== undefined ? { structuredOutput } : {}),
     };
   }

@@ -197,6 +197,19 @@ describe("implementation scope checks (ADR 0036)", () => {
     });
     expect(outcome.implementation?.verification).toHaveLength(1);
     expect(outcome.localEvidence).toBeUndefined();
+    // M4-11: the exact commits a review attaches to.
+    const worktree = git(["worktree", "list", "--porcelain"], clone)
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "))
+      .map((line) => line.slice("worktree ".length))
+      .find((entry) => entry.includes("ggjira-KAN-1")) as string;
+    expect(outcome.git).toEqual({
+      repository: "git",
+      baseBranch: "main",
+      baseSha: git(["rev-parse", "HEAD~1"], worktree).trim(),
+      headSha: git(["rev-parse", "HEAD"], worktree).trim(),
+      committed: true,
+    });
   });
 
   it("stops before commit/push on a path outside the contract, keeping a patch", async () => {
@@ -209,6 +222,15 @@ describe("implementation scope checks (ADR 0036)", () => {
     expect(outcome.status).toBe("needs_decision");
     expect(outcome.scopeCheck?.outsideAllowed).toEqual([{ path: "schema.sql", change: "added" }]);
     expectStoppedBeforeCommit(outcome, stages);
+    expect(outcome.git).toMatchObject({ repository: "git", committed: false });
+    expect(outcome.git?.headSha).toBeUndefined();
+    // M4-12: a stopped run still says what it called; the fake reported no usage, so none.
+    expect(outcome.execution).toMatchObject({
+      providerId: "default",
+      exitReason: "completed",
+      modelSource: "configured",
+    });
+    expect(outcome.execution?.usage).toBeUndefined();
     const patchFile = outcome.localEvidence?.patchFile as string;
     expect(patchFile).toBe(path.join(dir, "logs", "job-1-attempt-12345678.patch"));
     const patch = readFileSync(patchFile, "utf-8");
@@ -363,5 +385,6 @@ describe("implementation scope checks (ADR 0036)", () => {
 
     expect(outcome.status).toBe("succeeded");
     expect(outcome.scopeCheck).toMatchObject({ checked: false, reason: "not a git workspace" });
+    expect(outcome.git).toEqual({ repository: "none", committed: false });
   });
 });

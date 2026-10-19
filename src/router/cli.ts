@@ -17,6 +17,11 @@ import type { AdminBlockedBatch, AdminWorkerView, RouterStatus } from "./admin-s
 import { AdminClient } from "./admin-client.js";
 import { type CheckItem, runRouterCheck } from "./check.js";
 import { loadRouterConfig, type RouterConfig } from "./config.js";
+import type { LabelMigrationPlan, LabelMigrationResult } from "./label-migration.js";
+import type { IssueOptInView, SetOptInResult } from "./issue-opt-in.js";
+import type { ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
+import type { AttentionItemRow } from "./db/attention.js";
+import type { ExecutionRecordRow, ExecutionTotals } from "./db/execution-records.js";
 import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
 import { RouterDaemon } from "./daemon.js";
 import { openRouterDb } from "./db/connection.js";
@@ -49,8 +54,16 @@ export const ROUTER_USAGE = `ggjira router <command>
   jobs list [--state <s>] [--limit <n>] [--cursor <c>] | show <jobId>
        cancel <jobId> | retry <jobId> | resolve <jobId>
   reports list | retry <batchId>
+  issue show <KEY> | opt-in <KEY> on|off  an issue's AI participation (label mode): show why it
+                                         would not start, or add/remove the opt-in label
+  issue reviews <KEY>                    results pinned for review, and merges seen against them
+  attention [--all|--resolved] [--issue KEY]  what a human must look at (open by default)
+  usage [--issue KEY [--children]] [--json]   provider calls and token usage per result
   reconcile
-  backup`;
+  backup
+  migrate-labels plan --workspace <id> --label <l> --to-do <status> --review <status> [--out <f>]
+  migrate-labels apply <plan file>       move a legacy workspace onto the label workflow
+                                         (ADR 0037); apply runs only "approved": true entries`;
 
 const DEFAULT_CONFIG = "router.config.json";
 
@@ -362,6 +375,7 @@ function printStatus(io: CliIo, status: RouterStatus): void {
     `webhook delay:     ${status.webhooks.delayMs === null ? "-" : `${Math.round(status.webhooks.delayMs / 1000)}s`}`,
   );
   io.out(`blocked reports:   ${status.reports.blocked}`);
+  io.out(`needs attention:   ${status.attention.open}`);
 }
 
 async function workers(parsed: ParsedArgs, io: CliIo): Promise<number> {
@@ -448,6 +462,216 @@ async function reports(parsed: ParsedArgs, io: CliIo): Promise<number> {
   throw new UsageError(`unknown reports subcommand "${sub}"`);
 }
 
+function printIssueOptIn(io: CliIo, view: IssueOptInView): void {
+  io.out(`${view.issueKey}  ${view.summary}`);
+  io.out(`  status:   ${view.statusName}`);
+  io.out(`  labels:   ${view.labels.length ? view.labels.join(", ") : "(none)"}`);
+  io.out(
+    view.optInLabel
+      ? `  opt-in:   ${view.optedIn ? "on" : "off"} (label "${view.optInLabel}")`
+      : `  opt-in:   n/a (workspace "${view.workspaceId}" is in legacy mode)`,
+  );
+  if (view.openJob) {
+    io.out(`  job:      ${view.openJob.jobId} (${view.openJob.kind}, ${view.openJob.state})`);
+  } else if (view.blockers.length === 0) {
+    io.out("  next:     Router may start it on its next pass");
+  } else {
+    for (const blocker of view.blockers) {
+      const missing = blocker.missing?.length ? ` [${blocker.missing.join(", ")}]` : "";
+      io.out(`  blocked:  ${blocker.message}${missing}`);
+    }
+  }
+}
+
+function printReviews(
+  io: CliIo,
+  view: { targets: ReviewTargetRow[]; records: ReviewRecordRow[] },
+): void {
+  if (view.targets.length === 0) io.out("no results pinned for review yet");
+  for (const target of view.targets) {
+    const { assessment } = target;
+    const head = target.headSha ? target.headSha.slice(0, 12) : target.commitState;
+    io.out(
+      `${target.supersededBy ? "  (superseded) " : "* "}${target.id}  ${target.kind} ${target.resultStatus}  ${target.reviewClass}  head ${head}`,
+    );
+    io.out(`    job ${target.jobId}  attempt ${target.attemptId}  approval ${target.approvalId}`);
+    for (const reason of assessment.reasons) io.out(`    needs review: ${reason.detail}`);
+    io.out(
+      `    high-risk: ${assessment.risk.status}${assessment.risk.policyVersion ? ` (rules ${assessment.risk.policyVersion})` : ""} — ${assessment.risk.basis}`,
+    );
+    for (const match of assessment.risk.matches) {
+      io.out(
+        `      ${match.rule}: ${match.from ? `${match.from} -> ` : ""}${match.path} (${match.change})`,
+      );
+    }
+  }
+  for (const record of view.records) {
+    io.out(
+      `  ${record.at}  ${record.action} by ${record.actor ?? "?"} (${record.authentication})  ${record.outcome}${record.targetId ? `  -> ${record.targetId}` : ""}`,
+    );
+  }
+}
+
+/** `issue show|opt-in|reviews` (M4-03, M4-11): the opt-in label is the only thing it writes. */
+async function issue(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const sub = requirePositional(parsed, 1, "issue subcommand (show|opt-in|reviews)");
+  const key = requirePositional(parsed, 2, "issue key").toUpperCase();
+  if (sub === "reviews") {
+    const view = await client.get<{ targets: ReviewTargetRow[]; records: ReviewRecordRow[] }>(
+      `/issues/${encodeURIComponent(key)}/reviews`,
+    );
+    if (parsed.values.json) printJson(io, view);
+    else printReviews(io, view);
+    return 0;
+  }
+  const endpoint = `/issues/${encodeURIComponent(key)}/opt-in`;
+  if (sub === "show") {
+    const view = await client.get<IssueOptInView>(endpoint);
+    if (parsed.values.json) printJson(io, view);
+    else printIssueOptIn(io, view);
+    return 0;
+  }
+  if (sub === "opt-in") {
+    const wanted = requirePositional(parsed, 3, "on|off");
+    if (wanted !== "on" && wanted !== "off")
+      throw new UsageError(`expected on|off, got "${wanted}"`);
+    const result = await client.put<SetOptInResult>(endpoint, { enabled: wanted === "on" });
+    if (parsed.values.json) printJson(io, result);
+    else {
+      io.out(
+        result.outcome === "unchanged"
+          ? `${key} already has opt-in ${wanted}; nothing was written`
+          : `${key}: opt-in ${wanted}, confirmed by re-reading the issue`,
+      );
+      printIssueOptIn(io, result.view);
+      if (wanted === "off" && result.view.openJob) {
+        io.out("  Router cancels or asks the open job to stop on its next check (within seconds).");
+      }
+    }
+    return 0;
+  }
+  throw new UsageError(`unknown issue subcommand "${sub}"`);
+}
+
+const tokens = (value: number | null): string => (value === null ? "?" : String(value));
+
+/** `usage` (M4-12): read-only execution evidence; `--json` is the export. */
+async function usage(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const query = new URLSearchParams();
+  const issueKey = stringOption(parsed, "issue");
+  if (issueKey) query.set("issue", issueKey);
+  if (parsed.values.children) query.set("children", "true");
+  const view = await client.get<{ records: ExecutionRecordRow[]; totals: ExecutionTotals }>(
+    `/executions?${query}`,
+  );
+  if (parsed.values.json) {
+    printJson(io, view);
+    return 0;
+  }
+  for (const record of view.records) {
+    const usageText = record.usageReported
+      ? `in ${tokens(record.inputTokens)} out ${tokens(record.outputTokens)} cache-read ${tokens(record.cacheReadTokens)}${record.cacheReadIncluded ? " (inside in)" : ""}`
+      : "usage not reported";
+    io.out(
+      `${record.recordedAt}  ${record.issueKey}${record.parentIssueKey ? ` (of ${record.parentIssueKey})` : ""}  ${record.kind} ${record.runType}  ${record.resultStatus}${record.applied ? "" : " (not applied)"}`,
+    );
+    io.out(
+      `    ${record.providerId ?? "?"} ${record.model ?? "?"}${record.modelSource === "configured" ? " (configured)" : ""}  ${record.exitReason ?? "?"}  ${usageText}  cause ${record.causeCategory}`,
+    );
+  }
+  const t = view.totals;
+  io.out(
+    `total: ${t.records} result(s), usage not reported for ${t.usageUnreported}; in ${t.inputTokens} (of which cache ${t.cacheReadTokensInsideInput}), out ${t.outputTokens}, cache-read on top ${t.cacheReadTokensOnTop}, cache-write ${t.cacheCreationTokens}, cost $${t.costUsd}`,
+  );
+  return 0;
+}
+
+/** `attention` (M4-09): read-only list of attention items. */
+async function attention(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const query = new URLSearchParams();
+  query.set("status", parsed.values.all ? "all" : parsed.values.resolved ? "resolved" : "open");
+  const issueKey = stringOption(parsed, "issue");
+  if (issueKey) query.set("issue", issueKey);
+  const { items } = await client.get<{ items: AttentionItemRow[] }>(`/attention?${query}`);
+  if (parsed.values.json) {
+    printJson(io, items);
+    return 0;
+  }
+  if (items.length === 0) io.out("nothing needs attention");
+  for (const item of items) {
+    const times = item.occurrences > 1 ? ` x${item.occurrences} since ${item.firstSeenAt}` : "";
+    io.out(
+      `${item.status === "open" ? "!" : "-"} ${item.issueKey}  ${item.kind}  ${item.lastSeenAt}${times}`,
+    );
+    io.out(`    ${item.reason}`);
+    if (item.previousId) io.out(`    recurred after ${item.previousId}`);
+    if (item.resolution) io.out(`    resolved ${item.resolvedAt}: ${item.resolution}`);
+  }
+  return 0;
+}
+
+function requireOption(parsed: ParsedArgs, name: string): string {
+  const value = stringOption(parsed, name);
+  if (!value) throw new UsageError(`missing --${name}`);
+  return value;
+}
+
+/** `migrate-labels plan|apply` (ADR 0037, runbook §27): plan writes a reviewable file, apply runs
+ *  only the entries a human marked `"approved": true`. */
+async function migrateLabels(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const sub = requirePositional(parsed, 1, "migrate-labels subcommand (plan|apply)");
+  if (sub === "plan") {
+    const plan = await client.post<LabelMigrationPlan>("/migrations/label/plan", {
+      workspaceId: requireOption(parsed, "workspace"),
+      target: {
+        optInLabel: requireOption(parsed, "label"),
+        toDoStatus: requireOption(parsed, "to-do"),
+        reviewStatus: requireOption(parsed, "review"),
+      },
+    });
+    const out = stringOption(parsed, "out");
+    if (out) writeFileSync(out, `${JSON.stringify(plan, null, 2)}\n`);
+    else printJson(io, plan);
+    if (!parsed.values.json) {
+      for (const line of formatTable(
+        ["ISSUE", "STATUS", "ACTION", "REASON"],
+        plan.entries.map((e) => [e.issueKey, e.status, e.action, e.reason]),
+      )) {
+        io.out(line);
+      }
+      if (out) {
+        io.out(
+          `\nWrote ${out}. Nothing was changed in Jira. Set "approved": true on the entries to apply, then run: ggjira router migrate-labels apply ${out}`,
+        );
+      }
+    }
+    return 0;
+  }
+  if (sub === "apply") {
+    const file = requirePositional(parsed, 2, "plan file");
+    const plan = JSON.parse(readFileSync(file, "utf-8")) as LabelMigrationPlan;
+    const { results } = await client.post<{ results: LabelMigrationResult[] }>(
+      "/migrations/label/apply",
+      plan,
+    );
+    if (parsed.values.json) printJson(io, results);
+    else {
+      for (const line of formatTable(
+        ["ISSUE", "ACTION", "OUTCOME", "DETAIL"],
+        results.map((r) => [r.issueKey, r.action, r.outcome, r.detail]),
+      )) {
+        io.out(line);
+      }
+    }
+    return results.some((result) => result.outcome === "failed") ? 1 : 0;
+  }
+  throw new UsageError(`unknown migrate-labels subcommand "${sub}"`);
+}
+
 export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
   const [command, ...rest] = args;
   switch (command) {
@@ -489,6 +713,39 @@ export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
       );
     case "reports":
       return reports(parseCommandArgs(args, COMMON_OPTIONS), io);
+    case "issue":
+      return issue(parseCommandArgs(args, COMMON_OPTIONS), io);
+    case "usage":
+      return usage(
+        parseCommandArgs(args, {
+          ...COMMON_OPTIONS,
+          issue: { type: "string" },
+          children: { type: "boolean" },
+        }),
+        io,
+      );
+    case "attention":
+      return attention(
+        parseCommandArgs(args, {
+          ...COMMON_OPTIONS,
+          all: { type: "boolean" },
+          resolved: { type: "boolean" },
+          issue: { type: "string" },
+        }),
+        io,
+      );
+    case "migrate-labels":
+      return migrateLabels(
+        parseCommandArgs(args, {
+          ...COMMON_OPTIONS,
+          workspace: { type: "string" },
+          label: { type: "string" },
+          "to-do": { type: "string" },
+          review: { type: "string" },
+          out: { type: "string" },
+        }),
+        io,
+      );
     case "reconcile": {
       const parsed = parseCommandArgs(args, COMMON_OPTIONS);
       printJson(io, await adminClient(parsed, io).post("/reconcile"));

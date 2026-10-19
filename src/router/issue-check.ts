@@ -20,12 +20,21 @@ import {
   inputHashMatches,
 } from "./approval.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
+import {
+  approvalStatusFor,
+  hasOptIn,
+  isLabelMode,
+  optInLabelOf,
+  resolveJobKind,
+} from "./workflow-mode.js";
 import { type ApprovalRow, getApproval, upsertApproval } from "./db/approvals.js";
 import type { JobRow } from "./db/jobs.js";
 
 /** An issue's approval as Jira shows it right now. */
 export interface IssueApproval {
   issue: JiraIssue;
+  /** The job this request is for (src/router/workflow-mode.ts `resolveJobKind`). */
+  kind: JobKind;
   requirements: IssueRequirements;
   planTask: PlanTaskMetadata | null;
   approvalId: string;
@@ -35,34 +44,57 @@ export interface IssueApproval {
   legacyInputHash: string;
 }
 
-/** Which status's changelog entry identifies the approval. A planning request is approved by
- *  entering `planningStatus`, an implementation request by entering `requestStatus` — so moving
- *  an issue between the two is itself a new approval. */
-export function approvalStatusFor(kind: JobKind, workspace: WorkspaceConfig): string {
-  const { planningStatus, requestStatus } = workspace.workflow;
-  return kind === "planning" && planningStatus ? planningStatus : requestStatus;
-}
-
-export function kindForStatus(statusName: string, workspace: WorkspaceConfig): JobKind {
-  return statusName === workspace.workflow.planningStatus ? "planning" : "implementation";
-}
-
-/** Reads requirements, plan-task metadata and changelog for `issue`. Throws `PlanMetadataError`
- *  for a corrupted `ggjira.plan-task` property, or for a plan task whose parent has since been
- *  replanned (§2 "계획 버전 변경은 취소 사유다") — callers treat both as "not approved". */
+/** Reads requirements, plan-task metadata and changelog for `issue`, and decides which job the
+ *  request is for unless `kind` is given (an open job keeps the kind it was created with). Throws
+ *  `PlanMetadataError` for a corrupted `ggjira.plan-task` property, or for a plan task whose parent
+ *  has since been replanned (§2 "계획 버전 변경은 취소 사유다") — callers treat both as "not
+ *  approved". */
 export async function readIssueApproval(
   jira: JiraGateway,
   issue: JiraIssue,
-  kind: JobKind,
   workspace: WorkspaceConfig,
+  kind?: JobKind,
 ): Promise<IssueApproval> {
   const planTask = await readPlanTaskMetadata(jira, issue.key);
   if (planTask) await assertPlanTaskCurrent(jira, issue.key, planTask);
   const requirements = readIssueRequirements(issue);
-  const approvalId = await computeApprovalId(jira, issue, approvalStatusFor(kind, workspace));
-  const inputHash = computeInputHash({ kind, issue, requirements, planTask });
+  const resolvedKind =
+    kind ??
+    resolveJobKind({
+      workspace,
+      issue,
+      requirements,
+      planTask,
+      parentPlanHasTasks:
+        isLabelMode(workspace) && !planTask && !issue.isSubtask
+          ? await hasPlanTasks(jira, issue.key)
+          : false,
+    });
+  const approvalId = await computeApprovalId(
+    jira,
+    issue,
+    approvalStatusFor(resolvedKind, workspace),
+    optInLabelOf(workspace),
+  );
+  const inputHash = computeInputHash({ kind: resolvedKind, issue, requirements, planTask });
   const legacyInputHash = computeLegacyInputHash(requirements, planTask);
-  return { issue, requirements, planTask, approvalId, inputHash, legacyInputHash };
+  return {
+    issue,
+    kind: resolvedKind,
+    requirements,
+    planTask,
+    approvalId,
+    inputHash,
+    legacyInputHash,
+  };
+}
+
+/** Whether the issue is the parent of a GGJIRA plan that split it into tasks. */
+async function hasPlanTasks(jira: JiraGateway, issueKey: string): Promise<boolean> {
+  const plan = PlanMetadataSchema.safeParse(
+    await jira.getIssueProperty(issueKey, PLAN_PROPERTY_KEY),
+  );
+  return plan.success && plan.data.taskIds.length > 0;
 }
 
 /** A plan task is runnable only under its parent's current plan version (the v4 runtime's check,
@@ -231,10 +263,13 @@ export async function checkJobAgainstJira(
   if (!issue.assigneeAccountId) {
     return { verdict: "revoked", reason: `${issue.key} lost its human assignee` };
   }
+  if (!hasOptIn(issue, workspace)) {
+    return { verdict: "revoked", reason: `${issue.key} no longer carries the opt-in label` };
+  }
 
   let approval: IssueApproval;
   try {
-    approval = await readIssueApproval(jira, issue, job.kind, workspace);
+    approval = await readIssueApproval(jira, issue, workspace, job.kind);
   } catch (error) {
     // Corrupted plan metadata fails closed, exactly as it blocks a new dispatch.
     if (error instanceof PlanMetadataError) return { verdict: "revoked", reason: error.message };

@@ -1,11 +1,13 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
+import type { ExecutionRecord } from "../contracts/execution.js";
 import {
   IMPLEMENTATION_REPORT_JSON_SCHEMA,
   type ImplementationReport,
   ImplementationReportSchema,
   type LocalEvidence,
+  type ResultGit,
   type ScopeCheck,
 } from "../contracts/implementation.js";
 import { matchesAnyGlob } from "../issue/paths.js";
@@ -26,6 +28,7 @@ import {
   listWorkingTreeChanges,
   pushBranch,
   remoteUrl,
+  revParse,
   type WorktreeChange,
   writeStagedPatch,
 } from "../worker/worktree.js";
@@ -61,6 +64,65 @@ function cancelled(summary: string, extra: Partial<ExecutionOutcome> = {}): Exec
   return { status: "cancelled", summary, ...extra };
 }
 
+type ProviderCall = { result: WorkerResult } | { error: unknown; durationMs: number };
+
+/** Remembers every call the job makes, so its result can say what ran and what it used. Only
+ *  `run` is passed through: a job never reads plan usage outside its own call. */
+function recordingProvider(provider: WorkerProvider, calls: ProviderCall[]): WorkerProvider {
+  return {
+    run: async (request, hooks) => {
+      const started = Date.now();
+      try {
+        const result = await provider.run(request, hooks);
+        calls.push({ result });
+        return result;
+      } catch (error) {
+        calls.push({ error, durationMs: Date.now() - started });
+        throw error;
+      }
+    },
+  };
+}
+
+/** M4-12: the call as the result reports it. Usage the CLI did not report stays absent. */
+export function executionRecord(
+  provider: WorkerProviderConfig,
+  call: ProviderCall,
+): ExecutionRecord {
+  const base = { providerId: provider.id, providerType: provider.type };
+  if ("error" in call) {
+    return {
+      ...base,
+      model: provider.model,
+      modelSource: "configured",
+      exitReason: "error",
+      durationMs: call.durationMs,
+    };
+  }
+  const { result } = call;
+  return {
+    ...base,
+    model: result.model ?? provider.model,
+    modelSource: result.model ? "reported" : "configured",
+    ...(result.sessionId ? { callId: result.sessionId } : {}),
+    exitReason: result.exitReason,
+    durationMs: Math.max(0, Math.round(result.durationMs)),
+    ...(result.numTurns !== undefined ? { numTurns: result.numTurns } : {}),
+    ...(result.usage
+      ? {
+          usage: {
+            ...result.usage,
+            ...(result.usage.costUsd === undefined && result.totalCostUsd !== undefined
+              ? { costUsd: result.totalCostUsd }
+              : {}),
+          },
+        }
+      : result.totalCostUsd !== undefined
+        ? { usage: { costUsd: result.totalCostUsd } }
+        : {}),
+  };
+}
+
 /**
  * Runs one envelope. Planning goes to `executePlanningEnvelope`; implementation is
  * worktree → provider → commit → validate. The v5 counterpart
@@ -91,7 +153,20 @@ export async function executeEnvelope(
       failureReason: `unknown providerId "${envelope.providerId}"`,
     };
   }
+  const calls: ProviderCall[] = [];
+  const provider = recordingProvider(deps.createProvider(providerConfig), calls);
+  const outcome = await executeWithProvider(envelope, deps, repository, providerConfig, provider);
+  const last = calls.at(-1);
+  return last ? { ...outcome, execution: executionRecord(providerConfig, last) } : outcome;
+}
 
+async function executeWithProvider(
+  envelope: JobEnvelope,
+  deps: ExecutorDeps,
+  repository: WorkerConfig["repositories"][number],
+  providerConfig: WorkerProviderConfig,
+  provider: WorkerProvider,
+): Promise<ExecutionOutcome> {
   const onUsage = deps.onUsage
     ? (usage: UsageReading) => deps.onUsage?.(providerConfig, usage)
     : undefined;
@@ -99,7 +174,7 @@ export async function executeEnvelope(
   if (envelope.kind === "planning") {
     return executePlanningEnvelope(envelope, {
       repository,
-      provider: deps.createProvider(providerConfig),
+      provider,
       worktreesRoot: deps.worktreesRoot,
       logPath: deps.config.logPath,
       signal: deps.signal,
@@ -124,14 +199,28 @@ export async function executeEnvelope(
       };
     }
   }
-  const withBranch = branch ? { branch } : {};
+  // M4-11: the commit the branch starts from, so a review can name exactly what it looked at.
+  // Unreadable → left out (the result then says "unknown", never a guessed commit).
+  const baseSha = branch ? await revParse(cwd, "HEAD").catch(() => undefined) : undefined;
+  const git = (headSha?: string): { git: ResultGit } => ({
+    git: branch
+      ? {
+          repository: "git",
+          baseBranch: repository.baseBranch,
+          ...(baseSha ? { baseSha } : {}),
+          ...(headSha ? { headSha } : {}),
+          committed: headSha !== undefined,
+        }
+      : { repository: "none", committed: false },
+  });
+  const withBranch = { ...(branch ? { branch } : {}), ...git() };
 
   mkdirSync(deps.config.logPath, { recursive: true });
   const logFile = path.join(deps.config.logPath, `${envelope.jobId}-${envelope.attemptId}.jsonl`);
 
   let workerResult: WorkerResult;
   try {
-    workerResult = await deps.createProvider(providerConfig).run(
+    workerResult = await provider.run(
       {
         prompt: buildImplementPrompt({
           title: issue.summary,
@@ -245,12 +334,16 @@ export async function executeEnvelope(
     await commitAll(cwd, `GGJIRA worker: ${issue.key} ${issue.summary}`.slice(0, 200));
     changes = await changedFilesSince(cwd, repository.baseBranch);
   }
+  // Read after commit, whether or not this run committed: an agent that committed on its own
+  // still left a head; a run with no commit leaves HEAD at the base and reports no head.
+  const head = branch ? await revParse(cwd, "HEAD").catch(() => undefined) : undefined;
+  const committed = { ...withBranch, ...git(head && head !== baseSha ? head : undefined) };
 
   const validation: string[] = [];
   if (repository.validateCommand) {
     if (!(await deps.authorize("validate"))) {
       return cancelled("Stopped before validation: Router withdrew execution authority.", {
-        ...withBranch,
+        ...committed,
         changes,
       });
     }
@@ -264,7 +357,7 @@ export async function executeEnvelope(
         changes,
         validation,
         ...reported,
-        ...withBranch,
+        ...committed,
       };
     }
   }
@@ -278,7 +371,7 @@ export async function executeEnvelope(
   if (branch && changes.length > 0 && repository.pushRemote) {
     if (!(await deps.authorize("push"))) {
       return cancelled("Stopped before push: Router withdrew execution authority.", {
-        ...withBranch,
+        ...committed,
         changes,
         validation,
       });
@@ -303,7 +396,7 @@ export async function executeEnvelope(
     validation,
     artifacts,
     ...reported,
-    ...withBranch,
+    ...committed,
     ...(pullRequest ? { pullRequest } : {}),
   };
 }

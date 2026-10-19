@@ -10,6 +10,7 @@ export function buildPmSystemPrompt(): string {
     "One task is one independently verifiable outcome. Create subtasks only for independently completable units with their own acceptance criteria or dependencies. Keep low-level implementation steps in the strategy, not Jira tasks.",
     "When the requirement has a single outcome (for example a wording change), create no subtasks: keep the parent as the executable unit, fill in its own scope contract, and list its requiredCapabilities.",
     "When the requirement mixes several independent outcomes, split them into tasks, or set needsDecision to true if which outcomes belong in scope is itself a human decision.",
+    "Judge size by independently verifiable outcomes, not by expected time or the number of files touched.",
     "Every executable unit (each task, or the parent when it has no tasks) carries a scope contract: acceptance criteria, verification (the commands or observations that check each criterion), inScope (the behavior it delivers), outOfScope (results and design changes it deliberately leaves out), and affectedAreas (where the change is expected to land, a hint only).",
     "Fill allowedPaths (repository-relative globs such as src/router/**) only when the change must stay within known paths; the implement agent is stopped if it touches anything else. Leave it empty when you cannot bound the paths.",
     "Give every task a stable taskId. Express dependencies on tasks in this plan using those taskIds; use Jira issue keys for pre-existing dependencies.",

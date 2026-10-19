@@ -1,0 +1,275 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { JobEnvelope } from "../src/contracts/envelope.js";
+import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
+import { renderSections } from "../src/issue/description.js";
+import { listAttentionItems, recordAttention } from "../src/router/db/attention.js";
+import { getOpenJobForIssue } from "../src/router/db/jobs.js";
+import { retryJob, retryReportBatch } from "../src/router/recovery.js";
+import { processReportJournal } from "../src/router/report-processor.js";
+import {
+  IN_PROGRESS_STATUS,
+  issueDescription,
+  REQUEST_STATUS,
+  REVIEW_STATUS,
+} from "./helpers/router-fixtures.js";
+import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
+
+const TRANSITIONS = [
+  { id: "t-request", name: "Request", toStatusName: REQUEST_STATUS },
+  { id: "t-progress", name: "Start", toStatusName: IN_PROGRESS_STATUS },
+  { id: "t-review", name: "Review", toStatusName: REVIEW_STATUS },
+  { id: "t-todo", name: "Back", toStatusName: "To Do" },
+];
+
+/** M4-09 (ADR 0041): attention items group incidents, keep their history, and never run anything. */
+describe("attention items", () => {
+  let router: RouterHarness;
+  let worker: RegisteredWorker;
+  let requests = 0;
+
+  beforeEach(async () => {
+    router = new RouterHarness();
+    worker = await router.connectWorker("worker-1");
+  });
+
+  afterEach(async () => {
+    await router.close();
+  });
+
+  function seedRequested(key: string, approval: string, description = issueDescription()): void {
+    router.jira.seedIssue(
+      {
+        key,
+        summary: `Work on ${key}`,
+        statusName: REQUEST_STATUS,
+        projectKey: "KAN",
+        assigneeAccountId: "user-1",
+        description,
+      },
+      TRANSITIONS,
+    );
+    router.jira.seedChangelogEntry(key, {
+      id: approval,
+      created: `2026-01-0${approval.length % 9}T00:00:00.000Z`,
+      items: [{ field: "status", fromString: "To Do", toString: REQUEST_STATUS }],
+    });
+  }
+
+  function process() {
+    return processReportJournal({ db: router.db, jira: router.jira, now: router.clock.now });
+  }
+
+  async function runOnce(overrides: Record<string, unknown>): Promise<JobEnvelope> {
+    requests += 1;
+    const envelope = (await router.next(worker, `req-${requests}`)).json() as JobEnvelope;
+    await router.jobCall(worker, envelope.jobId, "start", {
+      attemptId: envelope.attemptId,
+      leaseToken: envelope.leaseToken,
+    });
+    await router.post(
+      `/api/v1/jobs/${envelope.jobId}/result`,
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        jobId: envelope.jobId,
+        attemptId: envelope.attemptId,
+        resultId: `result-${envelope.attemptId}`,
+        status: "succeeded",
+        summary: "done",
+        git: {
+          repository: "git",
+          baseBranch: "main",
+          baseSha: "a".repeat(40),
+          headSha: "b".repeat(40),
+          committed: true,
+        },
+        ...overrides,
+      },
+      worker.token,
+    );
+    await process();
+    return envelope;
+  }
+
+  function retry(jobId: string) {
+    return retryJob(
+      { db: router.db, jira: router.jira, config: router.config, now: router.clock.now },
+      { jobId, actor: "admin" },
+    );
+  }
+
+  const failed = (reason: string) => ({
+    status: "failed",
+    summary: "broke",
+    failureReason: reason,
+  });
+
+  function failureComments(): string[] {
+    return router.jira.comments
+      .filter((comment) => comment.key === "KAN-1" && comment.body.includes("Execution failed."))
+      .map((comment) => comment.body);
+  }
+
+  it("counts a repeated failure once, resolves it on success, links a recurrence (T20)", async () => {
+    seedRequested("KAN-1", "approval-a");
+    await router.reconcile();
+    const first = await runOnce(failed("Tests failed: 3 of 120 in run 4711"));
+    expect(failureComments()).toHaveLength(1);
+    expect(
+      failureComments()[0]
+        ?.split("\n")
+        .filter((line) => !line.startsWith("[GGJIRA:"))
+        .slice(0, 3),
+    ).toEqual([
+      "Execution failed.",
+      `Impact: the issue stays in "${IN_PROGRESS_STATUS}" with the "ggjira-failed" label, and GGJIRA does not run it again under this approval.`,
+      `Next: fix the cause, then move the issue back to "${REQUEST_STATUS}".`,
+    ]);
+
+    // The same failure again on an admin retry: one more occurrence, no second comment.
+    await retry(first.jobId);
+    await runOnce(failed("Tests failed: 5 of 120 in run 4712"));
+    expect(failureComments()).toHaveLength(1);
+    let [item] = listAttentionItems(router.db, { issueKey: "KAN-1" });
+    expect(item).toMatchObject({ kind: "failed", status: "open", occurrences: 2 });
+    expect(item?.firstSeenAt).toBeDefined();
+
+    // A different cause is news: told once.
+    await retry(first.jobId);
+    await runOnce(failed("Could not reach the package registry"));
+    expect(failureComments()).toHaveLength(2);
+    expect(listAttentionItems(router.db, { status: "open" })).toHaveLength(2);
+
+    // It finally passes: every open failure of the issue is settled, history kept.
+    await retry(first.jobId);
+    await runOnce({});
+    expect(listAttentionItems(router.db, { status: "open" })).toEqual([]);
+    [item] = listAttentionItems(router.db, { issueKey: "KAN-1", status: "resolved" }).filter(
+      (entry) => entry.occurrences === 2,
+    );
+    expect(item?.resolution).toContain("a later run finished");
+
+    // Requested again later and the first cause comes back: a new occurrence, linked, told again.
+    seedRequested("KAN-1", "approval-again-b");
+    await router.reconcile();
+    await runOnce(failed("Tests failed: 1 of 121 in run 4800"));
+    const reopened = listAttentionItems(router.db, { status: "open" });
+    expect(reopened).toEqual([
+      expect.objectContaining({ kind: "failed", occurrences: 1, previousId: item?.id }),
+    ]);
+    expect(failureComments()).toHaveLength(3);
+  });
+
+  it("never starts anything when an item is resolved; only a new approval does (T21)", async () => {
+    seedRequested("KAN-1", "approval-a");
+    await router.reconcile();
+    await runOnce({
+      status: "needs_decision",
+      summary: "Needs a migration",
+      implementation: {
+        outcome: "needs_decision",
+        summary: "Needs a migration",
+        scopeDeviations: [{ description: "Schema change", reason: "the API needs it" }],
+        risks: [],
+        decision: {
+          question: "Add a column?",
+          options: [
+            { id: "a", title: "Add it" },
+            { id: "b", title: "Derive it" },
+          ],
+          recommendation: "b",
+          impact: "migration",
+        },
+        verification: [],
+      },
+    });
+    const [deviation] = listAttentionItems(router.db, { status: "open" });
+    expect(deviation).toMatchObject({ kind: "scope_deviation", severity: "immediate" });
+
+    // Polling keeps finding the issue in review; nothing settles it and nothing runs.
+    await router.reconcile();
+    await router.reconcile();
+    expect(getOpenJobForIssue(router.db, "KAN-1")).toBeUndefined();
+    expect(listAttentionItems(router.db, { status: "open" })).toHaveLength(1);
+
+    // Even an item resolved by other means does not start the issue.
+    recordAttention(router.db, {
+      issueKey: "KAN-1",
+      approvalId: null,
+      kind: "scope_deviation",
+      cause: deviation?.cause as string,
+      severity: "immediate",
+      reason: "x",
+      now: router.clock.now(),
+    });
+    router.db.prepare("UPDATE attention_items SET status = 'resolved', resolved_at = ?").run("t");
+    expect((await router.reconcile()).jobsCreated).toEqual([]);
+
+    // A new approval (the human edits the contract and requests it again) runs and settles it.
+    router.db.prepare("UPDATE attention_items SET status = 'open', resolved_at = NULL").run();
+    seedRequested(
+      "KAN-1",
+      "approval-after-decision",
+      issueDescription({ acceptance: ["The change works", "users has the column"] }),
+    );
+    const report = await router.reconcile();
+    expect(report.jobsCreated).toHaveLength(1);
+    expect(listAttentionItems(router.db, { status: "open" })).toEqual([]);
+    expect(listAttentionItems(router.db, { status: "resolved" })[0]?.resolution).toContain(
+      "approved again",
+    );
+  });
+
+  it("counts every pass that still holds a request for its contract, without new comments", async () => {
+    seedRequested(
+      "KAN-1",
+      "approval-a",
+      renderSections([{ heading: "Required Capabilities", items: ["programming"] }]),
+    );
+    await router.reconcile();
+    await router.reconcile();
+    await router.reconcile();
+    expect(listAttentionItems(router.db, { status: "open" })).toEqual([
+      expect.objectContaining({
+        kind: "readiness_hold",
+        cause: "acceptance,verification",
+        occurrences: 3,
+      }),
+    ]);
+
+    router.jira.seedIssue(
+      { ...(await router.jira.getIssue("KAN-1")), description: issueDescription() },
+      TRANSITIONS,
+    );
+    await router.reconcile();
+    expect(listAttentionItems(router.db, { status: "open" })).toEqual([]);
+  });
+
+  it("tracks a blocked Jira report until a retry applies it, and lists it over the API", async () => {
+    seedRequested("KAN-1", "approval-a");
+    await router.reconcile();
+    router.jira.seedIssue(
+      { ...(await router.jira.getIssue("KAN-1")) },
+      TRANSITIONS.filter((transition) => transition.toStatusName !== IN_PROGRESS_STATUS),
+    );
+    const envelope = await runOnce({});
+    const open = await router.adminCall("GET", "/attention");
+    expect(open.json()).toMatchObject({
+      items: [{ kind: "report_blocked", issueKey: "KAN-1", status: "open" }],
+    });
+    expect((await router.adminCall("GET", "/status")).json()).toMatchObject({
+      attention: { open: 1 },
+    });
+
+    router.jira.seedIssue({ ...(await router.jira.getIssue("KAN-1")) }, TRANSITIONS);
+    retryReportBatch(router.db, {
+      batchId: `start:${envelope.attemptId}`,
+      actor: "admin",
+      now: router.clock.now(),
+    });
+    await process();
+    expect((await router.adminCall("GET", "/attention")).json()).toEqual({ items: [] });
+    expect(
+      (await router.adminCall("GET", "/attention?status=resolved&issue=kan-1")).json(),
+    ).toMatchObject({ items: [{ kind: "report_blocked", resolution: expect.any(String) }] });
+  });
+});

@@ -177,6 +177,8 @@ export class RouterDaemon {
       db: deps.db,
       webhookSecret: deps.webhookSecret,
       siteId: deps.siteId,
+      isWorkspaceProject: (projectKey) =>
+        this.config.workspaces.some((workspace) => workspace.projectKeys.includes(projectKey)),
       now: this.now,
       workerService: this.workerService,
       adminToken: deps.adminToken,

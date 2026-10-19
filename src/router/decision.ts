@@ -3,6 +3,7 @@ import { checkImplementationReadiness } from "../issue/readiness.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
+import type { JobKind } from "../contracts/protocol.js";
 import type { RouteResult } from "../contracts/route.js";
 import type { ExecutionAgentFieldConfig, WorkspaceConfig } from "./config.js";
 
@@ -15,6 +16,9 @@ import type { ExecutionAgentFieldConfig, WorkspaceConfig } from "./config.js";
  */
 export interface RouteContext {
   issue: JiraIssue;
+  /** Which job the request is for, already decided from the workspace's mode
+   *  (src/router/workflow-mode.ts `resolveJobKind`). */
+  kind: JobKind;
   requirements: IssueRequirements;
   /** `null` for a manually created issue (no `ggjira.plan-task` property) — exempt from
    *  the workspace-match check below. */
@@ -70,8 +74,7 @@ export class RuleDecisionProvider implements DecisionProvider {
       };
     }
 
-    const target =
-      issue.statusName === workspace.workflow.planningStatus ? "planning" : "implementation";
+    const target = context.kind;
 
     // ADR 0034: an implementation request must say what "done" means and how to check it before a
     // worker may start it. Planning requests are exempt — completing the request is their job.

@@ -5,7 +5,10 @@ import type { z } from "zod";
 import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
+  AdminIssueOptInRequestSchema,
   AdminJiraProjectRequestSchema,
+  AdminLabelMigrationApplyRequestSchema,
+  AdminLabelMigrationPlanRequestSchema,
   AdminWorkflowCheckRequestSchema,
   AdminSecretRequestSchema,
   type ApiErrorResponse,
@@ -23,7 +26,12 @@ import { JOB_STATES } from "../contracts/job-state.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import { AdminError, type AdminService } from "./admin-service.js";
 import { RecoveryError } from "./recovery.js";
-import { ingestJiraWebhookEvent, verifyJiraWebhookSignature } from "./webhook.js";
+import {
+  ingestJiraWebhookEvent,
+  isRelevantJiraWebhook,
+  summarizeJiraWebhook,
+  verifyJiraWebhookSignature,
+} from "./webhook.js";
 import {
   type PullRequestClosed,
   type PullRequestOutcome,
@@ -36,6 +44,8 @@ import { WorkerApiError, type WorkerService } from "./worker-service.js";
 
 const SIGNATURE_HEADER = "x-hub-signature";
 const DELIVERY_ID_HEADER = "x-atlassian-webhook-identifier";
+/** Jira issue webhooks are a few KB; anything this large is not one (answered 413). */
+export const JIRA_WEBHOOK_BODY_LIMIT = 1024 * 1024;
 
 export interface RouterServerDeps {
   db: Database.Database;
@@ -44,6 +54,9 @@ export interface RouterServerDeps {
    *  (docs/router-service-implementation-plan.md §3 "첫 버전은 Jira 사이트 하나를 지원"),
    *  paired with the delivery id for dedup rather than trusted from the webhook payload. */
   siteId: string;
+  /** Whether a Jira project belongs to a configured workspace; a webhook for any other project is
+   *  recorded but wakes no reconcile. Read on every delivery, so it follows config applies. */
+  isWorkspaceProject?: (projectKey: string) => boolean;
   now?: () => string;
   /** Enables the `/api/v1/*` worker routes. */
   workerService?: WorkerService;
@@ -126,7 +139,7 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
   app.get("/health", async () => ({ status: "ok", mode: "router" }));
   registerWebUi(app, deps.webUiRoot);
 
-  app.post("/webhooks/jira", async (request, reply) => {
+  app.post("/webhooks/jira", { bodyLimit: JIRA_WEBHOOK_BODY_LIMIT }, async (request, reply) => {
     const { raw, parsed } = request.body as ParsedBody;
     const signature = headerValue(request.headers[SIGNATURE_HEADER]);
     if (!verifyJiraWebhookSignature(raw, signature, deps.webhookSecret)) {
@@ -138,11 +151,16 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
       return reply.code(400).send({ error: `missing ${DELIVERY_ID_HEADER} header` });
     }
 
+    // ADR 0038: keep only what identifies the change; a failed insert surfaces as a 500 so Jira
+    // retries, never as an accepted delivery.
+    const summary = summarizeJiraWebhook(parsed);
+    const isWorkspaceProject = deps.isWorkspaceProject ?? (() => true);
     const result = ingestJiraWebhookEvent(deps.db, {
       siteId: deps.siteId,
       webhookDeliveryId,
-      payload: parsed,
+      payload: summary,
       now: now(),
+      ignored: !isRelevantJiraWebhook(summary, isWorkspaceProject),
     });
     return reply.code(202).send({ status: result });
   });
@@ -377,6 +395,47 @@ function registerAdminRoutes(
         admin.retryReportBatch(request.params.id, actorOf(request)),
       );
 
+      scope.post("/migrations/label/plan", async (request) => {
+        const body = parseBody(AdminLabelMigrationPlanRequestSchema, request.body);
+        return admin.planLabelMigration(body.workspaceId, body.target);
+      });
+      scope.post("/migrations/label/apply", async (request) =>
+        admin.applyLabelMigration(
+          parseBody(AdminLabelMigrationApplyRequestSchema, request.body),
+          actorOf(request),
+        ),
+      );
+
+      scope.get<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
+        admin.issueOptIn(request.params.key),
+      );
+      scope.get<{ Params: { key: string } }>("/issues/:key/reviews", async (request) =>
+        admin.issueReviews(request.params.key),
+      );
+      scope.get<{ Querystring: { issue?: string; children?: string } }>(
+        "/executions",
+        async (request) =>
+          admin.executions({
+            ...(request.query.issue ? { issueKey: request.query.issue } : {}),
+            ...(request.query.children === "true" ? { includeChildren: true } : {}),
+          }),
+      );
+      scope.get<{ Querystring: { status?: string; issue?: string; kind?: string } }>(
+        "/attention",
+        async (request) =>
+          admin.attention({
+            ...(request.query.status ? { status: request.query.status } : {}),
+            ...(request.query.issue ? { issueKey: request.query.issue } : {}),
+            ...(request.query.kind ? { kind: request.query.kind } : {}),
+          }),
+      );
+      scope.put<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
+        admin.setIssueOptIn(
+          request.params.key,
+          parseBody(AdminIssueOptInRequestSchema, request.body).enabled,
+          actorOf(request),
+        ),
+      );
       scope.get("/config", async () => admin.readConfig());
       scope.put("/config", async (request) =>
         admin.updateConfig((request.body as ParsedBody | undefined)?.parsed, actorOf(request)),

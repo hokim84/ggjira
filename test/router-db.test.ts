@@ -47,19 +47,19 @@ describe("Router SQLite store", () => {
     });
 
     it("applies every migration and records it in schema_migrations", () => {
-      expect(currentSchemaVersion(db)).toBe(10);
+      expect(currentSchemaVersion(db)).toBe(13);
     });
 
     it("is idempotent: reopening an existing database does not re-run migrations", () => {
       db.close();
       const reopened = openRouterDb(dbPath);
-      expect(currentSchemaVersion(reopened)).toBe(10);
+      expect(currentSchemaVersion(reopened)).toBe(13);
       reopened.close();
       // Reopen once more so the outer afterEach's db.close() has a live handle.
       db = openRouterDb(dbPath);
     });
 
-    it("upgrades a version-9 database to 10 (readiness_holds) and keeps its data", () => {
+    it("upgrades a version-9 database to the current version and keeps its data", () => {
       createJob(db, {
         id: "job-v9",
         issueKey: "KAN-9",
@@ -77,9 +77,57 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(10);
+      expect(currentSchemaVersion(db)).toBe(13);
       expect(getJob(db, "job-v9")?.inputHash).toBe("legacy-hash");
       expect(db.prepare("SELECT COUNT(*) AS n FROM readiness_holds").get()).toEqual({ n: 0 });
+    });
+  });
+
+  describe("M4 migrations (T14)", () => {
+    const M4_TABLES = ["review_targets", "review_records", "attention_items", "execution_records"];
+
+    function tables(): string[] {
+      return (
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+          name: string;
+        }>
+      ).map((row) => row.name);
+    }
+
+    it("upgrades a pre-M4 (version 10) database in place, keeping its jobs and results", () => {
+      createJob(db, {
+        id: "job-m3",
+        issueKey: "KAN-3",
+        workspaceId: "ws-1",
+        repositoryId: "repo-1",
+        kind: "implementation",
+        approvalId: "approval-3",
+        inputHash: "v2:abc",
+        state: "succeeded",
+        now: "2026-10-01T00:00:00.000Z",
+      });
+      db.prepare(
+        "INSERT INTO results (id, job_id, attempt_id, payload, received_at, applied) VALUES (?, ?, ?, ?, ?, 1)",
+      ).run("result-m3", "job-m3", "attempt-m3", '{"status":"succeeded"}', "2026-10-01T00:00:00Z");
+      // Roll the file back to what the M3 Router left behind.
+      for (const table of M4_TABLES) db.exec(`DROP TABLE ${table}`);
+      db.prepare("DELETE FROM schema_migrations WHERE version > 10").run();
+      db.close();
+
+      db = openRouterDb(dbPath);
+      expect(currentSchemaVersion(db)).toBe(13);
+      expect(tables()).toEqual(expect.arrayContaining(M4_TABLES));
+      expect(getJob(db, "job-m3")).toMatchObject({ state: "succeeded", inputHash: "v2:abc" });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM results").get()).toEqual({ n: 1 });
+      // Nothing is back-filled: M3 results have no review target, attention item or usage row.
+      for (const table of M4_TABLES) {
+        expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get(), table).toEqual({ n: 0 });
+      }
+
+      // Re-running the migrations (another restart) changes nothing.
+      db.close();
+      db = openRouterDb(dbPath);
+      expect(currentSchemaVersion(db)).toBe(13);
     });
   });
 

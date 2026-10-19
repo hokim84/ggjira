@@ -174,21 +174,51 @@ export function renderSetup(root) {
     function drawStatuses() {
       const options = wizard.statuses;
       const kind = options.length ? "select" : "text";
+      const labelMode = ws.workflow.mode === "label";
+      // ADR 0037: label mode uses an opt-in label on the ordinary workflow instead of AI statuses.
+      const mode = field(ws, "workflow.mode", "AI 참여 방식", {
+        kind: "select",
+        options: ["label"],
+        optional: true,
+        hint: "label: opt-in 라벨이 붙은 이슈만 일반 할 일/진행/검토 상태로 처리. 비우면 AI 전용 상태",
+      });
+      mode.addEventListener("change", () => {
+        if (ws.workflow.mode === "label") {
+          ws.workflow.planningStatus = undefined;
+          ws.workflow.needsDecisionStatus = undefined;
+        } else {
+          ws.workflow.optInLabel = undefined;
+        }
+        drawStatuses();
+      });
       fill(
         statusFields,
-        field(ws, "workflow.requestStatus", "요청 상태 (사람이 AI에게 맡김)", { kind, options }),
+        mode,
+        labelMode
+          ? field(ws, "workflow.optInLabel", "opt-in 라벨", { placeholder: "ai-enabled" })
+          : null,
+        field(
+          ws,
+          "workflow.requestStatus",
+          labelMode ? "요청 상태 (할 일)" : "요청 상태 (사람이 AI에게 맡김)",
+          { kind, options },
+        ),
         field(ws, "workflow.inProgressStatus", "진행 상태 (Router가 옮김)", { kind, options }),
         field(ws, "workflow.reviewStatus", "검토 상태 (완료 후)", { kind, options }),
-        field(ws, "workflow.planningStatus", "계획 요청 상태 (선택)", {
-          kind,
-          options,
-          optional: true,
-        }),
-        field(ws, "workflow.needsDecisionStatus", "결정 필요 상태 (선택)", {
-          kind,
-          options,
-          optional: true,
-        }),
+        labelMode
+          ? null
+          : field(ws, "workflow.planningStatus", "계획 요청 상태 (선택)", {
+              kind,
+              options,
+              optional: true,
+            }),
+        labelMode
+          ? null
+          : field(ws, "workflow.needsDecisionStatus", "결정 필요 상태 (선택)", {
+              kind,
+              options,
+              optional: true,
+            }),
       );
     }
 
@@ -251,6 +281,9 @@ export function renderSetup(root) {
         missing.push({ path: "workspaces.0.projectKeys", message: "프로젝트를 선택하세요" });
       for (const key of ["requestStatus", "inProgressStatus", "reviewStatus"]) {
         if (!ws.workflow[key]) missing.push({ path: `workflow.${key}`, message: "필수입니다" });
+      }
+      if (ws.workflow.mode === "label" && !ws.workflow.optInLabel) {
+        missing.push({ path: "workflow.optInLabel", message: "label 방식에는 필수입니다" });
       }
       if (missing.length) {
         showFieldErrors(form, missing);

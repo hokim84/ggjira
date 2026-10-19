@@ -5,7 +5,8 @@ GGJIRA v5(Router + Worker) 운영·진단 절차다. §1~§12(v4 폴링 에이�
 
 먼저 볼 곳:
 
-- `ggjira router status`는 큐 대기, 워커 연결, recovery 대기, 웹훅 지연, 막힌 보고를 보여 준다.
+- `ggjira router status`는 큐 대기, 워커 연결, recovery 대기, 웹훅 지연, 막힌 보고, 확인 필요 항목 수를 보여 준다.
+  사람이 봐야 할 것은 `ggjira router attention`(§29)에 모인다.
 - `ggjira router jobs show <jobId>`는 attempt, 보고 단계, 감사 기록을 보여 준다.
 - Router 로그의 `layer:"router"`에서 `pass:"reconcile"`의 `held`/`skipped`는 job이 생기지 않은
   이유이고, `report journal pass`의 `blocked`는 Jira 반영이 막힌 곳이다.
@@ -335,6 +336,32 @@ v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 �
   않는다. 사람이 직접 PR을 만들어 머지한 뒤 이슈를 손으로 완료 처리한다.
 - 웹훅 401: secret이 서로 다르다. GitHub 웹훅 화면의 Recent Deliveries에서 응답을 볼 수 있다.
 
+### 검토 대상과 머지 (ADR 0040)
+
+Router는 결과마다 검토할 커밋(head)을 고정한다. 머지가 완료로 이어지지 않으면 이슈 댓글과
+`ggjira router issue reviews KEY`를 본다.
+
+- `stale`, "is not the reviewed commit": 결과 뒤에 PR에 커밋이 더해졌다. 무엇이 머지됐는지 확인하고 이슈를 직접
+  완료로 옮긴다.
+- `stale`, "a newer result exists": 같은 이슈의 재작업이 그 뒤에 결과를 냈다. 이전 PR이 머지된 것이다. 새 결과와
+  비교해 정리한다.
+- `unverified`, "Head commit not compared": 워커가 커밋을 보고하지 않았다(이전 버전 워커). 기존처럼 완료로
+  옮긴다. 워커를 업그레이드하면 비교된다.
+- 고위험 규칙: workspace 설정에 다음을 넣는다. 설정 > 파일 편집 또는 `router.config.json`.
+
+```json
+"review": {
+  "highRiskPaths": [
+    { "name": "migrations", "paths": ["src/router/db/**", "db/migrations/**"] },
+    { "name": "public contract", "paths": ["src/contracts/**"] }
+  ]
+}
+```
+
+  규칙이 없으면 고위험 판정은 "unknown"으로 보인다. 일치한 결과는 "Needs your individual review"로 보고된다.
+  GGJIRA는 머지를 막지 않는다. 고위험 PR의 필수 리뷰는 GitHub branch protection(CODEOWNERS·required reviews)으로
+  설정하고, 테스트 저장소에서 실제로 막히는지 직접 확인한다.
+
 ## 22. 워커 LLM 사용량 (ADR 0028)
 
 웹 UI > 워커 카드의 "LLM 사용량"은 워커가 **연결할 때**와 **작업을 마친 직후**에만 갱신된다. 주기적으로
@@ -491,3 +518,149 @@ Router와 워커는 `protocolVersion`이 같아야 한다. 다르면 426 `protoc
 3. 워커를 멈추고, Router를 업그레이드·재시작한 뒤, 워커를 업그레이드·시작한다.
 4. 업그레이드 뒤 워커 로그에 `spooled result does not match this protocol version`이 보이면 2단계에서
    빠진 결과다. 파일은 spool에 그대로 있다. 내용을 확인한 뒤 해당 이슈를 다시 요청 상태로 옮긴다.
+
+## 27. label 모드: opt-in 라벨과 일반 상태 흐름 (ADR 0037)
+
+label 모드 workspace에서는 AI 전용 상태 없이 일반 상태 흐름을 쓴다. 담당자가 있는 이슈가 할 일
+(`requestStatus`)에 있고 `optInLabel`이 붙어 있으면 Router가 맡는다. 설정 예:
+
+```json
+"workflow": {
+  "mode": "label",
+  "optInLabel": "ai-enabled",
+  "requestStatus": "해야 할 일",
+  "inProgressStatus": "진행 중",
+  "reviewStatus": "검토",
+  "doneStatus": "완료"
+}
+```
+
+`planningStatus`·`needsDecisionStatus`는 쓰지 않는다(있으면 설정 오류). opt-in 라벨은 대소문자를 구분하지
+않으며, `reporting.failureLabel`·`ggjira-superseded` 같은 GGJIRA 라벨과 같을 수 없다.
+
+### 동작
+
+- 시작: Acceptance Criteria·Verification이 있으면 구현, 없으면 PM 계획이 먼저 돈다. PM이 결과 하나로
+  보면 상위 이슈 설명에 계약을 채우고 검토 상태로 옮긴다. 계약을 확인한 뒤 할 일로 옮기면 구현이
+  시작된다. 여러 결과로 나누면 하위 이슈가 생기는데, 라벨은 붙지 않는다. 실행할 하위 이슈에 사람이
+  라벨을 붙인다. 하위 작업이 있는 상위 이슈를 다시 할 일로 옮기면 재계획한다.
+- 결정 요청·범위 이탈: 이슈는 진행 상태에 남고 댓글로 안내된다. 결정을 설명에 반영하고 할 일로 옮기면
+  새 승인으로 다시 시작된다.
+- 실패: 진행 상태에 남고 `ggjira-failed` 라벨이 붙는다. 같은 승인으로는 다시 돌지 않는다.
+- 라벨 제거: 대기 중이면 취소, 실행 중이면 중단을 요청한다(최대 5초 안에 확인). 이슈 상태는 그대로다.
+  다시 붙이면 새 승인이다.
+- 재작업: 검토 → 할 일로 옮기면 새 job이다.
+- 승인 뒤 요청 수정(제목·설명·계약): 대기 중이면 취소하고, 실행 중이면 중단을 요청한다. 늦게 온 결과는
+  반영하지 않는다. 같은 승인으로는 다시 돌지 않으며 로그 `held`에 "edited after it was approved"가 남는다.
+  고친 내용으로 실행하려면 할 일로 다시 옮기거나 라벨을 뗐다 다시 붙인다(새 승인, 새 입력 해시).
+
+### 이슈별 AI 참여 켜고 끄기 (ADR 0039)
+
+웹 UI 이슈 화면 또는 `ggjira router issue show KEY` / `ggjira router issue opt-in KEY on|off`. opt-in 라벨만
+바꾸고 다른 라벨은 그대로 둔다. 응답은 Jira를 다시 읽어 확인한 결과다.
+
+- `blocked:` 줄(웹 UI의 Router 항목)이 시작되지 않는 이유다. `not_requested`는 상태를, `no_assignee`는
+  담당자를, `readiness_hold`는 빠진 절을, `approval_held`·`inputs_changed`는 새 승인(라벨을 껐다 켜기)을 요구한다.
+- `409 not_label_mode`: legacy workspace다. 상태로 요청한다.
+- `502 unconfirmed`: 쓰기 결과를 확인하지 못했다. Jira에서 이슈의 라벨을 직접 보고 다시 조회한다.
+- `502 jira_forbidden`: Router의 Jira 계정에 그 이슈 편집 권한이 없다.
+- 누가 언제 바꿨는지: `audit_log`의 `issue.opt_in.*`(성공·변경 없음·실패 모두). actor는 호출자가 선언한
+  이름이고 인증은 공유 admin token이다.
+
+시작되지 않을 때: `ggjira router check --issue KEY`가 opt-in 라벨 유무와 전이 가능 여부를 보여 준다. Router
+로그 `pass:"reconcile"`의 `held`/`skipped`에 이유가 있다(담당자 없음, 하위 이슈의 계약 누락 등).
+
+### legacy → label 전환
+
+1. 기준선: `ggjira router backup`과 설정·비밀 파일 사본을 저장소 밖에 둔다. Git 태그만으로는 DB와 Jira가
+   복구되지 않는다.
+2. 제안(Jira를 바꾸지 않음):
+   `ggjira router migrate-labels plan --workspace <id> --label ai-enabled --to-do "<할 일>" --review "<검토>" --out plan.json`
+   - `add-label-and-request`: 요청·계획 요청 이슈. 라벨을 붙이고 할 일로 옮긴다.
+   - `move-to-review`: AI 작업 완료 이슈. 검토로 옮긴다.
+   - `manual`: 결정 대기, 진행 중, 계약이 이미 있는 계획 요청(label 모드에서는 구현으로 바뀜). 사람이 정한다.
+   - `blocked`: 아직 실행될 수 있는 job이 있다. 끝나기를 기다리거나 `jobs cancel`.
+3. `plan.json`을 검토하고 옮길 항목에만 `"approved": true`를 쓴다.
+4. 적용(workspace가 아직 legacy일 때): `ggjira router migrate-labels apply plan.json`. 이슈마다 결과를 출력하고
+   `audit_log`에 남긴다(`migration.label.*`). 계획 이후 바뀐 이슈는 건너뛰고, 실패한 이슈가 있어도 나머지는
+   계속한다. legacy는 라벨을 보지 않으므로 이 단계에서는 아무것도 시작되지 않는다. 실패한 항목은 원인을
+   고친 뒤 같은 파일로 다시 apply한다. 이미 옮긴 항목은 `skipped`로 나온다.
+5. 설정 전환: 웹 UI 설정에서 AI 참여 방식을 label로 바꾸고 opt-in 라벨과 일반 상태를 지정해 저장한다.
+   아직 실행될 수 있는 job(대기·임대·실행·중단 요청·복구 필요)이 그 workspace에 있으면
+   409 `workspace_busy`로 거절된다. 실패·시간 초과 job은 막지 않는다.
+6. 관찰: `ggjira router status`와 Router 로그로 새 job과 댓글이 한 번씩만 생기는지 확인한다.
+7. 되돌리기: 설정을 legacy로 되돌린다(같은 `workspace_busy` 규칙). 옮긴 이슈는 `audit_log`의 `migration.label.applied`
+   기록을 보고 골라서 되돌린다. 일괄 되돌리기는 없다.
+
+AI 전용 상태를 Jira 워크플로에서 지우는 것은 전환 조건이 아니다. 충분히 관찰한 뒤 따로 한다.
+
+## 28. Jira 웹훅 진단 (ADR 0038)
+
+Router는 서명이 맞는 웹훅의 이벤트 종류·이슈 키·프로젝트·바뀐 필드만 `events`에 저장한다. 이슈 본문·댓글·
+사용자 정보는 저장하지 않는다. 판단은 늘 Jira 재조회로 한다.
+
+- `202 {"status":"ignored"}`: 댓글 이벤트이거나 workspace 밖 프로젝트다. 기록만 하고 reconcile을 깨우지
+  않는다. 결정 답변 댓글은 사람이 이슈를 다시 요청할 때 반영된다.
+- `401`: 서명 불일치. 처리하지 않는다. Jira 웹훅 secret과 `GGJIRA_WEBHOOK_SECRET`을 맞춘다.
+- `400 missing x-atlassian-webhook-identifier`: delivery id가 없는 요청. Jira Cloud 웹훅이 아니다.
+- `413`: 본문이 1 MiB를 넘는다.
+- `500`: 저장 실패. Jira가 재전송한다. Router 로그와 DB 디스크를 확인한다.
+- 웹훅이 오지 않아도 `reconciliation.backgroundIntervalMs`(기본 60초)마다 보완 조회가 돈다.
+  `ggjira router status`의 `webhooks` 지연이 계속 늘면 sync 루프가 실패하고 있는 것이다.
+
+## 29. 확인 필요 항목 (ADR 0041)
+
+웹 UI 대시보드의 "확인 필요", `ggjira router status`의 `needs attention`, `ggjira router attention`이 사람이
+지금 봐야 할 것이다. 같은 사건은 하나로 묶이고 횟수(`x3`)가 늘어난다.
+
+| 종류 | 뜻 | 할 일 | 해소 시점 |
+|---|---|---|---|
+| `failed` | 실행 실패·시간 초과 | 이슈 댓글의 이유를 고치고 다시 요청 | 같은 이슈의 성공, 또는 새 승인 |
+| `decision_needed` | 결정 대기 | 설명에 결정을 반영하고 다시 요청 | 새 승인 |
+| `scope_deviation` | 범위 이탈로 커밋 전 중단 | 계약을 고치거나 범위를 줄여 다시 요청 | 새 승인 |
+| `review_required` | 고위험·미검증·커밋 없음 등 개별 검토 | 결과를 직접 확인 | 검토 커밋과 같은 PR 머지, 새 결과, 새 승인 |
+| `readiness_hold` | 계약 절이 빠져 시작 안 함 | 설명에 Acceptance Criteria·Verification 추가 | 계약이 채워짐 |
+| `report_blocked` | Jira 반영이 막힘 | 원인(워크플로·권한)을 고치고 `router reports retry` | 재시도가 반영됨 |
+
+- 해소는 기록일 뿐이다. 해소됐다고 실행이 시작되지 않는다. 실행은 Jira의 새 요청(승인)만 시작한다.
+- `--all`이나 `--resolved`로 해소 이력을 본다. "recurred after"는 해소된 같은 사건의 재발이다.
+- 같은 이유의 반복 실패는 Jira 댓글을 다시 달지 않는다. 이유가 바뀌면 새 댓글이 달린다.
+
+## 30. 실행·사용량 기록 (ADR 0042)
+
+`ggjira router usage --issue KAN-12 --children`은 그 요구사항과 하위 작업의 모든 실행을 보여 준다.
+`--json`이 내보내기 형식이다.
+
+- `usage not reported`/`?`: CLI가 토큰을 주지 않았다(이전 워커, 오래된 CLI). 0이 아니라 모름이다. 합계의
+  `usage not reported for N`이 그 건수다.
+- `(inside in)`: Codex는 캐시 입력을 입력 토큰 안에 센다. 합계에서 `in … (of which cache …)`로 보인다.
+  Claude Code의 캐시 읽기는 입력과 별도(`cache-read on top`)다. 둘을 더하지 않는다.
+- `(configured)`: CLI가 모델을 알려 주지 않아 워커 설정의 모델을 적었다(Codex).
+- `retry`는 관리자 `jobs retry`, `rework`는 같은 이슈의 새 요청이다. `not applied`는 늦게 와서 반영하지 않은
+  결과다(사용량은 남긴다).
+- `cause`: `environment`(시간 초과·비정상 종료), `requirements_change`(승인 뒤 요청 수정으로 취소)는 Router 판단이다.
+  `unknown`은 원인을 판단하지 않았다는 뜻이다. 코드 구조 문제인지는 사람이 본다.
+
+## 31. M4 업그레이드·되돌리기 (M4-07, M4-10)
+
+M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, `execution_records`)을 더하고
+워커 결과에 선택 필드(`git`, `execution`, 구현 보고의 `risks`)를 더한다. 프로토콜 버전은 2 그대로다.
+
+업그레이드:
+1. `ggjira router backup`과 `router.config.json`·`router.env` 사본을 저장소 밖에 둔다. 기준선 태그
+   `m3-baseline-2026-10-18`은 코드만 되돌린다. DB와 Jira는 되돌리지 않는다.
+2. `ggjira router status`로 실행 중인 job이 없는지 본다(필수는 아니다. 결과 형식이 호환된다).
+3. Router를 새 버전으로 바꾸고 시작한다. migration은 시작할 때 한 번 돈다(재시작해도 다시 돌지 않는다).
+   이전 결과에는 검토 대상·주의 항목·사용량 행을 소급해 만들지 않는다.
+4. 워커를 업그레이드한다. 순서는 상관없다. 이전 워커의 결과는 커밋·사용량이 "미보고"로 기록되고, PR 머지는
+   ADR 0027대로 완료로 옮긴다(댓글에 "Head commit not compared"). 새 워커가 이전 Router에 보내는 결과의 새 필드는
+   무시된다.
+5. 확인: `ggjira router status`의 `needs attention`, `ggjira router attention`, 새 결과에 대한
+   `ggjira router issue reviews KEY`·`ggjira router usage --issue KEY`.
+
+되돌리기:
+- 코드만 이전 버전으로 되돌려도 된다. 이전 Router는 schema 버전을 검사하지 않고 새 테이블을 쓰지 않는다.
+  그동안의 검토 대상·주의 항목·사용량 기록은 남지만 갱신되지 않는다. PR 머지 → 완료는 ADR 0027 동작으로 돌아간다.
+- DB 백업을 복원하는 것은 마지막 수단이다. 백업 이후의 job·결과·보고 저널이 사라지므로, 복원 전에 그 사이 Jira
+  댓글·전이와 push된 브랜치를 `audit_log`와 Jira에서 대조해 둔다.
+- label 모드 전환 자체의 되돌리기는 §27 "legacy → label 전환" 7단계를 따른다.

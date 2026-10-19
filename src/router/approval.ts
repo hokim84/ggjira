@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import type { JiraGateway } from "../jira/gateway.js";
-import type { JiraIssue } from "../jira/types.js";
+import type { JiraChangelogItem, JiraIssue } from "../jira/types.js";
 import type { JobKind } from "../contracts/protocol.js";
 import { computeExecutionInputHash, isLegacyInputHash } from "../issue/input-hash.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
+import { labelsInclude } from "./workflow-mode.js";
 
 /**
  * Identifies *which* entry into `requestStatus` this job is for
@@ -15,21 +16,38 @@ import type { PlanTaskMetadata } from "../pm/metadata.js";
  * Falls back to a stable per-issue sentinel when the issue was created directly into
  * `requestStatus` (§3 "생성부터 요청 상태였던 이슈는 생성 이벤트를 사용한다") — a plain
  * `updated` timestamp is explicitly not used as the approval identifier.
+ *
+ * With `optInLabel` (a `label`-mode workspace, ADR 0037) the request is made by the label and the
+ * status together, so the approval is whichever came last: entering `requestStatus` or adding the
+ * label. Removing the label and adding it again is therefore a new approval, never the old one.
  */
 export async function computeApprovalId(
   jira: JiraGateway,
   issue: JiraIssue,
   requestStatus: string,
+  optInLabel?: string,
 ): Promise<string> {
   const changelog = await jira.getIssueChangelog(issue.key);
-  const entriesIntoRequestStatus = changelog.filter((entry) =>
-    entry.items.some((item) => item.field === "status" && item.toString === requestStatus),
+  const approvingEntries = changelog.filter((entry) =>
+    entry.items.some(
+      (item) =>
+        (item.field === "status" && item.toString === requestStatus) ||
+        (optInLabel !== undefined && item.field === "labels" && addsLabel(item, optInLabel)),
+    ),
   );
-  if (entriesIntoRequestStatus.length === 0) {
+  if (approvingEntries.length === 0) {
     return `created:${issue.key}`;
   }
-  const latest = entriesIntoRequestStatus.reduce((a, b) => (a.created > b.created ? a : b));
+  const latest = approvingEntries.reduce((a, b) => (a.created > b.created ? a : b));
   return latest.id;
+}
+
+/** Jira records a label edit as the space-separated label lists before and after it. */
+function addsLabel(item: JiraChangelogItem, label: string): boolean {
+  const split = (value: string | null) => (value ?? "").split(/\s+/).filter(Boolean);
+  return (
+    labelsInclude(split(item.toString), label) && !labelsInclude(split(item.fromString), label)
+  );
 }
 
 /**

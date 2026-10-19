@@ -358,3 +358,126 @@ export const READINESS_HOLD_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS idx_readiness_holds_issue ON readiness_holds (issue_key)",
   "CREATE INDEX IF NOT EXISTS idx_readiness_holds_notice ON readiness_holds (notice_status)",
 ];
+
+/**
+ * Migration 11 (M4-11, ADR 0040). `review_targets` pins what a human reviews: one row per applied
+ * result, naming the issue, job, attempt, approval, input hash and Git base/head it came from,
+ * with the assessment (review class, high-risk evidence and rule version, acceptance tally,
+ * commit state) as JSON. A newer result for the same issue supersedes the older row, which stays
+ * as history. `review_records` is every human act Router saw that refers to a target (today: a
+ * pull request merged or closed on GitHub), with who did it, how they were authenticated, the head
+ * they acted on and whether that still matched the target.
+ */
+export const REVIEW_TARGET_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS review_targets (
+    id TEXT PRIMARY KEY,
+    issue_key TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs (id),
+    attempt_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    input_hash TEXT,
+    result_status TEXT NOT NULL,
+    final_state TEXT NOT NULL,
+    base_sha TEXT,
+    head_sha TEXT,
+    commit_state TEXT NOT NULL,
+    review_class TEXT NOT NULL CHECK (review_class IN ('immediate', 'standard')),
+    assessment TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    superseded_by TEXT,
+    superseded_at TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_review_targets_issue ON review_targets (issue_key)",
+  "CREATE INDEX IF NOT EXISTS idx_review_targets_attempt ON review_targets (attempt_id)",
+  `CREATE TABLE IF NOT EXISTS review_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id TEXT REFERENCES review_targets (id),
+    issue_key TEXT NOT NULL,
+    action TEXT NOT NULL,
+    actor TEXT,
+    authentication TEXT NOT NULL,
+    head_sha TEXT,
+    outcome TEXT NOT NULL CHECK (outcome IN ('matched', 'stale', 'unverified', 'no_target')),
+    detail TEXT,
+    at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_review_records_issue ON review_records (issue_key)",
+];
+
+/**
+ * Migration 12 (M4-09, ADR 0041). One row per occurrence of something a human has to look at:
+ * a failed run, a decision or scope stop, a result that needs individual review, a request held
+ * for its contract, a Jira report Router could not apply. `incident_key` (issue + kind + cause)
+ * groups repeats: while a row is open, the same incident only bumps `occurrences`/`last_seen_at`.
+ * Once resolved, the same incident is a new row linked through `previous_id`. Nothing reads this
+ * table to decide whether to run anything.
+ */
+export const ATTENTION_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS attention_items (
+    id TEXT PRIMARY KEY,
+    incident_key TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    approval_id TEXT,
+    kind TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('immediate', 'standard')),
+    reason TEXT NOT NULL,
+    evidence TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    occurrences INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL CHECK (status IN ('open', 'resolved')),
+    resolved_at TEXT,
+    resolution TEXT,
+    previous_id TEXT REFERENCES attention_items (id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_attention_open_incident
+    ON attention_items (incident_key) WHERE status = 'open'`,
+  "CREATE INDEX IF NOT EXISTS idx_attention_issue ON attention_items (issue_key)",
+  "CREATE INDEX IF NOT EXISTS idx_attention_status ON attention_items (status)",
+];
+
+/**
+ * Migration 13 (M4-12, ADR 0042). One row per stored worker result — applied or kept only as a
+ * late record — with the provider call behind it: provider, model, call id, how it ended and the
+ * token usage the CLI reported. Usage columns are NULL when not reported (never 0), and
+ * `cache_read_included` says whether cache reads are already inside `input_tokens`. Each row links
+ * the result to its job, attempt, approval and original requirement (`parent_issue_key`), with
+ * `run_type` (initial / retry under the same approval / rework under a new one) and a coarse
+ * `cause_category` Router itself can tell apart; `cause_source` says who judged it.
+ */
+export const EXECUTION_RECORD_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS execution_records (
+    result_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES jobs (id),
+    attempt_id TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    parent_issue_key TEXT,
+    kind TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    run_type TEXT NOT NULL CHECK (run_type IN ('initial', 'retry', 'rework')),
+    applied INTEGER NOT NULL,
+    result_status TEXT NOT NULL,
+    provider_id TEXT,
+    provider_type TEXT,
+    model TEXT,
+    model_source TEXT,
+    call_id TEXT,
+    exit_reason TEXT,
+    duration_ms INTEGER,
+    num_turns INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_creation_tokens INTEGER,
+    cache_read_included INTEGER,
+    cost_usd REAL,
+    usage_reported INTEGER NOT NULL,
+    cause_category TEXT NOT NULL,
+    cause_source TEXT,
+    recorded_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_execution_records_issue ON execution_records (issue_key)",
+  "CREATE INDEX IF NOT EXISTS idx_execution_records_parent ON execution_records (parent_issue_key)",
+];

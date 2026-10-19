@@ -50,7 +50,15 @@ export class AdminClient {
     return this.request<T>("POST", endpoint, body ?? {});
   }
 
-  private async request<T>(method: "GET" | "POST", endpoint: string, body?: unknown): Promise<T> {
+  put<T = unknown>(endpoint: string, body: unknown): Promise<T> {
+    return this.request<T>("PUT", endpoint, body);
+  }
+
+  private async request<T>(
+    method: "GET" | "POST" | "PUT",
+    endpoint: string,
+    body?: unknown,
+  ): Promise<T> {
     const headers: Record<string, string> = { authorization: `Bearer ${this.opts.adminToken}` };
     if (this.opts.actor) headers["x-ggjira-actor"] = this.opts.actor;
     if (body !== undefined) headers["content-type"] = "application/json";
