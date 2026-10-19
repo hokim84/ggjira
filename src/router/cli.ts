@@ -19,7 +19,7 @@ import { type CheckItem, runRouterCheck } from "./check.js";
 import { loadRouterConfig, type RouterConfig } from "./config.js";
 import type { LabelMigrationPlan, LabelMigrationResult } from "./label-migration.js";
 import type { IssueOptInView, SetOptInResult } from "./issue-opt-in.js";
-import type { ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
+import type { ReviewQueueItem, ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
 import type { AttentionItemRow } from "./db/attention.js";
 import type { ExecutionRecordRow, ExecutionTotals } from "./db/execution-records.js";
 import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
@@ -58,6 +58,11 @@ export const ROUTER_USAGE = `ggjira router <command>
                                          would not start, or add/remove the opt-in label
   issue reviews <KEY>                    results pinned for review, and merges seen against them
   attention [--all|--resolved] [--issue KEY]  what a human must look at (open by default)
+  reviews [--immediate|--standard] [--held|--all] [--assignee <accountId>] [--parent KEY]
+                                         results waiting for a human judgment (pending and held)
+  reviews judge <targetId> confirm|hold|rework [--note <text>]
+                                         record a judgment; hold and rework need --note and leave
+                                         one Jira comment. It approves, moves or merges nothing
   usage [--issue KEY [--children]] [--json]   provider calls and token usage per result
   reconcile
   backup
@@ -376,6 +381,7 @@ function printStatus(io: CliIo, status: RouterStatus): void {
   );
   io.out(`blocked reports:   ${status.reports.blocked}`);
   io.out(`needs attention:   ${status.attention.open}`);
+  io.out(`reviews waiting:   ${status.reviews.waiting}`);
 }
 
 async function workers(parsed: ParsedArgs, io: CliIo): Promise<number> {
@@ -613,6 +619,71 @@ async function attention(parsed: ParsedArgs, io: CliIo): Promise<number> {
   return 0;
 }
 
+function printReviewQueue(io: CliIo, items: ReviewQueueItem[]): void {
+  if (items.length === 0) io.out("nothing waits for review");
+  for (const item of items) {
+    const { target } = item;
+    const head = target.headSha ? target.headSha.slice(0, 12) : target.commitState;
+    io.out(
+      `${target.reviewClass === "immediate" ? "!" : "-"} ${target.issueKey}  ${item.state}  ${target.kind} ${target.resultStatus}  head ${head}  ${target.id}`,
+    );
+    if (item.issue.summary) io.out(`    ${item.issue.summary}`);
+    if (item.result.summary) io.out(`    result: ${item.result.summary}`);
+    const v = target.assessment.verification;
+    if (v.reported)
+      io.out(`    acceptance: ${v.pass} pass, ${v.fail} fail, ${v.notVerified} not verified`);
+    for (const reason of target.assessment.reasons) io.out(`    needs review: ${reason.detail}`);
+    if (item.result.pullRequest) io.out(`    pull request: ${item.result.pullRequest.url}`);
+    if (item.judgment) {
+      io.out(
+        `    ${item.judgment.action} by ${item.judgment.actor ?? "?"} (${item.judgment.authentication}) ${item.judgment.at}`,
+      );
+    }
+  }
+}
+
+/** `reviews [judge]` (F01, ADR 0043): the review queue and per-item judgments. */
+async function reviews(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const sub = parsed.positionals[1];
+  if (sub === "judge") {
+    const targetId = requirePositional(parsed, 2, "review target id");
+    const action = requirePositional(parsed, 3, "confirm|hold|rework");
+    const note = stringOption(parsed, "note");
+    const record = await client.post<ReviewRecordRow>(
+      `/reviews/${encodeURIComponent(targetId)}/judgments`,
+      { action, ...(note ? { note } : {}) },
+    );
+    if (parsed.values.json) printJson(io, record);
+    else {
+      io.out(
+        `${record.issueKey}: ${record.action} recorded as ${record.actor ?? "?"} (${record.authentication})`,
+      );
+      io.out(
+        action === "confirm"
+          ? "  Recorded in Router only. Nothing was approved, moved or merged."
+          : "  A Jira comment is queued. Nothing was approved, moved or merged.",
+      );
+    }
+    return 0;
+  }
+  if (sub !== undefined) throw new UsageError(`unknown reviews subcommand "${sub}"`);
+  const query = new URLSearchParams();
+  if (parsed.values.immediate) query.set("class", "immediate");
+  else if (parsed.values.standard) query.set("class", "standard");
+  if (parsed.values.held) query.set("state", "held");
+  else if (parsed.values.all)
+    query.set("state", "pending,held,confirmed,rework_requested,merged,outdated");
+  const assignee = stringOption(parsed, "assignee");
+  if (assignee) query.set("assignee", assignee);
+  const parent = stringOption(parsed, "parent");
+  if (parent) query.set("parent", parent);
+  const { items } = await client.get<{ items: ReviewQueueItem[] }>(`/reviews?${query}`);
+  if (parsed.values.json) printJson(io, items);
+  else printReviewQueue(io, items);
+  return 0;
+}
+
 function requireOption(parsed: ParsedArgs, name: string): string {
   const value = stringOption(parsed, name);
   if (!value) throw new UsageError(`missing --${name}`);
@@ -731,6 +802,20 @@ export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
           all: { type: "boolean" },
           resolved: { type: "boolean" },
           issue: { type: "string" },
+        }),
+        io,
+      );
+    case "reviews":
+      return reviews(
+        parseCommandArgs(args, {
+          ...COMMON_OPTIONS,
+          immediate: { type: "boolean" },
+          standard: { type: "boolean" },
+          held: { type: "boolean" },
+          all: { type: "boolean" },
+          assignee: { type: "string" },
+          parent: { type: "string" },
+          note: { type: "string" },
         }),
         io,
       );

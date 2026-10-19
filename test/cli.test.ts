@@ -7,6 +7,11 @@ import type { CliIo } from "../src/cli-io.js";
 import { decideServeMode } from "../src/router/cli.js";
 import { RouterConfigError, RouterConfigSchema } from "../src/router/config.js";
 import { routerConfigTemplate } from "../src/router/config-store.js";
+import type { WorkspaceConfig } from "../src/router/config.js";
+import { getOpenJobForIssue } from "../src/router/db/jobs.js";
+import { recordReviewTarget } from "../src/router/db/review-targets.js";
+import { assessResult } from "../src/router/review-gate.js";
+import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { loadWorkerConfig } from "../src/worker-runtime/config.js";
 import { loadWorkerCredential } from "../src/worker-runtime/credential.js";
 import { ADMIN_TOKEN, RouterHarness } from "./helpers/router-harness.js";
@@ -203,6 +208,62 @@ describe("ggjira CLI", () => {
       const missing = captureIo(env);
       expect(await main(["router", "jobs", "show", "nope", "--url", url], missing)).toBe(1);
       expect(missing.stderr.join("\n")).toContain("404");
+    });
+
+    it("lists the review queue and records a judgment (F01)", async () => {
+      await router.seedQueuedJob("KAN-1");
+      const job = getOpenJobForIssue(router.db, "KAN-1");
+      if (!job) throw new Error("no job");
+      recordReviewTarget(router.db, {
+        resultId: "result-1",
+        issueKey: "KAN-1",
+        jobId: job.id,
+        attemptId: "attempt-1",
+        kind: "implementation",
+        approvalId: job.approvalId,
+        inputHash: null,
+        resultStatus: "succeeded",
+        finalState: "succeeded",
+        assessment: assessResult({
+          kind: "implementation",
+          finalState: "succeeded",
+          result: {
+            protocolVersion: PROTOCOL_VERSION,
+            jobId: job.id,
+            attemptId: "attempt-1",
+            resultId: "result-1",
+            status: "succeeded",
+            summary: "done",
+          },
+          workspace: router.config.workspaces[0] as WorkspaceConfig,
+        }),
+        now: router.clock.now(),
+      });
+      const env = { GGJIRA_ADMIN_TOKEN: ADMIN_TOKEN };
+
+      const list = captureIo(env);
+      expect(await main(["router", "reviews", "--url", url], list)).toBe(0);
+      expect(list.stdout[0]).toMatch(/^! KAN-1 {2}pending .* result-1$/);
+      expect(list.stdout.join("\n")).toContain("the worker did not report which commit");
+
+      const noNote = captureIo(env);
+      expect(
+        await main(["router", "reviews", "judge", "result-1", "hold", "--url", url], noNote),
+      ).toBe(1);
+      expect(noNote.stderr.join("\n")).toContain("needs a note");
+
+      const confirm = captureIo(env);
+      expect(
+        await main(["router", "reviews", "judge", "result-1", "confirm", "--url", url], confirm),
+      ).toBe(0);
+      expect(confirm.stdout.join("\n")).toContain("Nothing was approved, moved or merged");
+
+      const empty = captureIo(env);
+      expect(await main(["router", "reviews", "--url", url], empty)).toBe(0);
+      expect(empty.stdout).toEqual(["nothing waits for review"]);
+      const status = captureIo(env);
+      expect(await main(["router", "status", "--url", url], status)).toBe(0);
+      expect(status.stdout.join("\n")).toContain("reviews waiting:   0");
     });
   });
 

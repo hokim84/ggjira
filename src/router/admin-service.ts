@@ -58,11 +58,17 @@ import {
   listAttentionItems,
 } from "./db/attention.js";
 import {
+  countWaitingReviews,
+  listReviewQueue,
   listReviewRecords,
   listReviewTargets,
+  REVIEW_QUEUE_STATES,
+  type ReviewQueueItem,
+  type ReviewQueueState,
   type ReviewRecordRow,
   type ReviewTargetRow,
 } from "./db/review-targets.js";
+import { JudgmentError, judgeReviewTarget } from "./review-judgment.js";
 import { createPairingCode } from "./db/pairing.js";
 import {
   countJobsByState,
@@ -104,6 +110,8 @@ export class AdminError extends Error {
     readonly code: string,
     message: string,
     readonly issues?: ConfigIssue[],
+    /** A stale review target's replacement (F01), so the caller can show the current one. */
+    readonly currentTargetId?: string,
   ) {
     super(message);
     this.name = "AdminError";
@@ -157,6 +165,8 @@ export interface RouterStatus {
   reports: { blocked: number };
   /** Open attention items: what a human must look at now (M4-09). */
   attention: { open: number };
+  /** Current review targets still waiting on a human judgment (F01). */
+  reviews: { waiting: number };
 }
 
 export interface AdminConfigView {
@@ -279,6 +289,11 @@ const OPT_IN_ERROR_STATUS: Record<IssueOptInErrorCode, AdminError["status"]> = {
 
 function toAdminError(error: unknown): AdminError {
   if (error instanceof AdminError) return error;
+  if (error instanceof JudgmentError) {
+    const status =
+      error.code === "unknown_review_target" ? 404 : error.code === "invalid_judgment" ? 400 : 409;
+    return new AdminError(status, error.code, error.message, undefined, error.currentTargetId);
+  }
   if (error instanceof IssueOptInError) {
     return new AdminError(OPT_IN_ERROR_STATUS[error.code], error.code, error.message);
   }
@@ -776,6 +791,69 @@ export class AdminService {
     return { targets: listReviewTargets(this.db, key), records: listReviewRecords(this.db, key) };
   }
 
+  // --- review queue (F01, ADR 0043) -----------------------------------------------------------
+
+  /** Current review targets and where each stands; by default only those still waiting. */
+  reviewQueue(filter: {
+    reviewClass?: string;
+    states?: string[];
+    assignee?: string;
+    parent?: string;
+  }): { items: Array<ReviewQueueItem & { issueUrl: string }> } {
+    if (
+      filter.reviewClass &&
+      filter.reviewClass !== "immediate" &&
+      filter.reviewClass !== "standard"
+    ) {
+      throw new AdminError(400, "invalid_request", `unknown review class "${filter.reviewClass}"`);
+    }
+    const unknown = (filter.states ?? []).filter(
+      (state) => !(REVIEW_QUEUE_STATES as readonly string[]).includes(state),
+    );
+    if (unknown.length > 0) {
+      throw new AdminError(400, "invalid_request", `unknown review state "${unknown[0]}"`);
+    }
+    const browse = `${this.config.jira.baseUrl.replace(/\/+$/, "")}/browse/`;
+    return {
+      items: listReviewQueue(this.db, {
+        ...(filter.reviewClass
+          ? { reviewClass: filter.reviewClass as "immediate" | "standard" }
+          : {}),
+        ...(filter.states && filter.states.length > 0
+          ? { states: filter.states as ReviewQueueState[] }
+          : {}),
+        ...(filter.assignee ? { assigneeAccountId: filter.assignee } : {}),
+        ...(filter.parent ? { parentKey: filter.parent.toUpperCase() } : {}),
+      }).map((item) => ({
+        ...item,
+        issueUrl: `${browse}${encodeURIComponent(item.target.issueKey)}`,
+      })),
+    };
+  }
+
+  /**
+   * One human judgment (confirm, hold, rework) on a current review target. A record only: no Jira
+   * status move, merge or approval. Hold and rework leave one Jira comment. The actor is the name
+   * declared with the shared admin token and is recorded as such (`authentication: admin-token`).
+   */
+  judgeReview(
+    targetId: string,
+    body: { action: string; note?: string | undefined },
+    actor: string,
+  ): ReviewRecordRow {
+    try {
+      return judgeReviewTarget(this.db, this.config, {
+        targetId,
+        action: body.action,
+        ...(body.note !== undefined ? { note: body.note } : {}),
+        actor,
+        now: this.now(),
+      });
+    } catch (error) {
+      throw toAdminError(error);
+    }
+  }
+
   // --- AI participation per issue (M4-03, ADR 0039) ----------------------------------------
 
   /** The issue's opt-in label, status and what keeps Router from starting it (read-only). */
@@ -900,6 +978,7 @@ export class AdminService {
       webhooks: { oldestUnprocessedAt, delayMs: elapsedMs(oldestUnprocessedAt, now) },
       reports: { blocked: blocked.size },
       attention: { open: countOpenAttention(this.db) },
+      reviews: { waiting: countWaitingReviews(this.db) },
     };
   }
 

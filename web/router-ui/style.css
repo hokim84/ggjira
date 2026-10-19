@@ -724,3 +724,33 @@ textarea {
   color: var(--bad);
   font-size: 0.8rem;
 }
+
+/* Review queue (F01) */
+.card-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.card-link .card {
+  height: 100%;
+}
+
+.card-link:hover .card,
+.card-link:focus-visible .card {
+  border-color: var(--accent);
+}
+
+.review-list {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.review-card textarea {
+  width: 100%;
+  min-height: 3em;
+}
+
+.review-card details {
+  margin: 8px 0;
+}

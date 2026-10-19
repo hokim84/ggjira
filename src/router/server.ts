@@ -6,6 +6,7 @@ import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
   AdminIssueOptInRequestSchema,
+  AdminReviewJudgmentRequestSchema,
   AdminJiraProjectRequestSchema,
   AdminLabelMigrationApplyRequestSchema,
   AdminLabelMigrationPlanRequestSchema,
@@ -192,6 +193,7 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
         error: error.code,
         message: error.message,
         ...(error.issues ? { issues: error.issues } : {}),
+        ...(error.currentTargetId ? { currentTargetId: error.currentTargetId } : {}),
       });
     }
     if (error instanceof RecoveryError) {
@@ -288,9 +290,18 @@ function registerWorkerRoutes(app: FastifyInstance, service: WorkerService): voi
 const ACTOR_HEADER = "x-ggjira-actor";
 const JOB_STATE_SET: ReadonlySet<string> = new Set(JOB_STATES);
 
-/** Who an admin call acts as, for `audit_log`: the CLI sends the OS user name. */
+/** Who an admin call acts as, for `audit_log`: the CLI sends the OS user name, the web UI the
+ *  reviewer name typed on the review screen, both percent-encoded (headers are ISO-8859-1). A
+ *  name the caller declares, not a verified identity. */
 function actorOf(request: FastifyRequest): string {
-  const actor = headerValue(request.headers[ACTOR_HEADER])?.trim();
+  const raw = headerValue(request.headers[ACTOR_HEADER])?.trim();
+  if (!raw) return "admin";
+  let actor = raw;
+  try {
+    actor = decodeURIComponent(raw).trim();
+  } catch {
+    // Not percent-encoded (an older CLI): taken as sent.
+  }
   return actor ? `admin:${actor.slice(0, 100)}` : "admin";
 }
 
@@ -411,6 +422,31 @@ function registerAdminRoutes(
       );
       scope.get<{ Params: { key: string } }>("/issues/:key/reviews", async (request) =>
         admin.issueReviews(request.params.key),
+      );
+      scope.get<{
+        Querystring: { class?: string; state?: string; assignee?: string; parent?: string };
+      }>("/reviews", async (request) =>
+        admin.reviewQueue({
+          ...(request.query.class ? { reviewClass: request.query.class } : {}),
+          ...(request.query.state
+            ? { states: request.query.state.split(",").filter(Boolean) }
+            : {}),
+          ...(request.query.assignee ? { assignee: request.query.assignee } : {}),
+          ...(request.query.parent ? { parent: request.query.parent } : {}),
+        }),
+      );
+      scope.post<{ Params: { targetId: string } }>(
+        "/reviews/:targetId/judgments",
+        async (request, reply) =>
+          reply
+            .code(201)
+            .send(
+              admin.judgeReview(
+                request.params.targetId,
+                parseBody(AdminReviewJudgmentRequestSchema, request.body),
+                actorOf(request),
+              ),
+            ),
       );
       scope.get<{ Querystring: { issue?: string; children?: string } }>(
         "/executions",

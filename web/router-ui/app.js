@@ -4,12 +4,14 @@ import { admin, getToken, health, setToken } from "./api.js";
 import { clear, fill, errorNotice, h, notice } from "./dom.js";
 import { renderCheck, renderConfig } from "./views-config.js";
 import { renderIssues } from "./views-issues.js";
+import { renderReviews } from "./views-reviews.js";
 import { renderSetup } from "./views-setup.js";
 import { renderDashboard, renderWorkers } from "./views-status.js";
 
 const ROUTES = {
   "#/": { label: "대시보드", render: renderDashboard, poll: true },
   "#/workers": { label: "워커", render: renderWorkers },
+  "#/reviews": { label: "검토", render: renderReviews },
   "#/issues": { label: "이슈", render: renderIssues },
   "#/config": { label: "설정", render: renderConfig },
   "#/check": { label: "점검", render: renderCheck },

@@ -93,6 +93,11 @@ export async function renderDashboard(root) {
       card("막힌 Jira 보고", reports.blocked, reports.blocked ? "bad" : null),
       card("복구 필요 작업", recoveryRequired, recoveryRequired ? "bad" : null),
       card("확인 필요", status.attention.open, status.attention.open ? "bad" : null),
+      h(
+        "a",
+        { href: "#/reviews", class: "card-link" },
+        card("검토 대기", status.reviews?.waiting ?? 0, status.reviews?.waiting ? "warn" : null),
+      ),
     ),
     h("h2", {}, "확인 필요 항목"),
     attentionList(attention.items),

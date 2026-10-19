@@ -665,6 +665,22 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
   댓글·전이와 push된 브랜치를 `audit_log`와 Jira에서 대조해 둔다.
 - label 모드 전환 자체의 되돌리기는 §27 "legacy → label 전환" 7단계를 따른다.
 
+## 32. 검토 대기와 판단 (ADR 0043)
+
+웹 UI "검토" 화면, `ggjira router reviews`, `ggjira router status`의 `reviews waiting`이 사람의 판단을 기다리는
+결과다. "개별 검토 필요"(`!`)는 고위험·미검증·커밋 없음·실패·결정·이탈, "일반 검토 대기"(`-`)는 그 밖의 결과다.
+
+- 판단: `ggjira router reviews judge <targetId> confirm|hold|rework [--note "사유"]`. 보류·재작업 요청은 사유가
+  필요하고 Jira에 댓글 하나가 달린다. 확인은 Router에만 남고 `review_required` 주의 항목을 해소한다.
+- 판단은 아무것도 실행하지 않는다. 재작업 요청 뒤에도 이슈를 다시 요청 상태로 옮기거나(legacy) 라벨을 뗐다
+  붙여야(label) 새 실행이 시작된다. 확인했다고 완료로 가지 않는다.
+- 판단자 이름은 웹 UI에 적은 이름 또는 CLI의 OS 사용자 이름이다(`admin:<이름>`, `admin-token`). 공유 token 뒤의
+  자기 신고다.
+- 409 `stale_review_target`: 그 사이 같은 이슈의 새 결과가 나왔거나(`currentTargetId`가 새 대상), 이슈가 다시
+  승인됐다. 목록을 다시 보고 새 대상에 판단한다. 거절도 감사 기록(`review.judgment.refused`)에 남는다.
+- 지난 판단은 `ggjira router issue reviews KEY`와 이슈 화면의 검토 대상에서 본다. `router reviews --all`은
+  확인·재작업 요청·머지·새 승인으로 빠진 대상까지 보여 준다.
+
 ## 33. Docker·VM 없이 이 PC에서 띄우기 (Windows 배치 파일)
 
 레포 루트의 배치 파일을 더블클릭하거나 명령 프롬프트에서 실행한다. 빌드 없이 `node --import tsx src\cli.ts …`로
