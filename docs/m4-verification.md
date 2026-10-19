@@ -8,7 +8,8 @@
 - M4 커밋(기준선 이후): `7c653e8`(백로그) → `a983bd3`(M4-01·02·05) → `27f1ee5`(M4-06) → `de17fa1`·`851a8f0`·
   `9155576`(M4-07) → `ae94697`(M4-03·04) → `5823cad`(M4-08) → `3355ed1`(M4-11) → `b50f97a`(M4-09) →
   `b33c2a4`(M4-12) → 이 문서의 커밋(M4-07 최종 검증, M4-10).
-- 브랜치는 아직 push하지 않았다. DB·설정 백업은 Git 태그와 별개로 운영자가 확보한다(runbook §17, §31).
+- 브랜치는 push했고 PR #1(`feat/m4-label-opt-in` → `main`)로 올렸다. DB·설정 백업은 Git 태그와 별개로 운영자가
+  확보한다(runbook §17, §31).
 
 ## 2. 티켓별 결과
 
@@ -79,10 +80,9 @@
 - `npm run typecheck`, `npm run lint`, `npm run format:check`: 통과.
 - `npx vitest run`(이 Windows 머신, Node 25.8): 607개 중 592 통과, 15 실패. 실패는 모두
   `worker-claude-code-cli`·`worker-codex-cli`·`worker-usage`의 `spawn EFTYPE`이다(셸 스크립트 가짜 CLI를 Windows에서
-  spawn할 수 없음). M4 이전 커밋에서도 똑같이 실패한다. **M4-12가 이 두 provider의 스트림 파싱을 바꿨으므로
-  Linux(`docker compose -f docker-compose.test.yml run --rm --build check` 또는 CI)에서 한 번 돌려야 한다.**
-  이 세션에서는 Docker 데몬이 꺼져 있어 실행하지 못했다. 파싱 자체는 순수 함수(`src/worker/call-usage.ts`)로
-  분리해 Windows에서 테스트했다.
+  spawn할 수 없음). M4 이전 커밋에서도 똑같이 실패한다.
+- Linux: PR #1의 GitHub Actions CI(`npm run check`, ubuntu-latest)에서 607개 모두 통과했다. M4-12가 바꾼 두
+  provider의 스트림 파싱 테스트(`worker-claude-code-cli`·`worker-codex-cli`·`worker-usage`)가 여기서 실행됐다.
 - 전체 실행 중 한 번 17개 실패가 보고됐으나 이어서 세 번 돌렸을 때 재현되지 않았다(15개만 실패).
 - DB: migration 11~13 추가(append-only). 이전 바이너리는 새 DB로 동작한다(schema 버전 검사 없음, 새 테이블 무시).
 - Worker 호환: 프로토콜 2 유지. 새 필드는 모두 선택이고 양방향으로 무시·기본값 처리된다.
