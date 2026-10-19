@@ -50,7 +50,7 @@ function unquote(value: string): string {
  * Test-only in-memory Jira substitute. Never used by production code.
  *
  * `searchIssues` understands a small, literal subset of JQL — clauses joined
- * by AND, comparing assignee/status/parent/project/labels — enough to
+ * by AND, comparing assignee/status/parent/project — enough to
  * exercise `findAssignedJobs` and PM subtask lookups without a real Jira.
  */
 export class FakeJiraGateway implements JiraGateway {
@@ -231,13 +231,6 @@ export class FakeJiraGateway implements JiraGateway {
     const projectMatch = clause.match(/^project\s*=\s*(.+)$/i);
     if (projectMatch) {
       return issue.projectKey === unquote(projectMatch[1] ?? "");
-    }
-
-    const labelsMatch = clause.match(/^labels\s*=\s*(.+)$/i);
-    if (labelsMatch) {
-      // Jira matches labels case-insensitively.
-      const wanted = unquote(labelsMatch[1] ?? "").toLowerCase();
-      return issue.labels.some((label) => label.toLowerCase() === wanted);
     }
 
     // Unknown clause shape: fail closed rather than silently matching everything.

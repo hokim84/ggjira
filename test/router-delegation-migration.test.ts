@@ -14,7 +14,6 @@ import {
   MIGRATION_REVIEW_STATUS,
   MIGRATION_TRANSITIONS,
   TODO_STATUS,
-  UNRELATED_LABEL,
   migrationWorkspace,
 } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
@@ -68,7 +67,7 @@ describe("delegation migration (ADR 0044)", () => {
     await router.close();
   });
 
-  async function seed(key: string, status: string, labels: string[] = []): Promise<void> {
+  async function seed(key: string, status: string): Promise<void> {
     router.jira.seedIssue(
       {
         key,
@@ -76,7 +75,6 @@ describe("delegation migration (ADR 0044)", () => {
         statusName: TODO_STATUS,
         projectKey: "KAN",
         assigneeAccountId: "user-1",
-        labels,
       },
       TRANSITIONS,
     );
@@ -108,9 +106,9 @@ describe("delegation migration (ADR 0044)", () => {
   }
 
   it("lists what the switch means, refuses while a job may run, then starts nothing on its own (13)", async () => {
-    await seed("KAN-1", TODO_STATUS, [UNRELATED_LABEL]); // waited for AI under the label rules
-    await seed("KAN-2", MIGRATION_IN_PROGRESS_STATUS, [UNRELATED_LABEL]); // its job is still queued
-    await seed("KAN-3", MIGRATION_REVIEW_STATUS, [UNRELATED_LABEL]);
+    await seed("KAN-1", TODO_STATUS); // waited for AI under the legacy rules
+    await seed("KAN-2", MIGRATION_IN_PROGRESS_STATUS); // its job is still queued
+    await seed("KAN-3", MIGRATION_REVIEW_STATUS);
     await seed("KAN-4", REQUEST); // moved to the new request status before the switch
     const queued = createJob(router.db, {
       id: "job-2",
@@ -171,7 +169,7 @@ describe("delegation migration (ADR 0044)", () => {
   });
 
   it("is reachable through the admin API", async () => {
-    await seed("KAN-1", TODO_STATUS, [UNRELATED_LABEL]);
+    await seed("KAN-1", TODO_STATUS);
     const response = await router.adminCall("POST", "/migrations/delegation/plan", {
       workspaceId: "ws1",
       target: TARGET,

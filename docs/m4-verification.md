@@ -105,7 +105,8 @@ F01~F07은 하나도 구현하지 않았다. 고위험 PR의 필수 리뷰를 Gi
 ## 7. M4 이후 조정: 상태 위임과 계획 우선 (ADR 0044)
 
 `docs/M4_STATUS_DELEGATION_CHANGE_REVIEW.md`의 방향을 새 모드 `workflow.mode: "delegation"`으로 구현했다.
-legacy·label 모드와 M4의 기록·검토·보호 기능은 그대로다. 세부 규칙은 사용자가 정했다.
+legacy·label 모드와 M4의 기록·검토·보호 기능은 그대로다(label 모드는 뒤이어 §8에서 제거했다). 세부 규칙은
+사용자가 정했다.
 
 - 계획 승인 = 계획 검토 대기 → 작업 중.
 - 하위 티켓은 승인 전에 생성(실행만 승인 뒤).
@@ -134,5 +135,21 @@ legacy·label 모드와 M4의 기록·검토·보호 기능은 그대로다. 세
   - 앞선 두 번의 전체 실행에서는 `worker-push`·`worker-scope` 2개가 시간 초과로 더 실패했다. 이 둘은 git을 직접
     실행하는 Worker 테스트로 router 코드를 쓰지 않는다. 파일만 따로 돌리거나 다시 전체를 돌리면 통과한다.
   - `typecheck`·`lint`·`format:check`는 통과.
-- Linux 전체 검사: 이 PC에서는 Docker 데몬이 꺼져 있어 돌리지 못했다. PR CI에서 확인한다.
+- Linux 전체 검사: 이 PC에서는 Docker 데몬이 꺼져 있어 돌리지 못했다. PR #3의 CI(`cd166f3`)에서
+  `npm run check`가 통과했다(테스트 651개 전부 통과). Windows의 `spawn EFTYPE` 15개도 Linux에서는 통과한다.
 - 실제 Jira에서의 확인(`router check`, 보드 드래그)은 수동 절차(runbook §34)로 남는다.
+
+## 8. 라벨 기반 위임 제거 (ADR 0046)와 프롬프트 조회 (ADR 0045)
+
+같은 PR #3에서 label 모드를 없앴다. 남은 모드는 legacy와 delegation이고, 둘 다 상태로만 요청·승인·철회한다.
+
+- 제거: `mode: "label"`·`optInLabel` 설정(설정 오류로 거절), 라벨 조건의 후보 조회·승인 id·철회, label 이관
+  (`migrate-labels`, `/migrations/label/*`), opt-in API·CLI·웹 토글.
+- 남은 라벨: Router가 붙이는 `ggjira-failed`·`ggjira-superseded`(표시만, 떼도 다시 실행하지 않음)와 v4 메타
+  이슈(`ggjira-agent`·`ggjira-workspace`)를 후보에서 빼는 필터.
+- 예전 라벨 승인 정보가 남은 미완료 상태 이동은 다시 실행하지 않고 `skipped`로 둔다.
+- 이슈 조회는 읽기 전용 `GET /api/v1/admin/issues/:key`(`issue show`)로 남았다.
+- 테스트: `router-label-removal`(설정 거절, 라벨로 후보·승인 불변, 제거된 경로 404, 옛 저널 skipped),
+  `router-issue-view`(보류 이유, 다른 프로젝트·잘못된 키 거절, Jira 404·403·429 구분),
+  `router-prompts`(프롬프트 조회).
+- PR #3의 CI(`408a0e5`)에서 `npm run check`가 통과했다.

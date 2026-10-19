@@ -26,9 +26,9 @@ function reachable(entries: string[]): string[] {
 }
 
 /**
- * T23 (M4-09/11/12, F01): reporting, the review gate and judgments, attention items, the opt-in API and the usage
- * records are plain code. None of them can reach a model call — the Jev client (ADR 0030) or a
- * worker provider.
+ * T23 (M4-09/11/12, F01): reporting, the review gate and judgments, attention items, the issue
+ * view and the usage records are plain code. None of them can reach a model call — the Jev client
+ * (ADR 0030) or a worker provider.
  */
 describe("M4 bookkeeping makes no model calls", () => {
   const entries = [

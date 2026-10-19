@@ -25,7 +25,6 @@ export const TODO_STATUS = "To Do";
 export const MIGRATION_IN_PROGRESS_STATUS = "In Progress";
 export const MIGRATION_REVIEW_STATUS = "Review";
 export const DONE_STATUS = "Done";
-export const UNRELATED_LABEL = "ai-enabled";
 
 export const migrationWorkspace: WorkspaceConfig = {
   id: "ws1",
@@ -40,7 +39,7 @@ export const migrationWorkspace: WorkspaceConfig = {
   },
 };
 
-/** Every move between the four statuses, for seeding issues in a `label`-mode workspace. */
+/** Every move between the four statuses, for seeding issues in `migrationWorkspace`. */
 export const MIGRATION_TRANSITIONS = [
   TODO_STATUS,
   MIGRATION_IN_PROGRESS_STATUS,

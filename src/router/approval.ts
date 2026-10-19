@@ -3,7 +3,7 @@ import type { JobKind } from "../contracts/protocol.js";
 import { computeExecutionInputHash, isLegacyInputHash } from "../issue/input-hash.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import type { JiraGateway } from "../jira/gateway.js";
-import type { JiraChangelogEntry, JiraChangelogItem, JiraIssue } from "../jira/types.js";
+import type { JiraChangelogEntry, JiraIssue } from "../jira/types.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
 
 /**

@@ -31,14 +31,13 @@ describe("status workflows", () => {
     expect(candidateStatuses(testWorkspace)).toEqual([REQUEST_STATUS, PLANNING_STATUS]);
     expect(decisionTransitionTarget(testWorkspace, "planning")).toBe(REVIEW_STATUS);
   });
-  it("plans all delegated requests, including subtasks", () => {
-    for (const isSubtask of [true, false])
-      expect(
-        resolveJobKind({
-          workspace: delegationWorkspace,
-          issue: { statusName: DELEGATION_REQUEST_STATUS, isSubtask },
-        }),
-      ).toBe("planning");
+  it("plans every delegated request", () => {
+    expect(
+      resolveJobKind({
+        workspace: delegationWorkspace,
+        issue: { statusName: DELEGATION_REQUEST_STATUS },
+      }),
+    ).toBe("planning");
     expect(candidateStatuses(delegationWorkspace)).toEqual([DELEGATION_REQUEST_STATUS]);
     expect(approvalStatusFor("implementation", delegationWorkspace)).toBe(
       SHARED_IN_PROGRESS_STATUS,
