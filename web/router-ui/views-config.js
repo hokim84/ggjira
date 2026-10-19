@@ -22,22 +22,16 @@ const FORM_KEYS = new Set([
   "planning",
 ]);
 
+/** The workflow's statuses (ADR 0044, ADR 0047): delegated by status, always planned first. */
 const STATUS_FIELDS = [
-  ["requestStatus", "요청 상태", "사람이 AI에게 맡길 때 옮기는 상태"],
-  ["inProgressStatus", "진행 상태", "사람과 AI가 함께 쓰는 작업 상태"],
-  ["reviewStatus", "검토 상태", "작업이 끝나면 Router가 옮김. 사람이 확인 후 완료 처리"],
+  ["requestStatus", "요청 상태", "사람이 AI에게 맡길 때 옮기는 상태. 항상 계획부터 시작"],
   [
     "planReviewStatus",
     "계획 검토 상태",
     "계획이 사람의 검토를 기다리는 상태. 여기서 진행 상태로 옮기면 그 계획을 승인",
   ],
-  ["planningStatus", "계획 요청 상태", "비우면 PM 계획을 쓰지 않음", true],
-  [
-    "needsDecisionStatus",
-    "결정 필요 상태",
-    "계획이 사람의 결정을 요청할 때. 비우면 검토 상태",
-    true,
-  ],
+  ["inProgressStatus", "진행 상태", "사람과 AI가 함께 쓰는 작업 상태"],
+  ["reviewStatus", "검토 상태", "작업이 끝나면 Router가 옮김. 사람이 확인 후 완료 처리"],
   [
     "doneStatus",
     "완료 상태",
@@ -45,19 +39,6 @@ const STATUS_FIELDS = [
     true,
   ],
 ];
-
-/** Legacy-only planning and decision statuses. */
-const LEGACY_ONLY_STATUS_FIELDS = new Set(["planningStatus", "needsDecisionStatus"]);
-
-/** Statuses only the delegation workflow has (ADR 0044). */
-const DELEGATION_ONLY_STATUS_FIELDS = new Set(["planReviewStatus"]);
-
-/** Which status fields a workflow `mode` uses. */
-function statusFieldUsed(mode, key) {
-  if (DELEGATION_ONLY_STATUS_FIELDS.has(key)) return mode === "delegation";
-  if (LEGACY_ONLY_STATUS_FIELDS.has(key)) return !mode || mode === "legacy";
-  return true;
-}
 
 const HOP_BADGES = {
   ok: ["badge-ok", "연결됨"],
@@ -487,6 +468,7 @@ export async function renderConfig(root, ctx) {
     if (
       !projectKey ||
       !workflow.requestStatus ||
+      !workflow.planReviewStatus ||
       !workflow.inProgressStatus ||
       !workflow.reviewStatus
     ) {
@@ -495,7 +477,7 @@ export async function renderConfig(root, ctx) {
         h(
           "p",
           { class: "muted" },
-          "프로젝트 키와 요청, 진행, 검토 상태를 정하면 전이를 확인합니다.",
+          "프로젝트 키와 요청, 계획 검토, 진행, 검토 상태를 정하면 전이를 확인합니다.",
         ),
       );
       return;
@@ -515,19 +497,6 @@ export async function renderConfig(root, ctx) {
       i,
       setTimeout(() => checkHops(i, el), 400),
     );
-  }
-
-  function workflowNotice(ws) {
-    return ws.workflow.mode === "delegation"
-      ? h(
-          "p",
-          { class: "muted" },
-          "요청 상태로 옮기면 계획부터 시작하고, 계획 검토 → 작업 중으로 옮기면 승인된 계획을 실행합니다.",
-        )
-      : notice(
-          "info",
-          "기존 상태 설정을 유지 중입니다. 계획 우선 위임으로 전환하려면 운영 안내의 전환 절차를 따르세요.",
-        );
   }
 
   function workflowBlock(i) {
@@ -556,12 +525,16 @@ export async function renderConfig(root, ctx) {
       ),
       info?.loading ? h("p", { class: "muted" }, `${projectKey} 상태를 불러오는 중…`) : null,
       info?.error ? errorNotice({ message: `${projectKey}: ${info.error}` }) : null,
-      workflowNotice(ws),
+      h(
+        "p",
+        { class: "muted" },
+        "요청 상태로 옮기면 계획부터 시작하고, 계획 검토 → 진행 상태로 옮기면 승인된 계획을 실행합니다.",
+      ),
       h(
         "div",
         { class: "grid" },
-        STATUS_FIELDS.filter(([key]) => statusFieldUsed(ws.workflow.mode, key)).map(
-          ([key, label, hint, optional]) => statusField(i, key, label, hint, optional),
+        STATUS_FIELDS.map(([key, label, hint, optional]) =>
+          statusField(i, key, label, hint, optional),
         ),
       ),
       h("h3", {}, "Router가 하는 전이"),
@@ -597,7 +570,7 @@ export async function renderConfig(root, ctx) {
         workflowBlock(i),
       ];
     },
-    () => ({ id: "", repositoryId: "", projectKeys: [], workflow: { mode: "delegation" } }),
+    () => ({ id: "", repositoryId: "", projectKeys: [], workflow: {} }),
     "workspace 추가",
   );
 

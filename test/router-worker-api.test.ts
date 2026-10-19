@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
-import { readIssueRequirements } from "../src/issue/requirements.js";
 import type { JiraIssue } from "../src/jira/types.js";
+import { parentPlanRequirements } from "../src/pm/contract.js";
+import { PlanSchema } from "../src/pm/plan.js";
 import { computeInputHash } from "../src/router/approval.js";
 import { upsertApproval } from "../src/router/db/approvals.js";
 import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
@@ -11,6 +12,7 @@ import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { listBatchReportSteps } from "../src/router/db/report-steps.js";
 import { getResult } from "../src/router/db/results.js";
 import { revokeWorker } from "../src/router/db/workers.js";
+import { singlePlan, TODO_STATUS } from "./helpers/router-fixtures.js";
 import { ADMIN_TOKEN, RouterHarness, type RegisteredWorker } from "./helpers/router-harness.js";
 
 function lease(envelope: JobEnvelope) {
@@ -145,9 +147,9 @@ describe("worker API", () => {
     const worker = await router.connectWorker("worker-1");
     const envelope = await reserve(worker);
 
-    // Revoke and re-approve: a new changelog entry into requestStatus → new approval id.
-    await router.jira.transitionIssue("KAN-1", "Revoke");
-    await router.jira.transitionIssue("KAN-1", "Request");
+    // Take it back and approve the plan again: a new move from plan review → new approval id.
+    await router.jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
+    await router.reapprove("KAN-1");
     await router.reconcile();
 
     const start = await router.jobCall(worker, envelope.jobId, "start", lease(envelope));
@@ -184,7 +186,7 @@ describe("worker API", () => {
     const envelope = await reserve(worker);
     await router.jobCall(worker, envelope.jobId, "start", lease(envelope));
 
-    await router.jira.transitionIssue("KAN-1", "Revoke");
+    await router.jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
     const report = await router.reconcile();
     expect(report.jobsCancelRequested).toEqual([envelope.jobId]);
 
@@ -215,7 +217,7 @@ describe("worker API", () => {
       computeInputHash({
         kind: envelope.kind,
         issue,
-        requirements: readIssueRequirements(issue),
+        requirements: parentPlanRequirements(PlanSchema.parse(singlePlan()), issue.summary),
         planTask: null,
       }),
     ).toBe(envelope.inputHash);

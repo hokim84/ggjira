@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { readIssueRequirements } from "../src/issue/requirements.js";
-import { type PlanTaskSchema, PlanSchema } from "../src/pm/plan.js";
-import { renderParentPlan, renderTaskDescription } from "../src/pm/plan-render.js";
 import type { z } from "zod";
-import { buildTestIssue } from "./helpers/fixtures.js";
+import {
+  missingContracts,
+  parentPlanRequirements,
+  planTaskRequirements,
+} from "../src/pm/contract.js";
+import { type PlanTaskSchema, PlanSchema } from "../src/pm/plan.js";
+import { renderParentPlan } from "../src/pm/plan-render.js";
 
 type PlanTask = z.infer<typeof PlanTaskSchema>;
 
@@ -26,72 +29,75 @@ function task(overrides: Partial<PlanTask> = {}): PlanTask {
   };
 }
 
-function readBack(description: string) {
-  return readIssueRequirements(buildTestIssue({ key: "KAN-1", description }));
-}
-
-describe("plan rendering round-trips through the issue parser (ADR 0034)", () => {
-  it("reads back a task's full contract", () => {
-    const rendered = task();
-    expect(readBack(renderTaskDescription(rendered))).toEqual({
-      objective: rendered.title,
-      acceptanceCriteria: rendered.acceptance,
-      dependencies: rendered.dependencies,
-      constraints: rendered.constraints,
-      requiredCapabilities: rendered.requiredCapabilities,
-      suggestedExecutionStrategy: rendered.suggestedExecutionStrategy,
-      verification: rendered.verification,
-      inScope: rendered.inScope,
-      outOfScope: rendered.outOfScope,
-      affectedAreas: rendered.affectedAreas,
-      allowedPaths: rendered.allowedPaths,
+describe("the contract a run is held to comes from the approved plan (ADR 0047)", () => {
+  it("takes a task's full contract, with the dependency keys Router resolved", () => {
+    const planned = task();
+    expect(planTaskRequirements(planned, ["KAN-7", "KAN-12"])).toEqual({
+      objective: planned.title,
+      acceptanceCriteria: planned.acceptance,
+      dependencies: ["KAN-7", "KAN-12"],
+      constraints: planned.constraints,
+      requiredCapabilities: planned.requiredCapabilities,
+      suggestedExecutionStrategy: planned.suggestedExecutionStrategy,
+      verification: planned.verification,
+      inScope: planned.inScope,
+      outOfScope: planned.outOfScope,
+      affectedAreas: planned.affectedAreas,
+      allowedPaths: planned.allowedPaths,
     });
   });
 
-  it("keeps free-text headings and `Label: value` lines out of the contract", () => {
-    const description = [
-      "Background: the old endpoint was removed.",
-      "",
-      "h2. Notes",
-      "* Owner: platform team",
-      "Ticket: see KAN-3",
-    ].join("\n");
-    const requirements = readBack(renderTaskDescription(task({ description })));
-    expect(requirements.acceptanceCriteria).toEqual(task().acceptance);
-    expect(requirements.verification).toEqual(task().verification);
-    expect(requirements.objective).toBe(task().title);
+  it("defaults a task without capabilities to programming, as its Jira rendering says", () => {
+    expect(
+      planTaskRequirements(task({ requiredCapabilities: undefined }), []).requiredCapabilities,
+    ).toEqual(["programming"]);
   });
 
-  it("renders empty contract sections so they read back empty", () => {
-    const requirements = readBack(
-      renderTaskDescription(
-        task({
-          inScope: [],
-          outOfScope: [],
-          affectedAreas: [],
-          allowedPaths: [],
-          verification: [],
-        }),
-      ),
-    );
-    expect(requirements).toMatchObject({
-      inScope: [],
-      outOfScope: [],
-      affectedAreas: [],
-      allowedPaths: [],
-      verification: [],
+  it("takes the parent's own contract from a plan without tasks", () => {
+    const plan = PlanSchema.parse({
+      needsDecision: false,
+      summary: "Single wording change",
+      acceptanceCriteria: ["The button reads Save"],
+      verification: ["Open the settings page"],
+      inScope: ["Button label"],
+      outOfScope: ["Other labels"],
+      requiredCapabilities: ["Programming"],
+    });
+    expect(parentPlanRequirements(plan, "Button label")).toMatchObject({
+      objective: "Button label",
+      acceptanceCriteria: ["The button reads Save"],
+      verification: ["Open the settings page"],
+      inScope: ["Button label"],
+      outOfScope: ["Other labels"],
+      requiredCapabilities: ["programming"],
     });
   });
 
-  it("reads back the parent's own contract around a human-written description", () => {
+  it("names every executable unit that has no definition of done", () => {
+    const single = PlanSchema.parse({
+      needsDecision: false,
+      summary: "s",
+      requiredCapabilities: ["programming"],
+      verification: ["npm test"],
+    });
+    expect(missingContracts(single)).toEqual(["the plan has no acceptance criteria"]);
+    const split = PlanSchema.parse({
+      needsDecision: false,
+      summary: "s",
+      tasks: [task(), task({ taskId: "ui", acceptance: [], verification: [] })],
+    });
+    expect(missingContracts(split)).toEqual([
+      "task ui has no acceptance criteria and verification",
+    ]);
+  });
+
+  it("renders the parent's plan around a human-written description", () => {
     const plan = PlanSchema.parse({
       needsDecision: false,
       summary: "Single wording change",
       objective: "Fix the button label",
       acceptanceCriteria: ["The button reads Save"],
       verification: ["Open the settings page"],
-      inScope: ["Button label"],
-      outOfScope: ["Other labels"],
       requiredCapabilities: ["programming"],
     });
     const description = renderParentPlan(
@@ -99,14 +105,7 @@ describe("plan rendering round-trips through the issue parser (ADR 0034)", () =>
       plan,
     );
     expect(description.startsWith("Please fix the typo")).toBe(true);
-    expect(readBack(description)).toMatchObject({
-      objective: "Fix the button label",
-      acceptanceCriteria: ["The button reads Save"],
-      verification: ["Open the settings page"],
-      inScope: ["Button label"],
-      outOfScope: ["Other labels"],
-      requiredCapabilities: ["programming"],
-    });
+    expect(description).toContain("h2. Acceptance Criteria\n* The button reads Save");
   });
 });
 

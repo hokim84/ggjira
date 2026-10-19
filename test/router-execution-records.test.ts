@@ -5,19 +5,8 @@ import { listExecutionRecords } from "../src/router/db/execution-records.js";
 import { retryJob } from "../src/router/recovery.js";
 import { verifyActiveJobs } from "../src/router/scheduler.js";
 import { RuleDecisionProvider } from "../src/router/decision.js";
-import {
-  IN_PROGRESS_STATUS,
-  issueDescription,
-  REQUEST_STATUS,
-  REVIEW_STATUS,
-} from "./helpers/router-fixtures.js";
+import { issueDescription } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
-
-const TRANSITIONS = [
-  { id: "t-request", name: "Request", toStatusName: REQUEST_STATUS },
-  { id: "t-progress", name: "Start", toStatusName: IN_PROGRESS_STATUS },
-  { id: "t-review", name: "Review", toStatusName: REVIEW_STATUS },
-];
 
 const CLAUDE_CALL = {
   providerId: "default",
@@ -53,23 +42,9 @@ describe("execution records", () => {
     await router.close();
   });
 
-  function seed(key: string, approval: string, extra: Record<string, unknown> = {}): void {
-    router.jira.seedIssue(
-      {
-        key,
-        summary: `Work on ${key}`,
-        statusName: REQUEST_STATUS,
-        projectKey: "KAN",
-        assigneeAccountId: "user-1",
-        description: issueDescription(),
-        ...extra,
-      },
-      TRANSITIONS,
-    );
-    router.jira.seedChangelogEntry(key, {
-      id: approval,
-      items: [{ field: "status", fromString: "To Do", toString: REQUEST_STATUS }],
-    });
+  /** An issue whose plan a human approved; the next reconcile queues its implementation. */
+  function seed(key: string, fields: Record<string, unknown> = {}): Promise<void> {
+    return router.seedApprovedIssue(key, { fields });
   }
 
   async function start(): Promise<JobEnvelope> {
@@ -99,7 +74,7 @@ describe("execution records", () => {
   }
 
   it("keeps the call and its usage once, across a resend and a restart (T22)", async () => {
-    seed("KAN-1", "approval-a");
+    await seed("KAN-1");
     await router.reconcile();
     const envelope = await start();
     await submit(envelope, { execution: CLAUDE_CALL });
@@ -136,7 +111,7 @@ describe("execution records", () => {
   });
 
   it("records unknown usage as unknown, not zero, for a worker that reports none", async () => {
-    seed("KAN-1", "approval-a");
+    await seed("KAN-1");
     await router.reconcile();
     await submit(await start());
     const [record] = listExecutionRecords(router.db);
@@ -151,7 +126,7 @@ describe("execution records", () => {
   });
 
   it("keeps failed, retried and reworked runs with what Router can tell about their cause", async () => {
-    seed("KAN-1", "approval-a");
+    await seed("KAN-1");
     await router.reconcile();
     const first = await start();
     await submit(first, {
@@ -173,8 +148,8 @@ describe("execution records", () => {
       execution: CLAUDE_CALL,
     });
 
-    // A human requests it again: a new job under a new approval is rework.
-    seed("KAN-1", "approval-b");
+    // A human approves the plan again: a new job under a new approval is rework.
+    await router.reapprove("KAN-1");
     await router.reconcile();
     const reworked = await start();
     await submit(reworked, { execution: CLAUDE_CALL });
@@ -195,16 +170,10 @@ describe("execution records", () => {
   });
 
   it("keeps a cancelled run's usage and names an edited request as the cause", async () => {
-    seed("KAN-1", "approval-a");
+    await seed("KAN-1");
     await router.reconcile();
     const envelope = await start();
-    router.jira.seedIssue(
-      {
-        ...(await router.jira.getIssue("KAN-1")),
-        description: issueDescription({ acceptance: ["Something else"] }),
-      },
-      TRANSITIONS,
-    );
+    await router.jira.updateIssueDescription("KAN-1", issueDescription("Something else."));
     await verifyActiveJobs({
       db: router.db,
       jira: router.jira,
@@ -225,7 +194,7 @@ describe("execution records", () => {
   });
 
   it("links a subtask's runs to its parent requirement", async () => {
-    seed("KAN-2", "approval-sub", { isSubtask: true, parentKey: "KAN-1" });
+    await seed("KAN-2", { isSubtask: true, parentKey: "KAN-1" });
     await router.reconcile();
     await submit(await start(), { execution: CLAUDE_CALL });
 

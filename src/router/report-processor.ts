@@ -1,5 +1,4 @@
 import type Database from "better-sqlite3";
-import type { ReadinessGap } from "../issue/readiness.js";
 import { JiraApiError, StatusNotReachableError, TransitionNotFoundError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
@@ -17,11 +16,6 @@ import {
   recordAttention,
   resolveAttentionItem,
 } from "./db/attention.js";
-import {
-  type ReadinessHoldRow,
-  listPendingReadinessNotices,
-  markReadinessNotice,
-} from "./db/readiness-holds.js";
 import {
   type ReportStepRow,
   type ReportStepStatus,
@@ -188,7 +182,7 @@ async function runTransition(
 }
 
 /** Re-derives the approval a transition was journaled under, by the rule it was journaled with
- *  (ADR 0044's rules for `delegation`-mode implementations; the status entry otherwise). */
+ *  (ADR 0044's rules for implementations; the status entry for a plan). */
 async function approvalStillStands(
   jira: JiraGateway,
   issue: JiraIssue,
@@ -540,68 +534,4 @@ async function runReportJournal(
       else report.skipped.push({ stepId: step.id, reason: outcome.reason });
     }
   }
-}
-
-const READINESS_SECTION: Record<ReadinessGap, string> = {
-  acceptance: "Acceptance Criteria",
-  verification: "Verification",
-};
-
-/** The one comment a readiness hold posts: what is missing → impact → what to do → where to read
- *  more. No logs, no request text — the issue itself already shows that. */
-export function renderReadinessHoldNotice(hold: Pick<ReadinessHoldRow, "missing">): string {
-  const names = hold.missing.map((gap) => READINESS_SECTION[gap]);
-  return [
-    `GGJIRA has not started this implementation request: its description has no ${names.join(" and no ")} section.`,
-    "",
-    "Impact: no worker will pick it up while the section is missing. Nothing has been changed in the repository.",
-    "",
-    "To start it: add the following h2 section(s) to the description, with at least one list item each. Router picks the request up on its next pass; there is no need to move the issue.",
-    ...names.map((name) => `- ${name}`),
-    "",
-    'Details: docs/runbook.md, "구현 요청 준비 보류" (ADR 0034).',
-  ].join("\n");
-}
-
-export interface ReadinessNoticeReport {
-  posted: string[];
-  failed: Array<{ holdId: string; reason: string }>;
-  deferred: Array<{ holdId: string; reason: string }>;
-}
-
-/**
- * Posts the one Jira comment each new readiness hold owes (ADR 0034). The comment carries a
- * `[GGJIRA:HOLD:<id>]` marker, and `addCommentOnce` reads the comments before writing, so a retry
- * after an uncertain write or a Router restart never posts twice. Same error classes as the
- * journal: a definitive rejection is `failed` (the hold still stands, only the notice is lost),
- * anything else stays `pending` for the next pass.
- */
-export async function processReadinessNotices(
-  deps: ReportProcessorDeps,
-): Promise<ReadinessNoticeReport> {
-  const report: ReadinessNoticeReport = { posted: [], failed: [], deferred: [] };
-  for (const hold of listPendingReadinessNotices(deps.db)) {
-    try {
-      await addCommentOnce(
-        deps.jira,
-        hold.issueKey,
-        `[GGJIRA:HOLD:${hold.id}]`,
-        renderReadinessHoldNotice(hold),
-      );
-      markReadinessNotice(deps.db, hold.id, "posted", null);
-      report.posted.push(hold.id);
-    } catch (error) {
-      const message = errorMessage(error);
-      if (isDefinitiveRejection(error) || (error instanceof WriteError && error.definitive)) {
-        markReadinessNotice(deps.db, hold.id, "failed", message);
-        report.failed.push({ holdId: hold.id, reason: message });
-        continue;
-      }
-      markReadinessNotice(deps.db, hold.id, "pending", message);
-      report.deferred.push({ holdId: hold.id, reason: message });
-      // Jira is unreachable or rate limiting; the rest would most likely fail the same way.
-      break;
-    }
-  }
-  return report;
 }

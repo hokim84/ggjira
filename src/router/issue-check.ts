@@ -1,11 +1,16 @@
 import type Database from "better-sqlite3";
 import type { IssueSnapshot, PlanningContext } from "../contracts/envelope.js";
 import type { JobKind } from "../contracts/protocol.js";
-import { type IssueRequirements, readIssueRequirements } from "../issue/requirements.js";
+import type { IssueRequirements } from "../issue/requirements.js";
 import { JiraApiError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraComment, JiraIssue } from "../jira/types.js";
 import { findHumanDecision } from "../pm/context.js";
+import {
+  parentPlanRequirements,
+  planTaskRequirements,
+  planningRequirements,
+} from "../pm/contract.js";
 import {
   PLAN_PROPERTY_KEY,
   PlanMetadataError,
@@ -13,116 +18,96 @@ import {
   type PlanTaskMetadata,
   readPlanTaskMetadata,
 } from "../pm/metadata.js";
+import { planTaskIds } from "../pm/plan-render.js";
 import {
   computeApprovalId,
   computeDelegationApprovalIds,
   computeInputHash,
-  computeLegacyInputHash,
   inputHashMatches,
 } from "./approval.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
-import { type ApprovalRow, getApproval, upsertApproval } from "./db/approvals.js";
+import { getApproval, upsertApproval } from "./db/approvals.js";
 import type { JobRow } from "./db/jobs.js";
-import { getActivePlanDeployment } from "./db/plan-delegation.js";
+import {
+  type PlanDeploymentRow,
+  getActivePlanDeployment,
+  getReviewedPlan,
+  listPlannedReviews,
+} from "./db/plan-delegation.js";
 import { taskApprovalId } from "./report-journal.js";
-import { approvalStatusFor, isDelegationMode, resolveJobKind } from "./workflow-mode.js";
+import { approvalStatusFor } from "./workflow-mode.js";
 
-/** An issue's approval as Jira shows it right now. */
+/** An issue's approval as Jira and Router's plan records show it right now. */
 export interface IssueApproval {
   issue: JiraIssue;
-  /** The job this request is for (src/router/workflow-mode.ts `resolveJobKind`). */
   kind: JobKind;
+  /** The approved plan's contract for an implementation; none yet for a planning request. */
   requirements: IssueRequirements;
   planTask: PlanTaskMetadata | null;
   approvalId: string;
-  /** v2 (ADR 0035): what new jobs are stamped with. */
+  /** ADR 0035: what new jobs are stamped with. */
   inputHash: string;
-  /** v1 hash of the same inputs, only for comparing jobs stamped before ADR 0035. */
-  legacyInputHash: string;
 }
 
-/** Reads requirements, plan-task metadata and changelog for `issue`, and decides which job the
- *  request is for unless `kind` is given (an open job keeps the kind it was created with). Throws
- *  `PlanMetadataError` for a corrupted `ggjira.plan-task` property, or for a plan task whose parent
- *  has since been replanned (§2 "계획 버전 변경은 취소 사유다") — callers treat both as "not
- *  approved". */
-export async function readIssueApproval(
-  jira: JiraGateway,
-  issue: JiraIssue,
-  workspace: WorkspaceConfig,
-  kind?: JobKind,
-  /** Required in `delegation` mode, where approved plans are Router's own records (ADR 0044). */
-  db?: Database.Database,
-): Promise<IssueApproval> {
-  const planTask = await readPlanTaskMetadata(jira, issue.key);
-  if (planTask) await assertPlanTaskCurrent(jira, issue.key, planTask);
-  const requirements = readIssueRequirements(issue);
-  if (isDelegationMode(workspace)) {
-    if (!db) throw new Error("readIssueApproval needs the Router DB in delegation mode");
-    const delegated = await readDelegatedApproval(jira, db, issue, workspace, planTask, kind);
-    return {
-      issue,
-      requirements,
-      planTask,
-      ...delegated,
-      inputHash: computeInputHash({ kind: delegated.kind, issue, requirements, planTask }),
-      legacyInputHash: computeLegacyInputHash(requirements, planTask),
-    };
-  }
-  const resolvedKind =
-    kind ??
-    resolveJobKind({
-      workspace,
-      issue,
-    });
-  const approvalId = await computeApprovalId(
-    jira,
-    issue,
-    approvalStatusFor(resolvedKind, workspace),
-  );
-  const inputHash = computeInputHash({ kind: resolvedKind, issue, requirements, planTask });
-  const legacyInputHash = computeLegacyInputHash(requirements, planTask);
-  return {
-    issue,
-    kind: resolvedKind,
-    requirements,
-    planTask,
-    approvalId,
-    inputHash,
-    legacyInputHash,
-  };
-}
-
-/** A `delegation`-mode issue is not delegated to AI right now (ADR 0044): not requested, or in
- *  progress without an approved plan it runs under. Callers treat it as "not approved". */
+/** The issue is not delegated to AI right now (ADR 0044): not requested, or in progress without an
+ *  approved plan it runs under. Callers treat it as "not approved". */
 export class NotDelegatedError extends Error {}
 
 /**
- * Which job a `delegation`-mode issue is approved for, if any (ADR 0044):
+ * Which job `issue` is approved for, if any (ADR 0044, ADR 0047), and the contract it runs under:
  *
- * - in the request status: a plan, approved by the entry into it;
- * - a task of a deployed plan, in progress: its implementation, approved by the plan's approval
- *   and identified per run by the task's entry into in progress;
+ * - in the request status: a plan, approved by the entry into it, with no contract yet;
+ * - a task of a deployed plan, in progress: its implementation under that task of the plan,
+ *   approved by the plan's approval and identified per run by the task's entry into in progress;
  * - a parent whose deployed plan has no tasks, in progress under that same approval: its own
- *   implementation.
+ *   implementation under the plan's contract.
  *
  * Anything else — an issue a human works on in progress, a plan nobody approved, a task of a
  * withdrawn or replaced plan — throws `NotDelegatedError`. `kind` (an open job's) must match.
+ * Throws `PlanMetadataError` for a corrupted `ggjira.plan-task` property, or for a plan task whose
+ * parent has since been replanned (§2 "계획 버전 변경은 취소 사유다").
  */
-async function readDelegatedApproval(
+export async function readIssueApproval(
+  jira: JiraGateway,
+  db: Database.Database,
+  issue: JiraIssue,
+  workspace: WorkspaceConfig,
+  kind?: JobKind,
+): Promise<IssueApproval> {
+  const planTask = await readPlanTaskMetadata(jira, issue.key);
+  if (planTask) await assertPlanTaskCurrent(jira, issue.key, planTask);
+  const approved = await readApproved(jira, db, issue, workspace, planTask, kind);
+  return {
+    issue,
+    planTask,
+    ...approved,
+    inputHash: computeInputHash({
+      kind: approved.kind,
+      issue,
+      requirements: approved.requirements,
+      planTask,
+    }),
+  };
+}
+
+async function readApproved(
   jira: JiraGateway,
   db: Database.Database,
   issue: JiraIssue,
   workspace: WorkspaceConfig,
   planTask: PlanTaskMetadata | null,
   kind: JobKind | undefined,
-): Promise<{ kind: JobKind; approvalId: string }> {
+): Promise<{ kind: JobKind; approvalId: string; requirements: IssueRequirements }> {
   const { requestStatus, inProgressStatus, planReviewStatus } = workspace.workflow;
   if (issue.statusName === requestStatus) {
     if (kind === "implementation") {
       throw new NotDelegatedError(`${issue.key} was requested again, to be planned`);
     }
-    return { kind: "planning", approvalId: await computeApprovalId(jira, issue, requestStatus) };
+    return {
+      kind: "planning",
+      approvalId: await computeApprovalId(jira, issue, requestStatus),
+      requirements: planningRequirements(issue.summary),
+    };
   }
   if (kind === "planning") {
     throw new NotDelegatedError(`${issue.key} left "${requestStatus}"`);
@@ -153,6 +138,7 @@ async function readDelegatedApproval(
     return {
       kind: "implementation",
       approvalId: taskApprovalId(deployment.approvalId, planTask.taskId, entry),
+      requirements: taskContract(db, issue.key, planTask),
     };
   }
   const deployment = own;
@@ -165,13 +151,50 @@ async function readDelegatedApproval(
   }
   const { planApprovalId } = await computeDelegationApprovalIds(jira, issue, {
     requestStatus,
-    planReviewStatus: planReviewStatus ?? "",
+    planReviewStatus,
     inProgressStatus,
   });
   if (planApprovalId !== deployment.approvalId) {
     throw new NotDelegatedError(`${issue.key}'s plan approval changed`);
   }
-  return { kind: "implementation", approvalId: deployment.approvalId };
+  return {
+    kind: "implementation",
+    approvalId: deployment.approvalId,
+    requirements: parentContract(db, issue, deployment),
+  };
+}
+
+/** The approved plan's own contract, for a parent the plan keeps as the executable unit. */
+function parentContract(
+  db: Database.Database,
+  issue: JiraIssue,
+  deployment: PlanDeploymentRow,
+): IssueRequirements {
+  const plan = getReviewedPlan(db, deployment.planReviewId);
+  if (!plan) {
+    throw new NotDelegatedError(
+      `${issue.key}'s approved plan ${deployment.planVersion} is missing`,
+    );
+  }
+  return parentPlanRequirements(plan, issue.summary);
+}
+
+/** A task's contract from the parent's plan that defined it: the approved plan for a new task, an
+ *  earlier one for a task a replan kept as-is. */
+function taskContract(
+  db: Database.Database,
+  issueKey: string,
+  planTask: PlanTaskMetadata,
+): IssueRequirements {
+  for (const review of listPlannedReviews(db, planTask.parentKey)) {
+    const plan = getReviewedPlan(db, review.id);
+    if (!plan) continue;
+    const task = plan.tasks[planTaskIds(plan).indexOf(planTask.taskId)];
+    if (task) return planTaskRequirements(task, planTask.dependencies);
+  }
+  throw new NotDelegatedError(
+    `${issueKey}'s task ${planTask.taskId} is in no plan Router recorded for ${planTask.parentKey}`,
+  );
 }
 
 /** A plan task is runnable only under its parent's current plan version (the v4 runtime's check,
@@ -243,22 +266,6 @@ export interface ApprovalSnapshot {
   requirements: IssueRequirements;
   planTask: PlanTaskMetadata | null;
   planning?: PlanningContext;
-  /** The v1 hash of these inputs (ADR 0035), so Worker API checks can still judge a job stamped
-   *  before the switch without re-reading Jira. Absent from snapshots stored before it. */
-  legacyInputHash?: string;
-}
-
-/** A stored approval's hashes in the shape `inputHashMatches` takes — for the Worker API checks,
- *  which judge a job from Router's DB without asking Jira. */
-export function storedApprovalHashes(row: ApprovalRow): {
-  inputHash: string;
-  legacyInputHash?: string;
-} {
-  const legacy = (row.inputSnapshot as Partial<ApprovalSnapshot> | null)?.legacyInputHash;
-  return {
-    inputHash: row.inputHash,
-    ...(typeof legacy === "string" ? { legacyInputHash: legacy } : {}),
-  };
 }
 
 /**
@@ -281,7 +288,6 @@ export function storeApproval(
     requirements: approval.requirements,
     planTask: approval.planTask,
     ...(keptPlanning ? { planning: keptPlanning } : {}),
-    legacyInputHash: approval.legacyInputHash,
   };
   upsertApproval(db, {
     issueKey: approval.issue.key,
@@ -302,14 +308,6 @@ export type JobCheck =
       inputsChanged?: boolean;
     };
 
-/** Statuses an issue may sit in while its job is still approved: the request status for its
- *  kind, or `inProgressStatus` (where Router itself moves it on `start`). */
-function allowedStatuses(job: JobRow, workspace: WorkspaceConfig): string[] {
-  // ADR 0044: a delegated run never moves the issue on start, so it may only be where it runs.
-  if (isDelegationMode(workspace)) return [approvalStatusFor(job.kind, workspace)];
-  return [approvalStatusFor(job.kind, workspace), workspace.workflow.inProgressStatus];
-}
-
 /**
  * Re-reads an open job's issue from Jira and decides whether its approval still stands
  * (§2 "실행 중 승인 철회, 책임자 제거, 실행 대상 변경, 계획 버전 변경은 취소 사유다 / 실행 중 작업
@@ -322,8 +320,7 @@ export async function checkJobAgainstJira(
   jira: JiraGateway,
   config: RouterConfig,
   job: JobRow,
-  /** Required for a `delegation`-mode workspace (see `readIssueApproval`). */
-  db?: Database.Database,
+  db: Database.Database,
 ): Promise<JobCheck> {
   const workspace = config.workspaces.find((entry) => entry.id === job.workspaceId);
   if (!workspace) return { verdict: "revoked", reason: `workspace ${job.workspaceId} is gone` };
@@ -338,7 +335,8 @@ export async function checkJobAgainstJira(
     throw error;
   }
 
-  if (!allowedStatuses(job, workspace).includes(issue.statusName)) {
+  // A run never moves its issue on start, so it may only be where it runs (ADR 0044).
+  if (issue.statusName !== approvalStatusFor(job.kind, workspace)) {
     return { verdict: "revoked", reason: `${issue.key} moved to "${issue.statusName}"` };
   }
   if (!issue.assigneeAccountId) {
@@ -347,7 +345,7 @@ export async function checkJobAgainstJira(
 
   let approval: IssueApproval;
   try {
-    approval = await readIssueApproval(jira, issue, workspace, job.kind, db);
+    approval = await readIssueApproval(jira, db, issue, workspace, job.kind);
   } catch (error) {
     // Corrupted plan metadata fails closed, exactly as it blocks a new dispatch; so does a
     // delegated plan that was withdrawn or replaced.
@@ -359,7 +357,7 @@ export async function checkJobAgainstJira(
   if (approval.approvalId !== job.approvalId) {
     return { verdict: "revoked", reason: `${issue.key} was re-approved` };
   }
-  if (!inputHashMatches(job.inputHash, approval)) {
+  if (!inputHashMatches(job.inputHash, approval.inputHash)) {
     return { verdict: "revoked", reason: `${issue.key}'s inputs changed`, inputsChanged: true };
   }
   return { verdict: "current", approval };

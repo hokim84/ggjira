@@ -56,21 +56,8 @@ export function renderSetup(root) {
     wizard.config = structuredClone(wizard.info.existingConfig || wizard.info.template);
     wizard.config.repositories ||= [{ id: "main-repo" }];
     wizard.config.workspaces ||= [
-      {
-        id: "default",
-        repositoryId: "main-repo",
-        projectKeys: [],
-        workflow: { mode: "delegation" },
-      },
+      { id: "default", repositoryId: "main-repo", projectKeys: [], workflow: {} },
     ];
-    if (!wizard.info.existingConfig) {
-      for (const ws of wizard.config.workspaces) {
-        ws.workflow ||= {};
-        ws.workflow.mode = "delegation";
-        ws.workflow.planningStatus = undefined;
-        ws.workflow.needsDecisionStatus = undefined;
-      }
-    }
     wizard.config.workers ||= [];
     wizard.config.jira ||= { baseUrl: "" };
   }
@@ -187,41 +174,20 @@ export function renderSetup(root) {
     function drawStatuses() {
       const options = wizard.statuses;
       const kind = options.length ? "select" : "text";
-      const delegation = ws.workflow.mode === "delegation";
       fill(
         statusFields,
         h(
           "p",
           { class: "muted full-row" },
-          delegation
-            ? "요청 상태로 옮기면 계획부터 시작하고, 계획 검토 → 작업 중으로 옮기면 승인된 계획을 실행합니다."
-            : "기존 상태 설정을 복구합니다. 저장만으로 위임 규칙이 바뀌지 않습니다.",
+          "요청 상태로 옮기면 계획부터 시작하고, 계획 검토 → 작업 중으로 옮기면 승인된 계획을 실행합니다.",
         ),
-        field(
-          ws,
-          "workflow.requestStatus",
-          delegation ? "AI 계획 요청 상태 (사람이 AI에게 맡김)" : "요청 상태",
-          { kind, options },
-        ),
-        delegation
-          ? field(ws, "workflow.planReviewStatus", "계획 검토 상태 (승인 대기)", { kind, options })
-          : null,
+        field(ws, "workflow.requestStatus", "AI 계획 요청 상태 (사람이 AI에게 맡김)", {
+          kind,
+          options,
+        }),
+        field(ws, "workflow.planReviewStatus", "계획 검토 상태 (승인 대기)", { kind, options }),
         field(ws, "workflow.inProgressStatus", "작업 중 상태", { kind, options }),
         field(ws, "workflow.reviewStatus", "결과 검토 상태", { kind, options }),
-        !delegation
-          ? field(ws, "workflow.planningStatus", "계획 요청 상태 (선택)", {
-              kind,
-              options,
-              optional: true,
-            })
-          : null,
-        !delegation
-          ? field(ws, "workflow.needsDecisionStatus", "결정 필요 상태 (선택)", {
-              kind,
-              options,
-              optional: true,
-            })
-          : null,
       );
     }
 
@@ -282,14 +248,8 @@ export function renderSetup(root) {
       const missing = [];
       if (!ws.projectKeys?.length)
         missing.push({ path: "workspaces.0.projectKeys", message: "프로젝트를 선택하세요" });
-      for (const key of ["requestStatus", "inProgressStatus", "reviewStatus"]) {
+      for (const key of ["requestStatus", "planReviewStatus", "inProgressStatus", "reviewStatus"]) {
         if (!ws.workflow[key]) missing.push({ path: `workflow.${key}`, message: "필수입니다" });
-      }
-      if (ws.workflow.mode === "delegation" && !ws.workflow.planReviewStatus) {
-        missing.push({
-          path: "workflow.planReviewStatus",
-          message: "delegation 방식에는 필수입니다",
-        });
       }
       if (missing.length) {
         showFieldErrors(form, missing);

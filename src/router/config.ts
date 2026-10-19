@@ -10,96 +10,50 @@ function nfc(value: string): string {
 const nfcString = z.string().min(1).transform(nfc);
 
 /**
- * The request -> in-progress -> review loop for one workspace
- * (docs/router-service-implementation-plan.md §2 "Jira 업무 흐름"):
+ * A workspace's statuses (ADR 0044, ADR 0047). People delegate by moving issues on the board:
  *
- *   human -> requestStatus -> [Router leases] inProgressStatus
- *         -> [execution done] reviewStatus -> human
+ *   human -> requestStatus -> [Router plans] planReviewStatus
+ *         -> human approves: planReviewStatus -> inProgressStatus (shared with people)
+ *         -> [Router runs the approved plan] reviewStatus -> [merge] doneStatus
  *
- * `planningStatus` is a second, distinct request status: only issues whose
- * *current* status equals it get planning jobs instead of implementation
- * jobs. Leaving it unset disables planning for the workspace entirely.
- *
- * `mode: "delegation"` (ADR 0044) delegates by status instead: moving an issue to `requestStatus`
- * ("AI plan request") always starts with planning, a plan waits for a human in `planReviewStatus`,
- * and moving it from there to the shared `inProgressStatus` approves that plan. Labels play no part.
+ * Every request is planned first; only a human's move from `planReviewStatus` to
+ * `inProgressStatus` approves a plan. Labels play no part. Keys of the removed workflows (`mode`,
+ * `planningStatus`, `needsDecisionStatus`, `optInLabel`) are rejected, never reinterpreted.
  */
 const WorkflowStatusSchema = z
   .object({
-    /** Unset means "legacy": the status-based workflow above. */
-    mode: z.enum(["legacy", "delegation"]).optional(),
     requestStatus: nfcString,
+    /** Where a plan waits for a human. Moving the issue from here to `inProgressStatus` approves
+     *  the plan. */
+    planReviewStatus: nfcString,
     inProgressStatus: nfcString,
     reviewStatus: nfcString,
-    /** `delegation` mode only: where a plan waits for a human (ADR 0044). Moving the issue from
-     *  here to `inProgressStatus` approves the plan. */
-    planReviewStatus: nfcString.optional(),
-    planningStatus: nfcString.optional(),
-    needsDecisionStatus: nfcString.optional(),
     /** Where Router moves an issue from `reviewStatus` once the worker's GitHub pull request is
-     *  merged (ADR 0027). Unset: a merge is only commented on. */
+     *  merged (ADR 0027), and what completes a dependency. Unset: a merge is only commented on. */
     doneStatus: nfcString.optional(),
   })
   .strict()
   .superRefine((workflow, ctx) => {
-    if (workflow.doneStatus && workflow.doneStatus === workflow.reviewStatus) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["doneStatus"],
-        message: "workflow.doneStatus must differ from workflow.reviewStatus",
-      });
-    }
-    if (workflow.planningStatus === workflow.requestStatus) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["planningStatus"],
-        message: "workflow.planningStatus must differ from workflow.requestStatus",
-      });
-    }
-    if (workflow.mode !== "delegation" && workflow.planReviewStatus) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["planReviewStatus"],
-        message: 'workflow.planReviewStatus is only used in "delegation" mode (ADR 0044)',
-      });
-    }
-    if (workflow.mode === "delegation") {
-      if (!workflow.planReviewStatus) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["planReviewStatus"],
-          message: 'workflow.planReviewStatus is required when workflow.mode is "delegation"',
-        });
-      }
-      for (const field of ["planningStatus", "needsDecisionStatus"] as const) {
-        if (!workflow[field]) continue;
+    // Each step has to be its own status, or one column would hide two different stages.
+    const seen = new Map<string, string>();
+    for (const field of [
+      "requestStatus",
+      "planReviewStatus",
+      "inProgressStatus",
+      "reviewStatus",
+      "doneStatus",
+    ] as const) {
+      const status = workflow[field];
+      if (!status) continue;
+      const other = seen.get(status);
+      if (other) {
         ctx.addIssue({
           code: "custom",
           path: [field],
-          message: `workflow.${field} is not used in "delegation" mode; remove it (ADR 0044)`,
+          message: `workflow.${field} must differ from workflow.${other}`,
         });
       }
-      // Each step has to be its own status, or one column would hide two different stages.
-      const seen = new Map<string, string>();
-      for (const field of [
-        "requestStatus",
-        "planReviewStatus",
-        "inProgressStatus",
-        "reviewStatus",
-        "doneStatus",
-      ] as const) {
-        const status = workflow[field];
-        if (!status) continue;
-        const other = seen.get(status);
-        if (other) {
-          ctx.addIssue({
-            code: "custom",
-            path: [field],
-            message: `workflow.${field} must differ from workflow.${other} in "delegation" mode`,
-          });
-        }
-        seen.set(status, field);
-      }
+      seen.set(status, field);
     }
   });
 export type WorkflowStatus = z.infer<typeof WorkflowStatusSchema>;
@@ -289,15 +243,6 @@ export const RouterConfigSchema = z
           });
         }
         seenProjectKeys.set(projectKey, workspace.id);
-      }
-      // A project's default-generation status can't already be the status Router leases from,
-      // or every new issue would be picked up before a human ever reviewed it.
-      if (workspace.workflow.requestStatus === workspace.workflow.inProgressStatus) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["workspaces", index, "workflow", "inProgressStatus"],
-          message: "workflow.inProgressStatus must differ from workflow.requestStatus",
-        });
       }
     });
 

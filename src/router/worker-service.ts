@@ -28,7 +28,7 @@ import { buildWorkerAvailability, isWorkerDispatchable } from "./availability.js
 import type { RouterConfig } from "./config.js";
 import { inputHashMatches } from "./approval.js";
 import { getApproval } from "./db/approvals.js";
-import { type ApprovalSnapshot, storedApprovalHashes } from "./issue-check.js";
+import type { ApprovalSnapshot } from "./issue-check.js";
 import {
   type AttemptRow,
   bindAttemptToRequest,
@@ -75,7 +75,6 @@ import {
 } from "./report-journal.js";
 import { planDeploymentAuthorizes } from "./delegation.js";
 import { recordPlanReview } from "./db/plan-delegation.js";
-import { isDelegationMode } from "./workflow-mode.js";
 import { assignQueuedJobs, LEASE_DURATION_MS } from "./scheduler.js";
 
 /** §3 "long polling: 25초". */
@@ -699,7 +698,7 @@ export class WorkerService {
       snapshot,
       ...(review ? { review } : {}),
     });
-    if (isDelegationMode(workspace) && job.kind === "planning" && finalState === "succeeded") {
+    if (job.kind === "planning" && finalState === "succeeded") {
       this.recordPlanForReview(job, attempt, result, steps, now);
     }
     insertReportBatch(this.db, {
@@ -827,13 +826,12 @@ export class WorkerService {
   }
 
   /** The job's approval id and input hash still match what the last reconcile saw in Jira, and
-   *  (`delegation` mode, ADR 0044) the plan it runs under is still deployed. */
+   *  the plan an implementation runs under is still deployed (ADR 0044). */
   private approvalCurrent(job: JobRow): boolean {
     const approval = getApproval(this.db, job.issueKey);
     if (!approval || approval.approvalId !== job.approvalId) return false;
-    if (!inputHashMatches(job.inputHash, storedApprovalHashes(approval))) return false;
-    const workspace = this.workspaceFor(job);
-    if (!workspace || !isDelegationMode(workspace) || job.kind !== "implementation") return true;
+    if (!inputHashMatches(job.inputHash, approval.inputHash)) return false;
+    if (job.kind !== "implementation") return true;
     const snapshot = approval.inputSnapshot as ApprovalSnapshot | null;
     return planDeploymentAuthorizes(this.db, job, snapshot?.planTask?.parentKey ?? null);
   }

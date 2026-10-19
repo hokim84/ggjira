@@ -13,11 +13,6 @@ import {
   transitionAttemptState,
 } from "./db/attempts.js";
 import { getApprovalHoldActor, INPUTS_CHANGED_HOLD_ACTOR, recordAdminHold } from "./db/holds.js";
-import {
-  recordReadinessHold,
-  resolveReadinessHolds,
-  resolveUnseenReadinessHolds,
-} from "./db/readiness-holds.js";
 import { markWorkerAssigned } from "./db/workers.js";
 import {
   createJob,
@@ -34,11 +29,10 @@ import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
 import { inputHashMatches } from "./approval.js";
-import { isDelegationMode, isDependencyResolved, reRequestHint } from "./workflow-mode.js";
+import { isDependencyResolved, reRequestHint } from "./workflow-mode.js";
 import { reconcileDelegatedPlans } from "./delegation.js";
-import { DELEGATION_BASELINE_ACTOR } from "./delegation-migration.js";
 import { isLatestReviewConfirmed } from "./db/review-targets.js";
-import { recordAttention, resolveAttention } from "./db/attention.js";
+import { resolveAttention } from "./db/attention.js";
 import { SETTLED_BY_NEW_APPROVAL } from "./attention.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 import {
@@ -108,10 +102,8 @@ function extractDependencyKeys(dependencies: readonly string[]): string[] {
     .filter((key): key is string => Boolean(key));
 }
 
-/** A dependency is unresolved while it still sits in an active/pending status for its own
- *  workflow — confirmed with the user: since v5 workflow has no `completionStatus`, "reached
- *  `reviewStatus` or beyond" is treated as done. `delegation` mode is stricter (ADR 0044): only
- *  done, or a result a human confirmed (src/router/workflow-mode.ts `isDependencyResolved`). */
+/** A dependency is unresolved until it is done, or a human confirmed its result (ADR 0044,
+ *  src/router/workflow-mode.ts `isDependencyResolved`). */
 async function resolveUnresolvedDependencies(
   jira: JiraGateway,
   db: Database.Database,
@@ -121,7 +113,7 @@ async function resolveUnresolvedDependencies(
   const unresolved: string[] = [];
   for (const key of dependencyKeys) {
     const dependency = await jira.getIssue(key);
-    const confirmed = isDelegationMode(workspace) && isLatestReviewConfirmed(db, key);
+    const confirmed = isLatestReviewConfirmed(db, key);
     if (!isDependencyResolved(workspace, dependency.statusName, confirmed)) unresolved.push(key);
   }
   return unresolved;
@@ -195,12 +187,12 @@ async function reconcileIssue(
 ): Promise<void> {
   let approval: IssueApproval;
   try {
-    approval = await readIssueApproval(deps.jira, issue, workspace, undefined, deps.db);
+    approval = await readIssueApproval(deps.jira, deps.db, issue, workspace);
   } catch (error) {
     if (error instanceof PlanMetadataError || error instanceof NotDelegatedError) {
       report.skipped.push({ issueKey: issue.key, reason: error.message });
       // Corrupted or superseded plan metadata withdraws the approval an open job relied on, and so
-      // does a delegated plan that was withdrawn or replaced (ADR 0044).
+      // does a plan that was withdrawn or replaced (ADR 0044).
       const openJob = getOpenJobForIssue(deps.db, issue.key);
       if (openJob && VERIFIED_JOB_STATES.has(openJob.state)) {
         cancelStaleJob(deps.db, openJob, deps.now(), report);
@@ -230,7 +222,8 @@ async function reconcileIssue(
   const existingJob = getOpenJobForIssue(deps.db, issue.key);
   if (existingJob) {
     const inputsChanged =
-      existingJob.approvalId === approvalId && !inputHashMatches(existingJob.inputHash, approval);
+      existingJob.approvalId === approvalId &&
+      !inputHashMatches(existingJob.inputHash, approval.inputHash);
     const approvalCurrent =
       existingJob.approvalId === approvalId && !inputsChanged && issue.assigneeAccountId !== null;
     if (approvalCurrent && existingJob.state !== "waiting") {
@@ -258,16 +251,14 @@ async function reconcileIssue(
       reason:
         holdActor === INPUTS_CHANGED_HOLD_ACTOR
           ? `the request was edited after it was approved; ${reRequestHint(workspace, kind)} to run the edited request`
-          : holdActor === DELEGATION_BASELINE_ACTOR
-            ? `requested before the switch to delegation; ${reRequestHint(workspace, kind)} to delegate it`
-            : `cancelled by an admin for this approval; ${reRequestHint(workspace, kind)} to re-run`,
+          : `cancelled by an admin for this approval; ${reRequestHint(workspace, kind)} to re-run`,
     });
     return;
   }
 
   // ADR 0044: one request, one run. A request still showing after its run finished (its report
   // move not applied yet, or skipped) is not a new one.
-  if (isDelegationMode(workspace) && hasSucceededJobForApproval(deps.db, issue.key, approvalId)) {
+  if (hasSucceededJobForApproval(deps.db, issue.key, approvalId)) {
     report.skipped.push({
       issueKey: issue.key,
       reason: `${issue.key} already ran under approval ${approvalId}`,
@@ -285,39 +276,6 @@ async function reconcileIssue(
     executionAgentOptionId: issue.executionAgentOptionId ?? null,
   };
   const decision = deps.decisionProvider.decide(context);
-
-  if (decision.target === "human" && decision.code === "not_ready") {
-    // ADR 0034: hold it, and queue one Jira notice per distinct (approval, inputs, gaps). The
-    // daemon's report pass posts it; re-polling the same request only bumps the hold's counter.
-    recordReadinessHold(deps.db, {
-      issueKey: issue.key,
-      approvalId,
-      inputHash,
-      missing: decision.missing ?? [],
-      now,
-    });
-    // M4-09: every pass that still finds it held is one more occurrence, never another comment.
-    recordAttention(deps.db, {
-      issueKey: issue.key,
-      approvalId,
-      kind: "readiness_hold",
-      cause: [...(decision.missing ?? [])].sort().join(","),
-      severity: "immediate",
-      reason: "the implementation request lacks contract sections and was not started",
-      evidence: { missing: [...(decision.missing ?? [])].sort() },
-      now,
-    });
-    report.held.push({ issueKey: issue.key, target: "human", reason: decision.reason });
-    return;
-  }
-  // Any other outcome means the contract gap (if there was one) is no longer what holds it.
-  resolveReadinessHolds(deps.db, issue.key, now);
-  resolveAttention(deps.db, {
-    issueKey: issue.key,
-    kinds: ["readiness_hold"],
-    resolution: "the request no longer lacks contract sections",
-    now,
-  });
 
   if (isRouteDispatch(decision)) {
     const job = createJob(deps.db, {
@@ -581,21 +539,17 @@ export async function reconcileCandidates(
       processedIssueKeys.add(issue.key);
       await reconcileIssue(deps, workspace, issue, genId, routerAccountId, report);
     }
-    if (isDelegationMode(workspace)) {
-      // ADR 0044: approved plans and their tasks come from Router's own records, never from the
-      // shared in-progress status.
-      await reconcileDelegatedPlans(deps, workspace, report, async (issue) => {
-        if (processedIssueKeys.has(issue.key)) return;
-        report.candidatesSeen += 1;
-        processedIssueKeys.add(issue.key);
-        await reconcileIssue(deps, workspace, issue, genId, routerAccountId, report);
-      });
-    }
+    // ADR 0044: approved plans and their tasks come from Router's own records, never from the
+    // shared in-progress status.
+    await reconcileDelegatedPlans(deps, workspace, report, async (issue) => {
+      if (processedIssueKeys.has(issue.key)) return;
+      report.candidatesSeen += 1;
+      processedIssueKeys.add(issue.key);
+      await reconcileIssue(deps, workspace, issue, genId, routerAccountId, report);
+    });
   }
 
   await reverifyUnseenOpenJobs(deps, processedIssueKeys, report);
-  // A held issue that left the request statuses (or was deleted) owes no notice any more.
-  resolveUnseenReadinessHolds(deps.db, processedIssueKeys, deps.now());
   assignQueuedJobs(deps, availableWorkers, report);
   return report;
 }

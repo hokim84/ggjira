@@ -23,8 +23,10 @@ Jira Assignee는 인간 책임자로만 남는다. PM(계획) 실행도 같은 �
   않는다**(`test/worker-runtime-no-jira.test.ts`가 검사)
 - `src/worker/` — AI CLI provider(Claude Code, Codex), 프로세스 트리 종료, git worktree, 검증 명령
 - `src/jira/` — Jira REST 호출, 인증, 에러 매핑, `FakeJiraGateway`. Router만 쓴다
-- `src/pm/` — 계획 스키마·메타데이터(`ggjira.plan*`)·렌더링·PM 프롬프트·결정 답변 파싱(순수 로직)
-- `src/issue/` — 이슈 설명의 GGJIRA 절 파싱, 요구 capability 읽기와 매칭(순수 로직)
+- `src/pm/` — 계획 스키마·메타데이터(`ggjira.plan*`)·렌더링·승인된 계획에서 실행 계약 만들기·PM 프롬프트·
+  결정 답변 파싱(순수 로직)
+- `src/issue/` — 실행 계약 타입, 입력 해시, 설명 렌더링, capability 매칭(순수 로직). 이슈 설명의 절은
+  파싱하지 않는다(ADR 0047)
 - `src/cli.ts`·`cli-main.ts`·`cli-io.ts` — 진입점과 명령 분기
 - `web/router-ui/` — Router가 `/ui/`로 서빙하는 빌드 없는 정적 웹 UI(계층 코드 아님, ADR 0023).
   `/api/v1/admin/*`·`/api/v1/setup/*`만 호출한다

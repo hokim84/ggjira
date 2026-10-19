@@ -1,9 +1,9 @@
 import type { JobResult } from "../contracts/envelope.js";
-import type { JobKind } from "../contracts/protocol.js";
 import {
   renderDecisionRequest,
   renderImplementationDecisionRequest,
 } from "../pm/decision-render.js";
+import { missingContracts } from "../pm/contract.js";
 import {
   PlanApplyError,
   type PlanTask,
@@ -18,12 +18,7 @@ import type { JobRow } from "./db/jobs.js";
 import type { NewReportStep } from "./db/report-steps.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import type { ReviewAssessment } from "./review-gate.js";
-import {
-  approvalStatusFor,
-  decisionTransitionTarget,
-  isDelegationMode,
-  reRequestHint,
-} from "./workflow-mode.js";
+import { approvalStatusFor, decisionTransitionTarget, reRequestHint } from "./workflow-mode.js";
 
 /**
  * Pure translation of "what happened" into the ordered Jira side effects Router owes an issue
@@ -41,7 +36,7 @@ export interface TransitionParams {
   from: string[];
   approvalStatus: string;
   approvalId: string;
-  /** Set for a `delegation`-mode implementation (ADR 0044), whose approval is not an entry into
+  /** Set for an implementation (ADR 0044), whose approval is not an entry into
    *  `approvalStatus`. Steps journaled without it keep the rule they were written under. */
   approvalRule?: ApprovalRule;
   /** Another issue than the step's own (a plan task moved when its plan is deployed). */
@@ -49,7 +44,7 @@ export interface TransitionParams {
 }
 
 /**
- * How a `delegation`-mode transition re-derives the approval it was journaled under:
+ * How an implementation's transition re-derives the approval it was journaled under:
  *
  * - `plan-approval`: the plan's approval — the latest move of `issueKey` (the plan's parent) from
  *   `planReviewStatus` to `inProgressStatus` after its latest request.
@@ -120,7 +115,7 @@ export interface SupersedeParams {
 export interface PlanCommentParams {
   summary: string;
   signature: string;
-  /** What the human does next (`delegation` mode: review, then approve or re-plan). */
+  /** What the human does next: review, then approve or re-plan. */
   next?: string[];
 }
 
@@ -180,10 +175,10 @@ function transition(
   };
 }
 
-/** The rule a `delegation`-mode implementation's approval is re-derived with; `undefined` for
- *  every other job, whose approval is the latest entry into `approvalStatus`. */
+/** The rule an implementation's approval is re-derived with; `undefined` for a planning job,
+ *  whose approval is the latest entry into `approvalStatus`. */
 function delegatedApprovalRule(job: JobRow, workspace: WorkspaceConfig): ApprovalRule | undefined {
-  if (!isDelegationMode(workspace) || job.kind !== "implementation") return undefined;
+  if (job.kind !== "implementation") return undefined;
   if (parseTaskApprovalId(job.approvalId)) {
     return { kind: "plan-task", inProgressStatus: workspace.workflow.inProgressStatus };
   }
@@ -197,7 +192,7 @@ export function planApprovalRule(workspace: WorkspaceConfig, issueKey: string): 
     kind: "plan-approval",
     issueKey,
     requestStatus,
-    planReviewStatus: planReviewStatus ?? "",
+    planReviewStatus,
     inProgressStatus,
   };
 }
@@ -224,37 +219,27 @@ export function parseTaskApprovalId(
 }
 
 /**
- * When a worker is granted execution: move the issue to `inProgressStatus` (§2 "Router가 실행
- * 직전 최신 상태를 재조회하고 진행 상태로 전이한다"), but only out of the status that approved it —
- * a human who already moved it elsewhere wins.
+ * When a worker is granted execution (ADR 0044): no status moves. A plan is written while the
+ * issue stays in the request status, and an approved implementation already sits in progress; a
+ * planning run only says on the card that it started.
  */
 export function buildStartSteps(
   job: JobRow,
   workspace: WorkspaceConfig,
   attemptId: string,
 ): NewReportStep[] {
-  if (isDelegationMode(workspace)) {
-    // ADR 0044: a plan is written while the issue stays in the request status, and an approved
-    // implementation already sits in progress; the card says what runs, no status moves.
-    return job.kind === "planning"
-      ? toNewSteps([
-          {
-            kind: "comment",
-            params: {
-              body: [
-                `GGJIRA started planning this request. The issue stays in "${workspace.workflow.requestStatus}" until the plan is ready for review.`,
-                "",
-                signature(job, attemptId),
-              ].join("\n"),
-            },
-          },
-        ])
-      : [];
-  }
+  if (job.kind !== "planning") return [];
   return toNewSteps([
-    transition(job, workspace, workspace.workflow.inProgressStatus, [
-      approvalStatusFor(job.kind, workspace),
-    ]),
+    {
+      kind: "comment",
+      params: {
+        body: [
+          `GGJIRA started planning this request. The issue stays in "${workspace.workflow.requestStatus}" until the plan is ready for review.`,
+          "",
+          signature(job, attemptId),
+        ].join("\n"),
+      },
+    },
   ]);
 }
 
@@ -418,21 +403,16 @@ export interface ResultJournalInput {
   review?: ReviewAssessment;
 }
 
-/** Moves out of in-progress (or the approving status, if the start move was skipped) to `to`.
- *  In `delegation` mode a run never moves the issue on start, so it finishes from where it ran:
- *  the request status for a plan, in progress for an implementation. */
+/** A run never moves the issue on start, so it finishes from where it ran: the request status for
+ *  a plan, in progress for an implementation. */
 function finishTransition(input: ResultJournalInput, to: string): ReportStepSpec {
-  const ran = approvalStatusFor(input.job.kind, input.workspace);
-  return transition(
-    input.job,
-    input.workspace,
-    to,
-    isDelegationMode(input.workspace) ? [ran] : [input.workspace.workflow.inProgressStatus, ran],
-  );
+  return transition(input.job, input.workspace, to, [
+    approvalStatusFor(input.job.kind, input.workspace),
+  ]);
 }
 
-/** A result that waits for a human decision: moved to the workspace's decision status, or (in
- *  `label` mode, ADR 0037) left In Progress, where the comment says what to do. */
+/** A result that waits for a human decision: a plan waits in plan review; an implementation stays
+ *  in progress, where the comment says what to do. */
 function decisionTransition(input: ResultJournalInput): ReportStepSpec[] {
   const to = decisionTransitionTarget(input.workspace, input.job.kind);
   return to ? [finishTransition(input, to)] : [];
@@ -440,24 +420,18 @@ function decisionTransition(input: ResultJournalInput): ReportStepSpec[] {
 
 /** Where a failed run leaves the issue: the status it ran in. */
 function failedRunStatus(input: ResultJournalInput): string {
-  return isDelegationMode(input.workspace)
-    ? approvalStatusFor(input.job.kind, input.workspace)
-    : input.workspace.workflow.inProgressStatus;
+  return approvalStatusFor(input.job.kind, input.workspace);
 }
 
-/** The status a human moves the issue to after answering a decision request. In `delegation`
- *  mode that is always the request status: a changed request is planned again (ADR 0044). */
-function decisionReplyStatus(input: ResultJournalInput, kind: JobKind): string {
-  return isDelegationMode(input.workspace)
-    ? input.workspace.workflow.requestStatus
-    : approvalStatusFor(kind, input.workspace);
+/** The status a human moves the issue to after answering a decision request: always the request
+ *  status, since a changed request is planned again (ADR 0044). */
+function decisionReplyStatus(input: ResultJournalInput): string {
+  return input.workspace.workflow.requestStatus;
 }
 
-/** How a human asks for the job again: a fresh approval (ADR 0019, ADR 0037, ADR 0044). */
+/** How a human asks for the job again: a fresh approval (ADR 0019, ADR 0044). */
 function reRequest(input: ResultJournalInput): string {
-  if (isDelegationMode(input.workspace)) return reRequestHint(input.workspace, input.job.kind);
-  const status = `move the issue back to "${approvalStatusFor(input.job.kind, input.workspace)}"`;
-  return status;
+  return reRequestHint(input.workspace, input.job.kind);
 }
 
 /**
@@ -602,10 +576,18 @@ function validatePlan(input: ResultJournalInput, plan: Plan): void {
   // child also has a parent; only the subtask issue type tells the two apart in the snapshot.)
   const isSubtask =
     input.snapshot.issue.issueTypeName?.normalize("NFC") === input.config.planning.subtaskIssueType;
-  if (isDelegationMode(input.workspace) && isSubtask && plan.tasks.length > 0) {
+  if (isSubtask && plan.tasks.length > 0) {
     throw new PlanApplyError(
       `${input.job.issueKey} is a subtask; its plan has to do the work in the issue itself, without tasks`,
     );
+  }
+  // ADR 0047: the plan is the contract its runs are held to, so every executable unit has to say
+  // what done means and how to check it before anyone can approve it.
+  if (!plan.needsDecision) {
+    const missing = missingContracts(plan);
+    if (missing.length > 0) {
+      throw new PlanApplyError(`Plan has no definition of done: ${missing.join("; ")}`);
+    }
   }
 }
 
@@ -665,22 +647,17 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
       params: { issueKey: subtask.key, label: SUPERSEDED_LABEL, startedStatuses: started },
     });
   }
-  const delegation = isDelegationMode(workspace);
   steps.push(
     {
       kind: "plan-comment",
       params: {
         summary: plan.summary,
         signature: signature(job, input.attemptId),
-        ...(delegation ? { next: planReviewNext(workspace, plan.tasks.length > 0) } : {}),
+        next: planReviewNext(workspace, plan.tasks.length > 0),
       },
     },
     { kind: "remove-label", params: { label: config.reporting.failureLabel } },
-    finishTransition(
-      input,
-      (delegation ? workspace.workflow.planReviewStatus : undefined) ??
-        workspace.workflow.reviewStatus,
-    ),
+    finishTransition(input, workspace.workflow.planReviewStatus),
   );
   return steps;
 }
@@ -746,7 +723,7 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
         kind: "comment",
         params: {
           body: renderImplementationDecisionRequest(result, {
-            requestStatus: decisionReplyStatus(input, "implementation"),
+            requestStatus: decisionReplyStatus(input),
             signature: signature(job, input.attemptId),
           }),
         },
@@ -771,7 +748,7 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
         params: {
           body: renderDecisionRequest(result.plan, {
             planVersion: planVersionFor(input.attemptId),
-            replyStatus: decisionReplyStatus(input, "planning"),
+            replyStatus: decisionReplyStatus(input),
             signature: signature(job, input.attemptId),
           }),
         },

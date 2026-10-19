@@ -522,3 +522,17 @@ export const PLAN_DELEGATION_STATEMENTS: readonly string[] = [
   )`,
   "CREATE INDEX IF NOT EXISTS idx_plan_deployments_state ON plan_deployments (state)",
 ];
+
+/**
+ * Migration 15 (ADR 0047). An implementation's contract is the approved plan, so Router no longer
+ * holds a request for missing description sections: holds still open are closed, along with the
+ * attention items they raised. The `readiness_holds` table stays as history.
+ */
+export const READINESS_HOLD_CLOSE_STATEMENTS: readonly string[] = [
+  `UPDATE readiness_holds SET resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+   WHERE resolved_at IS NULL`,
+  `UPDATE attention_items SET status = 'resolved',
+     resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+     resolution = 'readiness holds were removed (ADR 0047)'
+   WHERE status = 'open' AND kind = 'readiness_hold'`,
+];

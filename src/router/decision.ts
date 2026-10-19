@@ -1,5 +1,4 @@
 import { unknownCapabilities } from "../issue/capability.js";
-import { checkImplementationReadiness } from "../issue/readiness.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
@@ -16,16 +15,15 @@ import type { ExecutionAgentFieldConfig, WorkspaceConfig } from "./config.js";
  */
 export interface RouteContext {
   issue: JiraIssue;
-  /** Which job the request is for, already decided from the workspace's mode
-   *  (src/router/workflow-mode.ts `resolveJobKind`). */
+  /** Which job the request is for (src/router/issue-check.ts `readIssueApproval`). */
   kind: JobKind;
   requirements: IssueRequirements;
   /** `null` for a manually created issue (no `ggjira.plan-task` property) — exempt from
    *  the workspace-match check below. */
   planTask: PlanTaskMetadata | null;
   workspace: WorkspaceConfig;
-  /** Dependency issue keys (extracted from the requirements text) that have not yet reached
-   *  a post-request status. Empty means every dependency is resolved. */
+  /** Dependency issue keys from the approved contract that are not done yet. Empty means every
+   *  dependency is resolved. */
   unresolvedDependencies: string[];
   /** The execution-agent custom field's selected option, if the workspace's Router config
    *  has one configured and the issue has a value set. */
@@ -74,21 +72,9 @@ export class RuleDecisionProvider implements DecisionProvider {
       };
     }
 
+    // An implementation's contract always has acceptance criteria and verification: a plan
+    // without them is never applied, so it can never be approved (ADR 0047).
     const target = context.kind;
-
-    // ADR 0034: an implementation request must say what "done" means and how to check it before a
-    // worker may start it. Planning requests are exempt — completing the request is their job.
-    if (target === "implementation") {
-      const readiness = checkImplementationReadiness(requirements);
-      if (!readiness.ready) {
-        return {
-          target: "human",
-          code: "not_ready",
-          missing: readiness.missing,
-          reason: `${issue.key} is not ready to implement: missing ${readiness.missing.join(" and ")}`,
-        };
-      }
-    }
 
     let pinnedWorkerId: string | undefined;
     if (this.executionAgent && context.executionAgentOptionId) {

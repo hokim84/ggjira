@@ -1,7 +1,6 @@
 import type { JiraGateway } from "../jira/gateway.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { checkWorkflowHops } from "./workflow-check.js";
-import { isDelegationMode } from "./workflow-mode.js";
 
 /**
  * `ggjira router check`: confirms the Router config matches the real Jira before `serve`
@@ -24,17 +23,9 @@ function configuredStatuses(workspace: WorkspaceConfig): Array<[label: string, s
   const { workflow } = workspace;
   return [
     ["requestStatus", workflow.requestStatus],
+    ["planReviewStatus", workflow.planReviewStatus],
     ["inProgressStatus", workflow.inProgressStatus],
     ["reviewStatus", workflow.reviewStatus],
-    ...(workflow.planReviewStatus
-      ? [["planReviewStatus", workflow.planReviewStatus] as [string, string]]
-      : []),
-    ...(workflow.planningStatus
-      ? [["planningStatus", workflow.planningStatus] as [string, string]]
-      : []),
-    ...(workflow.needsDecisionStatus
-      ? [["needsDecisionStatus", workflow.needsDecisionStatus] as [string, string]]
-      : []),
     ...(workflow.doneStatus ? [["doneStatus", workflow.doneStatus] as [string, string]] : []),
   ];
 }
@@ -97,57 +88,35 @@ async function checkProject(
     });
   }
 
-  const delegationMode = isDelegationMode(workspace);
-  if (workspace.workflow.planningStatus || delegationMode) {
-    const subtaskType = config.planning.subtaskIssueType;
-    const found = issueTypes.find((type) => type.name.normalize("NFC") === subtaskType);
-    items.push(
-      found?.subtask
-        ? { level: "ok", message: `${where}: subtask issue type "${subtaskType}" exists` }
-        : {
-            level: "fail",
-            message: `${where}: planning.subtaskIssueType "${subtaskType}" is not a subtask type of this project`,
-          },
-    );
-    // The REST API does not expose a workflow's initial status; check it manually.
-    if (delegationMode)
-      items.push({
-        level: "warn",
-        message: `${where}: confirm by hand that a new "${subtaskType}" can move to "${workspace.workflow.inProgressStatus}" — Router moves the tasks of an approved plan there (ADR 0044)`,
-      });
-    else
-      items.push({
-        level: "warn",
-        message: `${where}: confirm by hand that a new "${subtaskType}" starts in a status other than "${workspace.workflow.requestStatus}" — otherwise every PM subtask would be dispatched before a human approves it`,
-      });
-  }
+  const subtaskType = config.planning.subtaskIssueType;
+  const found = issueTypes.find((type) => type.name.normalize("NFC") === subtaskType);
+  items.push(
+    found?.subtask
+      ? { level: "ok", message: `${where}: subtask issue type "${subtaskType}" exists` }
+      : {
+          level: "fail",
+          message: `${where}: planning.subtaskIssueType "${subtaskType}" is not a subtask type of this project`,
+        },
+  );
+  // The REST API does not expose a workflow's initial status; check it manually.
+  items.push({
+    level: "warn",
+    message: `${where}: confirm by hand that a new "${subtaskType}" can move to "${workspace.workflow.inProgressStatus}" — Router moves the tasks of an approved plan there (ADR 0044)`,
+  });
 }
 
 /** What each status's issue must be able to reach next for Router's own transitions. */
 function expectedNextStatuses(workspace: WorkspaceConfig, current: string): string[] {
   const { workflow } = workspace;
-  if (isDelegationMode(workspace) && workflow.planReviewStatus) {
-    const next = new Map<string, string[]>([
-      [workflow.requestStatus, [workflow.planReviewStatus]],
-      [workflow.planReviewStatus, [workflow.inProgressStatus]],
-      [workflow.inProgressStatus, [workflow.reviewStatus]],
-      ...(workflow.doneStatus
-        ? [[workflow.reviewStatus, [workflow.doneStatus]] as [string, string[]]]
-        : []),
-    ]);
-    return next.get(current) ?? [];
-  }
-  if (current === workflow.requestStatus || current === workflow.planningStatus) {
-    return [workflow.inProgressStatus];
-  }
-  if (current === workflow.inProgressStatus) {
-    return [
-      workflow.reviewStatus,
-      ...(workflow.needsDecisionStatus ? [workflow.needsDecisionStatus] : []),
-    ];
-  }
-  if (current === workflow.reviewStatus && workflow.doneStatus) return [workflow.doneStatus];
-  return [];
+  const next = new Map<string, string[]>([
+    [workflow.requestStatus, [workflow.planReviewStatus]],
+    [workflow.planReviewStatus, [workflow.inProgressStatus]],
+    [workflow.inProgressStatus, [workflow.reviewStatus]],
+    ...(workflow.doneStatus
+      ? [[workflow.reviewStatus, [workflow.doneStatus]] as [string, string[]]]
+      : []),
+  ]);
+  return next.get(current) ?? [];
 }
 
 async function checkSampleIssue(

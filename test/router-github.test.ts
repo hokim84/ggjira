@@ -13,8 +13,6 @@ import {
 import { processReportJournal } from "../src/router/report-processor.js";
 import {
   IN_PROGRESS_STATUS,
-  issueDescription,
-  REQUEST_STATUS,
   REVIEW_STATUS,
   testWorkspace,
   workerPolicy,
@@ -92,21 +90,7 @@ describe("GitHub pull request → Jira done", () => {
     pullRequest: typeof PR | undefined = PR,
     git: Record<string, unknown> | null = GIT,
   ) {
-    router.jira.seedIssue(
-      {
-        key: "KAN-1",
-        summary: "Work",
-        statusName: REQUEST_STATUS,
-        projectKey: "KAN",
-        assigneeAccountId: "user-1",
-        description: issueDescription(),
-      },
-      TRANSITIONS,
-    );
-    router.jira.seedChangelogEntry("KAN-1", {
-      id: "KAN-1-approved",
-      items: [{ field: "status", fromString: "To Do", toString: REQUEST_STATUS }],
-    });
+    await router.seedApprovedIssue("KAN-1", { summary: "Work" });
     await router.reconcile();
     const envelope = (await router.next(worker, "req-1")).json() as JobEnvelope;
     const lease = { attemptId: envelope.attemptId, leaseToken: envelope.leaseToken };
@@ -227,16 +211,8 @@ describe("GitHub pull request → Jira done", () => {
   it("does not move to done for a pull request from a superseded run (T16)", async () => {
     await finishWithPullRequest();
     const [first] = listReviewTargets(router.db, "KAN-1");
-    // A rework runs and reports again before the old pull request is merged.
-    router.jira.seedIssue(
-      { ...(await router.jira.getIssue("KAN-1")), statusName: REQUEST_STATUS },
-      TRANSITIONS,
-    );
-    router.jira.seedChangelogEntry("KAN-1", {
-      id: "KAN-1-reworked",
-      created: "2026-02-01T00:00:00.000Z",
-      items: [{ field: "status", fromString: REVIEW_STATUS, toString: REQUEST_STATUS }],
-    });
+    // A rework (the plan approved again) runs and reports before the old pull request is merged.
+    await router.reapprove("KAN-1");
     await router.reconcile();
     const envelope = (await router.next(worker, "req-2")).json() as JobEnvelope;
     const lease = { attemptId: envelope.attemptId, leaseToken: envelope.leaseToken };

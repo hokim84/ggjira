@@ -13,11 +13,19 @@ import { buildRouterConfig, workerPolicy } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 
 const WORKFLOW = {
-  requestStatus: "AI 작업 요청",
+  requestStatus: "AI 계획 요청",
+  planReviewStatus: "계획 검토 대기",
   inProgressStatus: "AI 작업 중",
   reviewStatus: "AI 작업 완료(리뷰)",
 };
-const STATUSES = ["해야 할 일", "AI 작업 요청", "AI 작업 중", "AI 작업 완료(리뷰)", "완료"];
+const STATUSES = [
+  "해야 할 일",
+  "AI 계획 요청",
+  "계획 검토 대기",
+  "AI 작업 중",
+  "AI 작업 완료(리뷰)",
+  "완료",
+];
 
 function seededJira(): FakeJiraGateway {
   const jira = new FakeJiraGateway();
@@ -33,41 +41,14 @@ function seededJira(): FakeJiraGateway {
   return jira;
 }
 
-describe("routerWorkflowHops", () => {
-  it("lists only the moves Router makes, including optional planning/decision ones", () => {
-    expect(routerWorkflowHops(WORKFLOW).map((hop) => `${hop.from}→${hop.to}`)).toEqual([
-      "AI 작업 요청→AI 작업 중",
-      "AI 작업 중→AI 작업 완료(리뷰)",
-    ]);
-    const withPlanning = routerWorkflowHops({
-      ...WORKFLOW,
-      planningStatus: "계획 요청",
-      needsDecisionStatus: "결정 대기",
-    });
-    expect(withPlanning.map((hop) => hop.label)).toEqual([
-      "작업 시작",
-      "계획 시작",
-      "작업 완료",
-      "결정 요청(계획)",
-    ]);
-  });
-});
-
-describe("routerWorkflowHops in delegation mode (ADR 0044)", () => {
+describe("routerWorkflowHops (ADR 0044)", () => {
   it("checks the plan review hops, the human approval included", () => {
-    const hops = routerWorkflowHops({
-      mode: "delegation",
-      requestStatus: "AI 계획 요청",
-      planReviewStatus: "계획 검토 대기",
-      inProgressStatus: "작업 중",
-      reviewStatus: "결과 검토",
-      doneStatus: "완료",
-    });
+    const hops = routerWorkflowHops({ ...WORKFLOW, doneStatus: "완료" });
     expect(hops.map((hop) => `${hop.label}: ${hop.from}→${hop.to}`)).toEqual([
       "계획 완료: AI 계획 요청→계획 검토 대기",
-      "계획 승인(사람): 계획 검토 대기→작업 중",
-      "작업 완료: 작업 중→결과 검토",
-      "PR 머지 후 완료: 결과 검토→완료",
+      "계획 승인(사람): 계획 검토 대기→AI 작업 중",
+      "작업 완료: AI 작업 중→AI 작업 완료(리뷰)",
+      "PR 머지 후 완료: AI 작업 완료(리뷰)→완료",
     ]);
   });
 });
@@ -75,8 +56,11 @@ describe("routerWorkflowHops in delegation mode (ADR 0044)", () => {
 describe("checkWorkflowHops", () => {
   it("confirms each hop on an issue in its source status", async () => {
     const jira = seededJira();
-    jira.seedIssue({ key: "KAN-1", statusName: "AI 작업 요청", projectKey: "KAN" }, [
-      { id: "1", name: "시작", toStatusName: "AI 작업 중" },
+    jira.seedIssue({ key: "KAN-1", statusName: "AI 계획 요청", projectKey: "KAN" }, [
+      { id: "1", name: "계획 완료", toStatusName: "계획 검토 대기" },
+    ]);
+    jira.seedIssue({ key: "KAN-3", statusName: "계획 검토 대기", projectKey: "KAN" }, [
+      { id: "3", name: "승인", toStatusName: "AI 작업 중" },
     ]);
     jira.seedIssue({ key: "KAN-2", statusName: "AI 작업 중", projectKey: "KAN" }, [
       { id: "2", name: "리뷰", toStatusName: "AI 작업 완료(리뷰)" },
@@ -84,17 +68,18 @@ describe("checkWorkflowHops", () => {
     const hops = await checkWorkflowHops(jira, "KAN", WORKFLOW);
     expect(hops.map((hop) => [hop.state, hop.state === "ok" ? hop.sampleIssue : null])).toEqual([
       ["ok", "KAN-1"],
+      ["ok", "KAN-3"],
       ["ok", "KAN-2"],
     ]);
   });
 
   it("reports a missing transition with what is reachable instead", async () => {
     const jira = seededJira();
-    jira.seedIssue({ key: "KAN-1", statusName: "AI 작업 요청", projectKey: "KAN" }, [
+    jira.seedIssue({ key: "KAN-1", statusName: "AI 계획 요청", projectKey: "KAN" }, [
       { id: "1", name: "다른 곳", toStatusName: "완료" },
     ]);
-    const [start] = await checkWorkflowHops(jira, "KAN", WORKFLOW);
-    expect(start).toMatchObject({ state: "missing", sampleIssue: "KAN-1", reachable: ["완료"] });
+    const [planned] = await checkWorkflowHops(jira, "KAN", WORKFLOW);
+    expect(planned).toMatchObject({ state: "missing", sampleIssue: "KAN-1", reachable: ["완료"] });
   });
 
   it("cannot verify a hop when no issue sits in its source status or a status is unknown", async () => {
@@ -104,7 +89,7 @@ describe("checkWorkflowHops", () => {
       state: "unknown",
       reason: expect.stringContaining("이슈가 없어"),
     });
-    expect(hops[1]).toMatchObject({
+    expect(hops[2]).toMatchObject({
       state: "unknown",
       reason: expect.stringContaining("없는 상태"),
     });
@@ -134,7 +119,7 @@ describe("checkWorkflowHops", () => {
     });
     expect(items).toContainEqual({
       level: "warn",
-      message: expect.stringContaining('"AI 작업 요청" → "AI 작업 중"'),
+      message: expect.stringContaining('"AI 계획 요청" → "계획 검토 대기"'),
     });
   });
 });
@@ -166,8 +151,8 @@ describe("admin Jira workflow API", () => {
     expect(info.statusCode).toBe(200);
     expect(info.json()).toEqual({ statuses: STATUSES, subtaskIssueTypes: ["하위 작업"] });
 
-    router.jira.seedIssue({ key: "KAN-9", statusName: "AI 작업 요청", projectKey: "KAN" }, [
-      { id: "1", name: "시작", toStatusName: "AI 작업 중" },
+    router.jira.seedIssue({ key: "KAN-9", statusName: "AI 계획 요청", projectKey: "KAN" }, [
+      { id: "1", name: "계획 완료", toStatusName: "계획 검토 대기" },
     ]);
     const check = await router.adminCall("POST", "/jira/workflow-check", {
       projectKey: "KAN",
@@ -175,7 +160,7 @@ describe("admin Jira workflow API", () => {
     });
     expect(check.statusCode).toBe(200);
     const { hops } = check.json() as { hops: Array<{ state: string }> };
-    expect(hops.map((hop) => hop.state)).toEqual(["ok", "unknown"]);
+    expect(hops.map((hop) => hop.state)).toEqual(["ok", "unknown", "unknown"]);
   });
 
   it("maps Jira failures to 502 and needs the admin token", async () => {

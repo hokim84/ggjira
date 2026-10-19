@@ -29,38 +29,14 @@ export interface ProjectWorkflowInfo {
 
 const nfc = (value: string) => value.normalize("NFC");
 
+/** ADR 0044: Router moves a finished plan to review and a finished run to review; the approval in
+ *  between is a human's move, but it has to exist in the workflow all the same. */
 export function routerWorkflowHops(workflow: WorkflowStatus): WorkflowHop[] {
-  if (workflow.mode === "delegation" && workflow.planReviewStatus) {
-    // ADR 0044: Router moves a finished plan to review and a finished run to review; the approval
-    // in between is a human's move, but it has to exist in the workflow all the same.
-    const hops: WorkflowHop[] = [
-      { label: "계획 완료", from: workflow.requestStatus, to: workflow.planReviewStatus },
-      {
-        label: "계획 승인(사람)",
-        from: workflow.planReviewStatus,
-        to: workflow.inProgressStatus,
-      },
-      { label: "작업 완료", from: workflow.inProgressStatus, to: workflow.reviewStatus },
-    ];
-    if (workflow.doneStatus) {
-      hops.push({ label: "PR 머지 후 완료", from: workflow.reviewStatus, to: workflow.doneStatus });
-    }
-    return hops;
-  }
   const hops: WorkflowHop[] = [
-    { label: "작업 시작", from: workflow.requestStatus, to: workflow.inProgressStatus },
+    { label: "계획 완료", from: workflow.requestStatus, to: workflow.planReviewStatus },
+    { label: "계획 승인(사람)", from: workflow.planReviewStatus, to: workflow.inProgressStatus },
+    { label: "작업 완료", from: workflow.inProgressStatus, to: workflow.reviewStatus },
   ];
-  if (workflow.planningStatus) {
-    hops.push({ label: "계획 시작", from: workflow.planningStatus, to: workflow.inProgressStatus });
-  }
-  hops.push({ label: "작업 완료", from: workflow.inProgressStatus, to: workflow.reviewStatus });
-  if (workflow.needsDecisionStatus) {
-    hops.push({
-      label: "결정 요청(계획)",
-      from: workflow.inProgressStatus,
-      to: workflow.needsDecisionStatus,
-    });
-  }
   if (workflow.doneStatus) {
     hops.push({ label: "PR 머지 후 완료", from: workflow.reviewStatus, to: workflow.doneStatus });
   }

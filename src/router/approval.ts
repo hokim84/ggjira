@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import type { JobKind } from "../contracts/protocol.js";
-import { computeExecutionInputHash, isLegacyInputHash } from "../issue/input-hash.js";
+import { computeExecutionInputHash } from "../issue/input-hash.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraChangelogEntry, JiraIssue } from "../jira/types.js";
@@ -15,7 +14,6 @@ import type { PlanTaskMetadata } from "../pm/metadata.js";
  * Falls back to a stable per-issue sentinel when the issue was created directly into
  * `requestStatus` (§3 "생성부터 요청 상태였던 이슈는 생성 이벤트를 사용한다") — a plain
  * `updated` timestamp is explicitly not used as the approval identifier.
- *
  */
 export async function computeApprovalId(
   jira: JiraGateway,
@@ -33,7 +31,7 @@ export async function computeApprovalId(
   return latest.id;
 }
 
-/** What a `delegation`-mode issue's changelog says about its request and plan approval. */
+/** What an issue's changelog says about its request and plan approval. */
 export interface DelegationApprovalIds {
   /** The latest entry into the request status, as `computeApprovalId` gives it. */
   requestApprovalId: string;
@@ -88,28 +86,6 @@ export async function computeDelegationApprovalIds(
 }
 
 /**
- * The v1 input hash (stage 2): parsed objective/acceptance/dependencies/constraints/
- * capabilities and the plan version — but not the title, the description's free text or the
- * execution strategy. Kept only so jobs created before ADR 0035 are judged by the rules they were
- * created under until they close; nothing new is stamped with it.
- */
-export function computeLegacyInputHash(
-  requirements: IssueRequirements,
-  planTask: PlanTaskMetadata | null,
-): string {
-  const canonical = {
-    objective: requirements.objective,
-    acceptanceCriteria: requirements.acceptanceCriteria,
-    dependencies: [...requirements.dependencies].sort(),
-    constraints: requirements.constraints,
-    requiredCapabilities: [...requirements.requiredCapabilities].sort(),
-    planVersion: planTask?.planVersion ?? null,
-    planWorkspaceId: planTask?.workspaceId ?? null,
-  };
-  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
-}
-
-/**
  * Hashes everything a worker is told to do (ADR 0035, `src/issue/input-hash.ts`), so the
  * scheduler can detect any edit to the title, description, strategy, scope contract,
  * capabilities, dependencies or plan placement underneath an already-open job
@@ -131,15 +107,10 @@ export function computeInputHash(input: {
 }
 
 /**
- * Whether a job's stamped input hash still matches the approval as Jira shows it. A job stamped
- * before ADR 0035 carries a v1 hash and is compared with the v1 hash of the same inputs; it is
- * never silently re-stamped (only an admin retry does that, and the audit log records it).
- * `null` is a job created before input hashes existed at all.
+ * Whether a job's stamped input hash still matches the approval's inputs now. `null` is a job
+ * created without one. A job stamped by other rules (the v1 hash before ADR 0035) does not match:
+ * it needs a new approval (ADR 0047).
  */
-export function inputHashMatches(
-  jobInputHash: string | null,
-  approval: { inputHash: string; legacyInputHash?: string | undefined },
-): boolean {
-  if (jobInputHash === null || jobInputHash === approval.inputHash) return true;
-  return isLegacyInputHash(jobInputHash) && approval.legacyInputHash === jobInputHash;
+export function inputHashMatches(jobInputHash: string | null, approvalInputHash: string): boolean {
+  return jobInputHash === null || jobInputHash === approvalInputHash;
 }

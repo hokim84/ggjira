@@ -47,13 +47,13 @@ describe("Router SQLite store", () => {
     });
 
     it("applies every migration and records it in schema_migrations", () => {
-      expect(currentSchemaVersion(db)).toBe(14);
+      expect(currentSchemaVersion(db)).toBe(15);
     });
 
     it("is idempotent: reopening an existing database does not re-run migrations", () => {
       db.close();
       const reopened = openRouterDb(dbPath);
-      expect(currentSchemaVersion(reopened)).toBe(14);
+      expect(currentSchemaVersion(reopened)).toBe(15);
       reopened.close();
       // Reopen once more so the outer afterEach's db.close() has a live handle.
       db = openRouterDb(dbPath);
@@ -77,7 +77,7 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(14);
+      expect(currentSchemaVersion(db)).toBe(15);
       expect(getJob(db, "job-v9")?.inputHash).toBe("legacy-hash");
       expect(db.prepare("SELECT COUNT(*) AS n FROM readiness_holds").get()).toEqual({ n: 0 });
     });
@@ -117,7 +117,7 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(14);
+      expect(currentSchemaVersion(db)).toBe(15);
       expect(tables()).toEqual(expect.arrayContaining(M4_TABLES));
       expect(getJob(db, "job-m3")).toMatchObject({ state: "succeeded", inputHash: "v2:abc" });
       expect(db.prepare("SELECT COUNT(*) AS n FROM results").get()).toEqual({ n: 1 });
@@ -129,7 +129,7 @@ describe("Router SQLite store", () => {
       // Re-running the migrations (another restart) changes nothing.
       db.close();
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(14);
+      expect(currentSchemaVersion(db)).toBe(15);
     });
 
     it("upgrades an M4 (version 13) database to the delegation tables without touching its rows", () => {
@@ -148,13 +148,41 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(14);
+      expect(currentSchemaVersion(db)).toBe(15);
       expect(tables()).toEqual(expect.arrayContaining([...M4_TABLES, ...DELEGATION_TABLES]));
       expect(getJob(db, "job-m4")).toMatchObject({ state: "succeeded", kind: "planning" });
       // No plan or approval is made up for work done before delegation existed.
       for (const table of DELEGATION_TABLES) {
         expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get(), table).toEqual({ n: 0 });
       }
+    });
+
+    it("closes the readiness holds still open, and their attention items (ADR 0047)", () => {
+      db.prepare(
+        `INSERT INTO readiness_holds (id, issue_key, approval_id, input_hash, missing, first_seen_at,
+           last_seen_at, notice_status) VALUES ('h1', 'KAN-35', 'a1', 'v2:x', '["acceptance"]',
+           't', 't', 'posted')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO attention_items (id, incident_key, issue_key, kind, cause, severity, reason,
+           first_seen_at, last_seen_at, status) VALUES ('i1', 'k1', 'KAN-35', 'readiness_hold',
+           'acceptance', 'immediate', 'r', 't', 't', 'open'),
+           ('i2', 'k2', 'KAN-36', 'failed', 'x', 'immediate', 'r', 't', 't', 'open')`,
+      ).run();
+      db.prepare("DELETE FROM schema_migrations WHERE version > 14").run();
+      db.close();
+
+      db = openRouterDb(dbPath);
+      expect(currentSchemaVersion(db)).toBe(15);
+      expect(
+        db.prepare("SELECT resolved_at IS NOT NULL AS closed FROM readiness_holds").get(),
+      ).toEqual({ closed: 1 });
+      expect(
+        db.prepare("SELECT id, status, resolution FROM attention_items ORDER BY id").all(),
+      ).toEqual([
+        { id: "i1", status: "resolved", resolution: "readiness holds were removed (ADR 0047)" },
+        { id: "i2", status: "open", resolution: null },
+      ]);
     });
   });
 

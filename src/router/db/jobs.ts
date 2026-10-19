@@ -139,18 +139,23 @@ export function hasSucceededJobForApproval(
 }
 
 /** Jobs ready to be leased to a worker, oldest first (scheduler's assignment pass). */
-/** Jobs created for the same issue before `jobId` (earlier approvals or closed runs). */
+/** Jobs of the same kind created for the same issue before `jobId` (earlier approvals or closed
+ *  runs). */
 export function countEarlierJobsForIssue(
   db: Database.Database,
   issueKey: string,
   jobId: string,
 ): number {
+  // Only jobs of the same kind: every request is planned first (ADR 0044), and the plan before an
+  // implementation does not make that implementation a rework.
   return (
     db
       .prepare(
-        "SELECT COUNT(*) AS n FROM jobs WHERE issue_key = ? AND rowid < (SELECT rowid FROM jobs WHERE id = ?)",
+        `SELECT COUNT(*) AS n FROM jobs WHERE issue_key = ?
+         AND kind = (SELECT kind FROM jobs WHERE id = ?)
+         AND rowid < (SELECT rowid FROM jobs WHERE id = ?)`,
       )
-      .get(issueKey, jobId) as { n: number }
+      .get(issueKey, jobId, jobId) as { n: number }
   ).n;
 }
 

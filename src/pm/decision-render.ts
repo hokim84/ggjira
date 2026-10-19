@@ -98,7 +98,7 @@ export function renderImplementationDecisionRequest(
 
   lines.push(
     "",
-    `To continue: record the decision in the issue description — adjust In Scope, Out of Scope, Allowed Paths or Acceptance Criteria — then move the issue to "${options.requestStatus}" again. A comment alone is not enough: comments are not part of the approved request, and the edited request runs as a new attempt under the new approval.`,
+    `To continue: record the decision in the issue description, then move the issue to "${options.requestStatus}" to plan it again. A comment alone is not enough: the run is held to the approved plan, so a changed scope needs a new plan and a new approval.`,
   );
 
   const evidence = result.localEvidence;

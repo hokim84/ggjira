@@ -10,8 +10,9 @@ import {
   listBatchReportSteps,
   updateReportStep,
 } from "../src/router/db/report-steps.js";
+import { listPlanDeployments } from "../src/router/db/plan-delegation.js";
 import { expireLeases } from "../src/router/leases.js";
-import { issueDescription, REQUEST_STATUS } from "./helpers/router-fixtures.js";
+import { IN_PROGRESS_STATUS, issueDescription, REQUEST_STATUS } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 
 function lease(envelope: JobEnvelope) {
@@ -109,7 +110,8 @@ describe("admin API", () => {
       await router.seedQueuedJob(key);
       router.clock.advance(1000);
     }
-    const first = (await router.adminCall("GET", "/jobs?limit=2")).json() as {
+    // Each issue's implementation is queued; its plan ran (and succeeded) before.
+    const first = (await router.adminCall("GET", "/jobs?state=queued&limit=2")).json() as {
       jobs: JobRow[];
       nextCursor?: string;
     };
@@ -117,10 +119,15 @@ describe("admin API", () => {
     expect(first.nextCursor).toBeDefined();
 
     const second = (
-      await router.adminCall("GET", `/jobs?limit=2&cursor=${first.nextCursor}`)
+      await router.adminCall("GET", `/jobs?state=queued&limit=2&cursor=${first.nextCursor}`)
     ).json() as { jobs: JobRow[]; nextCursor?: string };
     expect(second.jobs.map((job) => job.issueKey)).toEqual(["KAN-1"]);
     expect(second.nextCursor).toBeUndefined();
+    const all = (await router.adminCall("GET", "/jobs?limit=10")).json() as { jobs: JobRow[] };
+    expect(all.jobs.map((job) => job.kind).sort()).toEqual([
+      ...Array(3).fill("implementation"),
+      ...Array(3).fill("planning"),
+    ]);
 
     const running = (await router.adminCall("GET", "/jobs?state=running")).json() as {
       jobs: JobRow[];
@@ -140,7 +147,8 @@ describe("admin API", () => {
     };
     expect(detail.job.state).toBe("running");
     expect(detail.attempts.map((a) => a.id)).toEqual([envelope.attemptId]);
-    expect(detail.reportSteps.length).toBeGreaterThan(0);
+    // An approved implementation already sits in progress: its start moves nothing (ADR 0044).
+    expect(detail.reportSteps).toEqual([]);
     expect((await router.adminCall("GET", "/jobs/nope")).statusCode).toBe(404);
   });
 
@@ -152,14 +160,17 @@ describe("admin API", () => {
     expect(response.statusCode).toBe(200);
     expect((response.json() as JobRow).state).toBe("cancelled");
 
-    const report = await router.reconcile();
+    await router.reconcile();
     expect(getOpenJobForIssue(router.db, "KAN-1")).toBeUndefined();
-    expect(report.held).toEqual([expect.objectContaining({ issueKey: "KAN-1", target: "human" })]);
+    // The cancel withdrew the approval of the plan it ran under.
+    expect(listPlanDeployments(router.db, "KAN-1")[0]).toMatchObject({
+      state: "revoked",
+      reason: "withdrawn (admin:tester)",
+    });
 
-    // A human re-requesting the issue in Jira is a new approval, which runs again.
-    await router.jira.transitionIssue("KAN-1", "Revoke");
-    await router.jira.transitionIssue("KAN-1", "Request");
-    expect((await router.jira.getIssue("KAN-1")).statusName).toBe(REQUEST_STATUS);
+    // A human approving the plan again in Jira is a new approval, which runs again.
+    await router.reapprove("KAN-1");
+    expect((await router.jira.getIssue("KAN-1")).statusName).toBe(IN_PROGRESS_STATUS);
     await router.reconcile();
     expect(getOpenJobForIssue(router.db, "KAN-1")?.state).toBe("queued");
   });
@@ -243,27 +254,6 @@ describe("admin API", () => {
     expect((response.json() as { jobsCreated: string[] }).jobsCreated).toHaveLength(1);
   });
 
-  it("lists implementation requests held for an incomplete scope contract (ADR 0034)", async () => {
-    router.jira.seedIssue({
-      key: "KAN-9",
-      summary: "x",
-      statusName: REQUEST_STATUS,
-      assigneeAccountId: "user-1",
-      description: "h2. Required Capabilities\n* programming",
-    });
-    await router.adminCall("POST", "/reconcile");
-
-    const response = await router.adminCall("GET", "/holds/readiness");
-    expect(response.statusCode).toBe(200);
-    expect((response.json() as { holds: unknown[] }).holds).toEqual([
-      expect.objectContaining({
-        issueKey: "KAN-9",
-        missing: ["acceptance", "verification"],
-        noticeStatus: "pending",
-      }),
-    ]);
-  });
-
   it("backup writes a consistent copy of the database", async () => {
     await router.seedQueuedJob("KAN-1");
     const response = await router.adminCall("POST", "/backup");
@@ -290,7 +280,8 @@ describe("admin API", () => {
       recoveryRequired: number;
       reports: { blocked: number };
     };
-    expect(status.jobs).toEqual({ queued: 1 });
+    // The issue's plan ran before its implementation was queued.
+    expect(status.jobs).toEqual({ queued: 1, succeeded: 1 });
     expect(status.queue.waitMs).toBeGreaterThanOrEqual(4_000);
     expect(status.workers).toEqual({ declared: 2, paired: 1, online: 1 });
     expect(status.recoveryRequired).toBe(0);

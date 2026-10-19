@@ -414,44 +414,35 @@ sqlite3 data/router.sqlite3 "SELECT j.issue_key, j.kind, j.state, j.attempt_coun
   `jev.timeoutMs`를 늘린다.
 - 한 job은 최대 3번까지만 시도한다. 다시 평가하려면 그 job의 `job_assessments` 행을 지운다.
 
-## 24. 구현 요청 준비 보류 (ADR 0034)
+## 24. 실행 계약은 승인된 계획이다 (ADR 0047)
 
-구현 요청(요청 상태의 이슈)은 설명에 `h2. Acceptance Criteria`와 `h2. Verification` 절이 있고 각각
-목록 항목이 한 줄 이상 있어야 시작한다. 계획 요청은 이 조건 없이 시작한다.
+구현이 따르는 완료 조건·검증·범위·허용 경로·capability·의존성은 사람이 승인한 계획에서 온다. Router는 이슈
+설명의 `h2. Acceptance Criteria` 같은 절을 읽지 않는다. 설명에 렌더링된 계획 블록과 하위 이슈 설명은 사람이 읽는
+용도다. 거기를 고쳐도 계약은 바뀌지 않고, 입력이 바뀐 것으로만 본다(§25).
 
-증상: 이슈가 요청 상태에 머물고 job이 생기지 않는다. 댓글에 "GGJIRA has not started this implementation
-request"가 한 번 달린다. Router 로그의 reconcile `held`에 `not ready to implement: missing …`가 보인다.
+증상: 계획 job이 "Plan has no definition of done: …"로 실패한다(`ggjira-failed`, 요청 상태 유지).
+실행 단위(하위 작업, 없으면 부모)에 완료 조건이나 검증이 비어 있어 Router가 계획을 적용하지 않은 것이다. 이 계획은
+승인할 수 없다. 설명에 기대 결과와 확인 방법을 적어 다시 `AI 계획 요청`으로 옮긴다.
 
-확인:
+계약 확인: 구현 job이 받는 계약은 이슈의 승인 snapshot(`approvals.input_snapshot`의 `requirements`)이고,
+승인된 계획의 해당 단위와 같다. 계획 원문은 계획 결과(`results.payload`의 `plan`)에 있다.
 
 ```
-curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://<router>/api/v1/admin/holds/readiness
+sqlite3 data/router.sqlite3 "SELECT json_extract(input_snapshot, '$.requirements') FROM approvals
+  WHERE issue_key = 'KAN-1';"
+sqlite3 data/router.sqlite3 "SELECT id, plan_version, outcome, task_ids FROM plan_reviews
+  WHERE issue_key = 'KAN-1' ORDER BY created_at DESC;"
 ```
 
-`noticeStatus`가 `pending`이면 안내 댓글을 아직 못 쓴 것(Jira 응답 없음·429, 다음 패스에서 재시도)이고,
-`failed`면 Jira가 명확히 거부한 것이다(`noticeError`). `failed`여도 보류는 그대로 유효하다. 댓글만 빠졌다.
-
-보완(기존 티켓 포함):
-
-1. 설명에 아래 절을 추가한다. 위키 마크업 목록(`* 항목`)으로 쓴다.
-   ```
-   h2. Acceptance Criteria
-   * 저장 버튼 문구가 "저장"으로 보인다
-   h2. Verification
-   * npm run test -- settings
-   * 설정 화면을 열어 버튼 문구를 확인한다
-   ```
-   필요하면 `In Scope`, `Out of Scope`, `Affected Areas`(참고용), `Allowed Paths`(glob, 적으면 워커가
-   그 밖의 변경을 막는다, ADR 0036)도 같은 방식으로 쓴다.
-2. 이슈를 옮길 필요는 없다. 다음 조회(웹훅 또는 보완 조회)에서 보류가 풀리고 job이 생긴다. 설명을 고쳤지만
-   여전히 빠진 절이 있으면 새 안내 댓글이 한 번 더 달린다.
+예전 "구현 요청 준비 보류" 안내 댓글(`[GGJIRA:HOLD:<id>]`)은 더 이상 달리지 않는다. migration 15가 열려 있던
+보류와 그 주의 항목을 닫았다. Jira에 남은 예전 댓글은 지우지 않아도 된다.
 
 대표 사례 수동 검토(프롬프트 품질은 자동 테스트가 입증하지 않는다):
 
-- 문구 변경 요청을 계획 상태로 보낸다. 하위 이슈 없이 부모 설명의 계획 블록에 Acceptance Criteria와
+- 문구 변경 요청을 계획 요청으로 보낸다. 하위 이슈 없이 부모 설명의 계획 블록에 Acceptance Criteria와
   Verification이 채워지는지 본다.
-- API와 UI 변경이 섞인 요청을 계획 상태로 보낸다. 독립 결과별로 하위 이슈가 나뉘거나 결정 요청이 오는지,
-  각 하위 이슈에 계약 절이 모두 있는지 본다.
+- API와 UI 변경이 섞인 요청을 계획 요청으로 보낸다. 독립 결과별로 하위 이슈가 나뉘거나 결정 요청이 오는지,
+  각 하위 이슈에 계약이 모두 있는지 본다.
 
 ## 25. 입력 해시 v2와 재승인 (ADR 0035)
 
@@ -460,12 +451,12 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://<router>/api/v1/admin/ho
 - 큐·임대 중인 job은 취소되고, 실행 중인 job은 다음 heartbeat에서 멈춤 지시를 받는다. commit·validate·push
   직전 권한 확인(`authorize`)도 거부된다.
 - 같은 승인으로는 다시 실행하지 않는다. reconcile `held`에 `the request was edited after it was approved`가
-  보인다. 고친 내용을 실행하려면 이슈를 요청 상태 밖으로 옮겼다가 다시 요청 상태로 옮긴다.
+  보인다. 같은 계획으로 다시 실행하려면 `계획 검토 대기 → 작업 중`으로 다시 옮기고, 바뀐 요청을 반영하려면
+  `AI 계획 요청`으로 옮겨 다시 계획한다.
 - 댓글·라벨 추가, 줄 끝 공백이나 줄바꿈 형식만 바뀐 편집은 변경이 아니다.
 
-업그레이드 전환: migration이나 수동 작업이 필요 없다. 업그레이드 전에 만든 job(해시에 `v2:` 접두가 없음)은
-닫힐 때까지 이전 규칙으로 비교한다. 관리자 `jobs retry`만 그 job을 새 해시로 다시 찍고, audit의
-`job.retried`에 `inputHash.from/to`를 남긴다.
+v1 해시(`v2:` 접두가 없음)로 찍힌 job은 입력이 바뀐 것으로 보고 취소·보류한다(ADR 0047). 관리자 `jobs retry`는
+job을 새 해시로 다시 찍고, audit의 `job.retried`에 `inputHash.from/to`를 남긴다.
 
 ```
 sqlite3 data/router.sqlite3 "SELECT id, issue_key, state, substr(input_hash,1,3) AS v FROM jobs
@@ -475,8 +466,8 @@ sqlite3 data/router.sqlite3 "SELECT * FROM admin_holds WHERE actor = 'router:inp
 
 ## 26. 구현 결정 요청과 범위 이탈 (ADR 0036)
 
-증상: 구현 이슈가 `needsDecisionStatus`(없으면 검토 상태)로 옮겨지고 "GGJIRA stopped this implementation
-before commit and push" 댓글이 달린다. PR은 열리지 않고 브랜치도 push되지 않는다.
+증상: 구현 이슈가 작업 중에 머물고 "GGJIRA stopped this implementation before commit and push" 댓글이
+달린다. PR은 열리지 않고 브랜치도 push되지 않는다.
 
 댓글의 원인 줄로 종류를 구별한다.
 
@@ -493,12 +484,13 @@ before commit and push" 댓글이 달린다. PR은 열리지 않고 브랜치도
 - 정리: 댓글의 `cleanup` 줄을 따른다(`git worktree remove --force <path> && git branch -D <branch>`).
   또는 기간이 지난 뒤 `ggjira worker worktrees prune`.
 
-재개(재승인):
+재개(다시 계획):
 
-1. 결정을 이슈 설명의 계약에 반영한다. 예: 범위를 넓히면 `In Scope`와 `Allowed Paths`에 추가하고,
-   하지 않기로 하면 `Out of Scope`에 적는다. 필요하면 Acceptance Criteria·Verification도 고친다.
-2. 이슈를 요청 상태로 옮긴다. 새 승인 id와 새 입력 해시로 새 job·attempt가 만들어진다. 이전 attempt의 늦은
-   결과는 적용되지 않는다. 댓글만 달고 옮기지 않으면 아무 일도 일어나지 않는다. 댓글은 승인 입력이 아니다.
+1. 결정을 이슈 설명에 적는다. 예: 범위를 넓히기로 했으면 무엇을 어디까지 바꿔도 되는지, 하지 않기로 했으면
+   무엇을 빼는지 쓴다. 계약은 승인된 계획에서 오므로(§24) 설명만 고쳐서는 실행 범위가 바뀌지 않는다.
+2. 이슈를 `AI 계획 요청`으로 옮긴다. 새 계획을 검토하고 `계획 검토 대기 → 작업 중`으로 승인하면 새 승인 id로
+   새 job·attempt가 만들어진다. 이전 attempt의 늦은 결과는 적용되지 않는다. 댓글만 달고 옮기지 않으면 아무 일도
+   일어나지 않는다. 댓글은 승인 입력이 아니다.
 
 실패로 보고되는 경우(커밋 없음, patch 보존, `ggjira-failed` 라벨):
 
@@ -517,12 +509,12 @@ Router와 워커는 `protocolVersion`이 같아야 한다. 다르면 426 `protoc
    Router가 받아야 한다. 업그레이드 뒤에는 이전 형식 결과를 다시 보낼 수 없다.
 3. 워커를 멈추고, Router를 업그레이드·재시작한 뒤, 워커를 업그레이드·시작한다.
 4. 업그레이드 뒤 워커 로그에 `spooled result does not match this protocol version`이 보이면 2단계에서
-   빠진 결과다. 파일은 spool에 그대로 있다. 내용을 확인한 뒤 해당 이슈를 다시 요청 상태로 옮긴다.
+   빠진 결과다. 파일은 spool에 그대로 있다. 내용을 확인한 뒤 해당 이슈를 다시 승인하거나 다시 계획한다.
 
 ## 27. 라벨 기반 AI 참여 제거 (ADR 0046)
 
 라벨 참여 모드, opt-in 토글/API/CLI, label 이관 명령은 제거됐다. 상태 기반 위임은 §34를 따른다.
-기존 label 설정은 유효하지 않으며 자동으로 legacy/delegation으로 변환하지 않는다. 구 버전에서 배정을 중지하고 활성 작업과 미완료 보고를 정리한 뒤 상태·승인 이력을 대조해 전환한다.
+기존 label 설정은 유효하지 않으며 자동으로 다른 설정으로 바꾸지 않는다. §34의 "이전 설정에서 전환"을 따른다.
 
 ## 28. Jira 웹훅 진단 (ADR 0038)
 
@@ -630,14 +622,13 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 - 실제 Jira·LLM CLI를 쓰는 실행이다. 시험만 하려면 `GGJIRA_ROUTER_CONFIG`·`GGJIRA_WORKER_CONFIG`를 없는 경로로
   두고 띄우면 셋업 모드와 워커 첫 실행 질문까지만 간다.
 
-## 34. delegation 모드: 상태로 위임하고 계획부터 (ADR 0044)
+## 34. 상태로 위임하고 계획부터 (ADR 0044, 0047)
 
-delegation 모드 workspace에서는 라벨이 아무것도 시작하거나 멈추지 않는다. 사람이 보드에서 이슈를 옮겨
-위임하고, 승인하고, 철회한다. 설정 예:
+라벨은 아무것도 시작하거나 멈추지 않는다. 사람이 보드에서 이슈를 옮겨 위임하고, 승인하고, 철회한다.
+워크플로는 하나다. 설정 예:
 
 ```json
 "workflow": {
-  "mode": "delegation",
   "requestStatus": "AI 계획 요청",
   "planReviewStatus": "계획 검토 대기",
   "inProgressStatus": "작업 중",
@@ -646,7 +637,8 @@ delegation 모드 workspace에서는 라벨이 아무것도 시작하거나 멈�
 }
 ```
 
-다섯 상태는 서로 달라야 한다. `planningStatus`·`needsDecisionStatus`는 쓰지 않는다. 폐기된 opt-in 설정도 오류로 거절한다.
+상태는 서로 달라야 한다. `doneStatus`만 선택이다. 예전 `mode`·`planningStatus`·`needsDecisionStatus`·
+`optInLabel`은 `Unrecognized key` 오류로 거절한다.
 `AI 계획 요청`·`계획 검토 대기`는 Jira 워크플로에 새로 만든다. 보드에서는 각 상태를 다른 컬럼에 매핑해 서로 다른
 단계가 한 컬럼에 숨지 않게 한다. `ggjira router check`와 웹 UI 설정의 "Router가 하는 전이"는 다음 전이를 확인한다.
 
@@ -659,7 +651,7 @@ delegation 모드 workspace에서는 라벨이 아무것도 시작하거나 멈�
 
 ### 흐름
 
-1. **위임**: 담당자가 있는 이슈를 `AI 계획 요청`으로 옮긴다. 계약 유무와 상관없이 계획 job 하나가 생긴다.
+1. **위임**: 담당자가 있는 이슈를 `AI 계획 요청`으로 옮긴다. 설명 형식과 상관없이 계획 job 하나가 생긴다.
    계획하는 동안 이슈는 요청 상태에 있고 "GGJIRA started planning" 댓글이 달린다.
 2. **계획 검토**: 계획이 끝나면 `계획 검토 대기`로 옮겨지고 "Plan applied." 댓글이 달린다. 하위 작업으로 나눈
    계획이면 하위 이슈도 이때 생기지만, 승인 전에는 아무것도 실행되지 않는다. 결정이 필요한 계획도 여기에 온다.
@@ -669,6 +661,8 @@ delegation 모드 workspace에서는 라벨이 아무것도 시작하거나 멈�
    - 하위 작업이 있는 계획: Router가 하위 작업을 작업 중으로 옮긴다. 각각 구현되고, 의존성은 앞 작업이 `완료`이거나
      검토 화면에서 확인됐을 때 풀린다(결과 검토 도착만으로는 안 풀린다). 모두 완료되면 부모가 `결과 검토`로 간다.
 4. **결과 검토·완료**: ADR 0040~0043·0027 그대로다(검토 화면, PR 머지 → 완료).
+
+실행은 승인된 계획의 계약을 따른다(§24). 설명을 고쳐 범위를 바꾸려면 다시 계획한다.
 
 할 일 → 작업 중처럼 사람이 자기 이슈를 옮기는 것은 AI와 무관하다. 계획 없이 작업 중에 있는 이슈는 가져가지 않는다.
 사람이 만든 하위 이슈(`ggjira.plan-task` 없음)도 가져가지 않는다.
@@ -696,26 +690,23 @@ delegation 모드 workspace에서는 라벨이 아무것도 시작하거나 멈�
   - Jira의 계획 버전이 다름: 다시 요청한다.
 - 이슈 화면은 읽기 전용이다. `GET /api/v1/admin/issues/:key`로 조회하며 라벨 변경 토글과 opt-in 엔드포인트는 없다.
 
-### legacy → delegation 전환 (기존 label 설치는 먼저 §27 확인)
+### 이전 설정(legacy·label)에서 전환
+
+이전 버전의 `requestStatus`(구현 요청)·`planningStatus`·`needsDecisionStatus`·`mode`·`optInLabel` 설정은 이
+버전에서 읽히지 않는다. Router가 설정 오류로 시작하지 않으므로, 업그레이드 전에 이전 버전에서 정리한다. 이관 도구는
+없다(ADR 0047).
 
 1. 기준선: `ggjira router backup`과 설정·비밀 파일 사본을 저장소 밖에 둔다.
-2. Jira 워크플로에 `AI 계획 요청`·`계획 검토 대기` 상태와 전이를 추가한다(아직 아무도 쓰지 않는다).
-3. 제안(Jira를 바꾸지 않음):
-   `ggjira router migrate-delegation plan --workspace <id> --request "AI 계획 요청" --plan-review "계획 검토 대기" --out plan.json`
-   - `keep`: 사람의 작업이거나 그대로 둘 결과.
-   - `manual`: 이전 요청·계획 요청 상태에서 AI를 기다리던 이슈. 전환 뒤 아무것도 집어 가지 않는다. 맡길 이슈는
-     전환 뒤 사람이 `AI 계획 요청`으로 옮긴다. 라벨만 있는 이슈를 일괄로 옮기지 않는다.
-   - `blocked`: 아직 실행될 수 있는 job이 있다. 끝나기를 기다리거나 `jobs cancel`.
-   이전 규칙이 쓰던 상태를 요청·계획 검토 상태로 고르면 `409 not_migratable`이다.
-4. 기준선 기록: `ggjira router migrate-delegation apply plan.json`. 실행될 수 있는 job이 남아 있으면 거절된다.
-   Jira에는 아무것도 쓰지 않는다. 전환 시점에 이미 요청 상태에 있는 이슈의 요청과, 계획 검토 → 작업 중 이력을
-   `admin_holds`(actor `migration:delegation`)에 남긴다. 그래서 전환이나 과거 이력이 새 요청·승인이 되지 않는다.
-   `audit_log`에는 `migration.delegation.*`로 남는다. 다시 실행해도 같은 기준선이다.
-5. 설정 전환: 설정 파일의 workflow.mode를 delegation으로 바꾸고, 같은 요청·계획 검토 상태를 지정해 적용한다. 새 Workspace는 웹 UI에서 delegation으로 생성되며 방식 선택 메뉴는 없다.
-   실행될 수 있는 job이 있으면 409 `workspace_busy`다.
-6. 관찰: 첫 reconcile의 `held`에 "requested before the switch to delegation"이 나오면 기준선이 동작한 것이다.
-   그 이슈를 맡기려면 요청 상태 밖으로 옮겼다가 다시 넣는다.
-7. 되돌리기: 설정을 이전 모드로 되돌린다(같은 `workspace_busy` 규칙). migration 14의 테이블과 기준선 hold는
-   남지만 다른 모드에서는 읽지 않는다. 승인된 계획의 부모가 작업 중에 그대로 있으면, 나중에 다시 delegation으로
-   돌아왔을 때 그 승인으로 하위 작업이 이어진다. 이어지지 않게 하려면 되돌리기 전에 부모를 작업 중 밖으로 옮겨
-   철회한다.
+2. 배정 정지: `ggjira router status`로 leased/running job이 없을 때까지 기다리거나 `ggjira router jobs cancel`.
+   각 워커에서 `ggjira worker results retry`로 spool을 비운다. `ggjira router reports list`가 비어 있게 한다.
+3. Jira 워크플로에 `AI 계획 요청`·`계획 검토 대기` 상태와 §34 위쪽의 전이를 추가한다. 새 요청 상태는 새로 만든
+   상태를 쓴다. 이전 요청·계획 요청 상태를 그대로 쓰면, 업그레이드 뒤 첫 조회에서 그 상태에 있던 이슈가 모두 계획
+   요청이 된다.
+4. 이전 요청·계획 요청 상태에 남은 이슈는 업그레이드 뒤 아무도 가져가지 않는다. 맡길 이슈는 업그레이드 뒤 사람이
+   `AI 계획 요청`으로 옮긴다. 일괄로 옮기지 않는다. 작업 중·검토 중인 이슈는 그대로 둔다. 예전 구현 실행에는 승인된
+   계획이 없으므로, 작업 중에 있어도 다시 실행되지 않는다.
+5. 설정 파일의 workflow를 §34 위쪽 예처럼 바꾼다. `mode`·`planningStatus`·`needsDecisionStatus`·`optInLabel`을
+   지우고 `planReviewStatus`를 넣는다.
+6. 새 버전으로 업그레이드하고 Router를 시작한다. `ggjira router check --issue <KEY>`로 상태와 전이를 확인한다.
+7. 되돌리기: 이전 버전, 이전 설정, 1단계의 백업을 함께 복원한다. 이 버전이 남긴 계획·승인 기록(migration 14·15)은
+   이전 버전이 읽지 않는다.

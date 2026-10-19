@@ -32,9 +32,10 @@ describe("loadRouterConfig", () => {
           repositoryId: "repo-1",
           projectKeys: ["KAN"],
           workflow: {
-            requestStatus: "AI 작업 요청",
+            requestStatus: "AI 계획 요청",
+            planReviewStatus: "계획 검토 대기",
             inProgressStatus: "작업 중",
-            reviewStatus: "AI 작업 완료",
+            reviewStatus: "결과 검토",
           },
         },
       ],
@@ -52,8 +53,8 @@ describe("loadRouterConfig", () => {
   });
 
   it("normalizes workflow status names to NFC", () => {
-    // "AI 작업 요청" written with a decomposed (NFD) Hangul syllable should read back NFC.
-    const nfd = "AI 작업 요청".normalize("NFD");
+    // "AI 계획 요청" written with a decomposed (NFD) Hangul syllable should read back NFC.
+    const nfd = "AI 계획 요청".normalize("NFD");
     const config = loadRouterConfig(
       writeConfig(
         validConfig({
@@ -62,13 +63,18 @@ describe("loadRouterConfig", () => {
               id: "ws-1",
               repositoryId: "repo-1",
               projectKeys: ["KAN"],
-              workflow: { requestStatus: nfd, inProgressStatus: "작업 중", reviewStatus: "완료" },
+              workflow: {
+                requestStatus: nfd,
+                planReviewStatus: "계획 검토 대기",
+                inProgressStatus: "작업 중",
+                reviewStatus: "완료",
+              },
             },
           ],
         }),
       ),
     );
-    expect(config.workspaces[0]?.workflow.requestStatus).toBe("AI 작업 요청".normalize("NFC"));
+    expect(config.workspaces[0]?.workflow.requestStatus).toBe("AI 계획 요청".normalize("NFC"));
   });
 
   it("reads a workspace's high-risk review paths and refuses a rule without paths (ADR 0040)", () => {
@@ -107,6 +113,7 @@ describe("loadRouterConfig", () => {
                 projectKeys: ["KAN"],
                 workflow: {
                   requestStatus: "요청",
+                  planReviewStatus: "계획 검토",
                   inProgressStatus: "진행",
                   reviewStatus: "검토",
                 },
@@ -115,7 +122,7 @@ describe("loadRouterConfig", () => {
           }),
         ),
       ),
-    ).toThrow(RouterConfigError);
+    ).toThrow(/does-not-exist.*is not listed in repositories/);
   });
 
   it("rejects two workspaces claiming the same Jira project key", () => {
@@ -129,62 +136,29 @@ describe("loadRouterConfig", () => {
                 id: "ws-1",
                 repositoryId: "repo-1",
                 projectKeys: ["KAN"],
-                workflow: { requestStatus: "요청", inProgressStatus: "진행", reviewStatus: "검토" },
+                workflow: {
+                  requestStatus: "요청",
+                  planReviewStatus: "계획 검토",
+                  inProgressStatus: "진행",
+                  reviewStatus: "검토",
+                },
               },
               {
                 id: "ws-2",
                 repositoryId: "repo-2",
                 projectKeys: ["KAN"],
-                workflow: { requestStatus: "요청", inProgressStatus: "진행", reviewStatus: "검토" },
-              },
-            ],
-          }),
-        ),
-      ),
-    ).toThrow(RouterConfigError);
-  });
-
-  it("rejects requestStatus === inProgressStatus (every new issue would be picked up instantly)", () => {
-    expect(() =>
-      loadRouterConfig(
-        writeConfig(
-          validConfig({
-            workspaces: [
-              {
-                id: "ws-1",
-                repositoryId: "repo-1",
-                projectKeys: ["KAN"],
-                workflow: { requestStatus: "요청", inProgressStatus: "요청", reviewStatus: "검토" },
-              },
-            ],
-          }),
-        ),
-      ),
-    ).toThrow(RouterConfigError);
-  });
-
-  it("rejects planningStatus === requestStatus", () => {
-    expect(() =>
-      loadRouterConfig(
-        writeConfig(
-          validConfig({
-            workspaces: [
-              {
-                id: "ws-1",
-                repositoryId: "repo-1",
-                projectKeys: ["KAN"],
                 workflow: {
                   requestStatus: "요청",
+                  planReviewStatus: "계획 검토",
                   inProgressStatus: "진행",
                   reviewStatus: "검토",
-                  planningStatus: "요청",
                 },
               },
             ],
           }),
         ),
       ),
-    ).toThrow(RouterConfigError);
+    ).toThrow(/KAN.*is already claimed by workspace/);
   });
 
   it("rejects a worker policy referencing an unknown repositoryId", () => {
@@ -239,8 +213,8 @@ describe("loadRouterConfig", () => {
     expect(() => loadRouterConfig(configPath)).toThrow(RouterConfigError);
   });
 
-  describe("delegation mode (ADR 0044)", () => {
-    function delegationConfig(workflow: Record<string, unknown>) {
+  describe("workflow (ADR 0044, ADR 0047)", () => {
+    function workflowConfig(workflow: Record<string, unknown>) {
       return validConfig({
         workspaces: [
           {
@@ -248,7 +222,6 @@ describe("loadRouterConfig", () => {
             repositoryId: "repo-1",
             projectKeys: ["KAN"],
             workflow: {
-              mode: "delegation",
               requestStatus: "AI 계획 요청",
               planReviewStatus: "계획 검토 대기",
               inProgressStatus: "작업 중",
@@ -261,26 +234,27 @@ describe("loadRouterConfig", () => {
       });
     }
 
-    it("accepts a delegation workspace", () => {
-      const config = loadRouterConfig(writeConfig(delegationConfig({})));
-      expect(config.workspaces[0]?.workflow).toMatchObject({
-        mode: "delegation",
+    it("accepts the five statuses", () => {
+      const config = loadRouterConfig(writeConfig(workflowConfig({})));
+      expect(config.workspaces[0]?.workflow).toEqual({
+        requestStatus: "AI 계획 요청",
         planReviewStatus: "계획 검토 대기",
+        inProgressStatus: "작업 중",
+        reviewStatus: "결과 검토",
+        doneStatus: "완료",
       });
     });
 
     it.each([
-      [
-        "without a plan-review status",
-        { planReviewStatus: undefined },
-        /planReviewStatus is required/,
-      ],
+      ["without a plan-review status", { planReviewStatus: undefined }, /planReviewStatus/],
+      ["with a removed mode", { mode: "legacy" }, /Unrecognized key/],
       ["with an opt-in label", { optInLabel: "ai-enabled" }, /Unrecognized key/],
-      ["with a planning status", { planningStatus: "Plan" }, /planningStatus is not used/],
+      ["with a planning status", { planningStatus: "Plan" }, /Unrecognized key/],
+      ["with a decision status", { needsDecisionStatus: "Decide" }, /Unrecognized key/],
       [
-        "with a decision status",
-        { needsDecisionStatus: "Decide" },
-        /needsDecisionStatus is not used/,
+        "whose request is its in-progress status",
+        { inProgressStatus: "AI 계획 요청" },
+        /inProgressStatus must differ from workflow.requestStatus/,
       ],
       [
         "whose plan review is the result review",
@@ -292,14 +266,8 @@ describe("loadRouterConfig", () => {
         { doneStatus: "AI 계획 요청" },
         /doneStatus must differ from workflow.requestStatus/,
       ],
-    ])("rejects a delegation workspace %s", (_name, workflow, message) => {
-      expect(() => loadRouterConfig(writeConfig(delegationConfig(workflow)))).toThrow(message);
-    });
-
-    it("rejects a plan-review status outside delegation mode", () => {
-      expect(() =>
-        loadRouterConfig(writeConfig(delegationConfig({ mode: "legacy", planReviewStatus: "X" }))),
-      ).toThrow(/planReviewStatus is only used in/);
+    ])("rejects a workflow %s", (_name, workflow, message) => {
+      expect(() => loadRouterConfig(writeConfig(workflowConfig(workflow)))).toThrow(message);
     });
   });
 

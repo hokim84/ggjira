@@ -7,8 +7,6 @@ import {
   AdminCreatePairingCodeRequestSchema,
   AdminReviewJudgmentRequestSchema,
   AdminJiraProjectRequestSchema,
-  AdminDelegationMigrationApplyRequestSchema,
-  AdminDelegationMigrationPlanRequestSchema,
   AdminWorkflowCheckRequestSchema,
   AdminSecretRequestSchema,
   type ApiErrorResponse,
@@ -405,20 +403,8 @@ function registerAdminRoutes(
       );
 
       scope.get("/reports", async () => ({ batches: admin.listBlockedReports() }));
-      scope.get("/holds/readiness", async () => ({ holds: admin.listReadinessHolds() }));
       scope.post<IdParams>("/reports/:id/retry", async (request) =>
         admin.retryReportBatch(request.params.id, actorOf(request)),
-      );
-
-      scope.post("/migrations/delegation/plan", async (request) => {
-        const body = parseBody(AdminDelegationMigrationPlanRequestSchema, request.body);
-        return admin.planDelegationMigration(body.workspaceId, body.target);
-      });
-      scope.post("/migrations/delegation/apply", async (request) =>
-        admin.applyDelegationMigration(
-          parseBody(AdminDelegationMigrationApplyRequestSchema, request.body),
-          actorOf(request),
-        ),
       );
 
       scope.get<{ Params: { key: string } }>("/issues/:key", async (request) =>
@@ -480,17 +466,10 @@ function registerAdminRoutes(
       scope.post("/jira/workflow-check", async (request) => {
         const body = parseBody(AdminWorkflowCheckRequestSchema, request.body);
         return admin.checkWorkflow(body.projectKey, {
-          ...(body.workflow.mode ? { mode: body.workflow.mode } : {}),
-          ...(body.workflow.planReviewStatus
-            ? { planReviewStatus: body.workflow.planReviewStatus }
-            : {}),
           requestStatus: body.workflow.requestStatus,
+          planReviewStatus: body.workflow.planReviewStatus,
           inProgressStatus: body.workflow.inProgressStatus,
           reviewStatus: body.workflow.reviewStatus,
-          ...(body.workflow.planningStatus ? { planningStatus: body.workflow.planningStatus } : {}),
-          ...(body.workflow.needsDecisionStatus
-            ? { needsDecisionStatus: body.workflow.needsDecisionStatus }
-            : {}),
           ...(body.workflow.doneStatus ? { doneStatus: body.workflow.doneStatus } : {}),
         });
       });

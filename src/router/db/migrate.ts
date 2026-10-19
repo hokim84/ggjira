@@ -6,6 +6,7 @@ import {
   GITHUB_STATEMENTS,
   JOB_ASSESSMENT_STATEMENTS,
   PLAN_DELEGATION_STATEMENTS,
+  READINESS_HOLD_CLOSE_STATEMENTS,
   PROVIDER_USAGE_STATEMENTS,
   PULL_REQUEST_CHECK_STATEMENTS,
   READINESS_HOLD_STATEMENTS,
@@ -127,6 +128,13 @@ const MIGRATIONS: readonly Migration[] = [
     description: "plan_reviews, plan_deployments (status delegation, plan approval; ADR 0044)",
     up(db) {
       for (const statement of PLAN_DELEGATION_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 15,
+    description: "close open readiness holds and their attention items (ADR 0047)",
+    up(db) {
+      for (const statement of READINESS_HOLD_CLOSE_STATEMENTS) db.exec(statement);
     },
   },
 ];

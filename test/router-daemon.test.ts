@@ -212,7 +212,7 @@ describe("RouterDaemon", () => {
     expect([...a.jobsCreated, ...b.jobsCreated]).toHaveLength(1);
   });
 
-  it("runs the report journal: a started job moves the issue to in-progress", async () => {
+  it("runs the report journal: a started plan says so on the issue, which stays requested", async () => {
     seedRequest("KAN-1");
     await daemon.syncTick();
     const pairing = daemon.workerService.createPairingCode("worker-1");
@@ -244,10 +244,13 @@ describe("RouterDaemon", () => {
     });
 
     await daemon.reportTick();
-    expect((await jira.getIssue("KAN-1")).statusName).toBe(IN_PROGRESS_STATUS);
+    expect(jira.comments.map((comment) => comment.body)).toEqual([
+      expect.stringContaining("GGJIRA started planning this request"),
+    ]);
+    expect((await jira.getIssue("KAN-1")).statusName).toBe(REQUEST_STATUS);
     expect(listJobReportSteps(db, envelope.jobId).every((s) => s.status === "applied")).toBe(true);
 
-    // The Router's own move is not a withdrawal of approval.
+    // The Router's own report is not a withdrawal of approval.
     await daemon.verifyTick();
     expect(getJob(db, envelope.jobId)?.state).toBe("running");
 
@@ -400,7 +403,7 @@ describe("backup and restore", () => {
       expect(getOpenJobForIssue(restored, "KAN-2")?.state).toBe("queued");
       // The unreported start step is still journaled and gets applied.
       await revived.reportTick();
-      expect((await jira.getIssue("KAN-1")).statusName).toBe(IN_PROGRESS_STATUS);
+      expect(jira.comments.map((comment) => comment.key)).toEqual(["KAN-1"]);
       expect(getJob(restored, envelope.jobId)?.state).toBe("recovery_required");
     } finally {
       await revived.stop();

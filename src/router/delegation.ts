@@ -39,7 +39,7 @@ import type { SchedulerDeps, SchedulerReport } from "./scheduler.js";
 import { isDependencyResolved } from "./workflow-mode.js";
 
 /**
- * The `delegation`-mode half of the reconcile pass (ADR 0044). A plan Router applied waits for a
+ * The plan half of the reconcile pass (ADR 0044). A plan Router applied waits for a
  * human in the plan-review status; the human's move from there to the shared in-progress status
  * approves it. This pass finds those moves for the plans Router knows about — never by scanning
  * the in-progress status, where people work too — records each approval once before anything runs
@@ -94,7 +94,7 @@ async function reconcilePlan(
 
   const ids = await computeDelegationApprovalIds(deps.jira, issue, {
     requestStatus,
-    planReviewStatus: planReviewStatus ?? "",
+    planReviewStatus,
     inProgressStatus,
   });
   for (const live of listLivePlanDeployments(db, issue.key)) {
@@ -365,9 +365,9 @@ async function findPlanTasks(
 }
 
 /**
- * Whether the deployment an implementation job of a `delegation`-mode workspace runs under is
- * still active — Router's own record, so the Worker API checks it without asking Jira. A task
- * run's approval names the plan approval of its parent (`taskApprovalId`).
+ * Whether the deployment an implementation job runs under is still active — Router's own
+ * record, so the Worker API checks it without asking Jira. A task run's approval names the plan
+ * approval of its parent (`taskApprovalId`).
  */
 export function planDeploymentAuthorizes(
   db: Database.Database,

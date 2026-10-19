@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { type Plan, PlanSchema } from "../../pm/plan.js";
+import { getResult } from "./results.js";
 
 /** Plans a human reviews and the approvals that deploy them (migration 14, ADR 0044). */
 
@@ -258,4 +260,23 @@ export function activatePlanDeployment(
   db.prepare(
     "UPDATE plan_deployments SET state = 'active', task_ids = ?, reason = NULL, updated_at = ? WHERE id = ?",
   ).run(JSON.stringify(taskIds), now, id);
+}
+
+/** The issue's applied plans, newest first. */
+export function listPlannedReviews(db: Database.Database, issueKey: string): PlanReviewRow[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM plan_reviews WHERE issue_key = ? AND outcome = 'planned'
+       ORDER BY created_at DESC, rowid DESC`,
+    )
+    .all(issueKey) as Record<string, unknown>[];
+  return rows.map(toPlanReview);
+}
+
+/** The plan a planning result returned: the contract its approved runs are held to (ADR 0047). */
+export function getReviewedPlan(db: Database.Database, reviewId: string): Plan | undefined {
+  const result = getResult(db, reviewId);
+  if (!result) return undefined;
+  const parsed = PlanSchema.safeParse((JSON.parse(result.payload) as { plan?: unknown }).plan);
+  return parsed.success ? parsed.data : undefined;
 }

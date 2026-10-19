@@ -17,7 +17,13 @@ import { type FetchLike, RouterClient } from "../src/worker-runtime/client.js";
 import type { WorkerConfig } from "../src/worker-runtime/config.js";
 import { WorkerRunner } from "../src/worker-runtime/runner.js";
 import { ResultSpool } from "../src/worker-runtime/spool.js";
-import { issueDescription, PLANNING_STATUS, workerPolicy } from "./helpers/router-fixtures.js";
+import {
+  issueDescription,
+  REQUEST_STATUS,
+  TODO_STATUS,
+  WORKFLOW_TRANSITIONS,
+  workerPolicy,
+} from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 
 /** Reports plan usage both ways a real provider does: on demand and during a run. */
@@ -87,6 +93,13 @@ describe("WorkerRunner against a live Router", () => {
     await router.close();
     rmSync(workDir, { recursive: true, force: true });
   });
+
+  /** The newest stored result: the run under test, not the plan an approved issue was seeded with. */
+  function latestResult(): { payload: string } {
+    return router.db.prepare("SELECT payload FROM results ORDER BY rowid DESC LIMIT 1").get() as {
+      payload: string;
+    };
+  }
 
   function workerConfig(): WorkerConfig {
     return {
@@ -245,7 +258,7 @@ describe("WorkerRunner against a live Router", () => {
     const polling = runner.pollOnce();
     await provider.started;
     const jobId = getOpenJobForIssue(router.db, "KAN-1")?.id ?? "";
-    await router.jira.transitionIssue("KAN-1", "Revoke");
+    await router.jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
     await router.reconcile();
     await polling;
 
@@ -270,7 +283,7 @@ describe("WorkerRunner against a live Router", () => {
     await polling;
 
     expect(provider.aborted).toBe(true);
-    const result = router.db.prepare("SELECT payload FROM results").get() as { payload: string };
+    const result = latestResult();
     expect(JSON.parse(result.payload)).toMatchObject({
       status: "cancelled",
       summary: expect.stringContaining("lost contact"),
@@ -278,14 +291,17 @@ describe("WorkerRunner against a live Router", () => {
   });
 
   it("runs a planning envelope read-only and returns the plan as structured data", async () => {
-    router.jira.seedIssue({
-      key: "KAN-7",
-      summary: "Plan it",
-      statusName: PLANNING_STATUS,
-      projectKey: "KAN",
-      assigneeAccountId: "user-1",
-      description: issueDescription(),
-    });
+    router.jira.seedIssue(
+      {
+        key: "KAN-7",
+        summary: "Plan it",
+        statusName: REQUEST_STATUS,
+        projectKey: "KAN",
+        assigneeAccountId: "user-1",
+        description: issueDescription(),
+      },
+      WORKFLOW_TRANSITIONS,
+    );
     await router.reconcile();
     const plan = {
       needsDecision: false,
@@ -295,7 +311,8 @@ describe("WorkerRunner against a live Router", () => {
           taskId: "api",
           title: "Build the API",
           description: "Endpoints",
-          acceptance: [],
+          acceptance: ["GET /items answers 200"],
+          verification: ["npm run test -- api"],
           requiredCapabilities: ["programming"],
         },
       ],
@@ -318,7 +335,7 @@ describe("WorkerRunner against a live Router", () => {
     expect(job.state).toBe("succeeded");
     expect(requests[0]?.readOnly).toBe(true);
     expect(requests[0]?.prompt).toContain("KAN-7");
-    const result = router.db.prepare("SELECT payload FROM results").get() as { payload: string };
+    const result = latestResult();
     expect(JSON.parse(result.payload)).toMatchObject({
       status: "planned",
       plan: { summary: "Two steps", tasks: [{ taskId: "api" }] },
@@ -343,7 +360,7 @@ describe("WorkerRunner against a live Router", () => {
 
     await runner.pollOnce();
 
-    const result = router.db.prepare("SELECT payload FROM results").get() as { payload: string };
+    const result = latestResult();
     expect(JSON.parse(result.payload)).toMatchObject({
       status: "failed",
       failureReason: 'unknown providerId "gpt-9"',

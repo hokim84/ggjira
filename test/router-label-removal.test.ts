@@ -6,17 +6,19 @@ import { computeApprovalId } from "../src/router/approval.js";
 import { buildWorkspaceJql, findWorkspaceCandidates } from "../src/router/candidates.js";
 import { RouterConfigSchema } from "../src/router/config.js";
 import {
-  DELEGATION_REQUEST_STATUS,
-  DELEGATION_TRANSITIONS,
+  IN_PROGRESS_STATUS,
+  REQUEST_STATUS,
+  REVIEW_STATUS,
+  WORKFLOW_TRANSITIONS,
   buildRouterConfig,
-  delegationWorkspace,
+  testWorkspace,
 } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 
 it("rejects removed label mode and stale opt-in keys in every supported mode", () => {
   for (const workflow of [
-    { ...delegationWorkspace.workflow, mode: "label", optInLabel: "ai-enabled" },
-    { ...delegationWorkspace.workflow, optInLabel: "ai-enabled" },
+    { ...testWorkspace.workflow, mode: "label", optInLabel: "ai-enabled" },
+    { ...testWorkspace.workflow, optInLabel: "ai-enabled" },
     {
       requestStatus: "Request",
       inProgressStatus: "Progress",
@@ -27,9 +29,7 @@ it("rejects removed label mode and stale opt-in keys in every supported mode", (
     expect(
       RouterConfigSchema.safeParse(
         buildRouterConfig({
-          workspaces: [
-            { ...delegationWorkspace, workflow: workflow as typeof delegationWorkspace.workflow },
-          ],
+          workspaces: [{ ...testWorkspace, workflow: workflow as typeof testWorkspace.workflow }],
         }),
       ).success,
     ).toBe(false);
@@ -38,28 +38,20 @@ it("rejects removed label mode and stale opt-in keys in every supported mode", (
 it("ignores arbitrary labels for candidates and request approval IDs", async () => {
   const jira = new FakeJiraGateway();
   jira.seedIssue(
-    { key: "KAN-1", statusName: DELEGATION_REQUEST_STATUS, projectKey: "KAN" },
-    DELEGATION_TRANSITIONS,
+    { key: "KAN-1", statusName: REQUEST_STATUS, projectKey: "KAN" },
+    WORKFLOW_TRANSITIONS,
   );
   jira.seedIssue(
     { key: "KAN-2", statusName: "할 일", projectKey: "KAN", labels: ["ai-enabled"] },
-    DELEGATION_TRANSITIONS,
+    WORKFLOW_TRANSITIONS,
   );
-  expect(buildWorkspaceJql(delegationWorkspace)).not.toContain("labels");
-  const before = await computeApprovalId(
-    jira,
-    await jira.getIssue("KAN-1"),
-    DELEGATION_REQUEST_STATUS,
-  );
+  expect(buildWorkspaceJql(testWorkspace)).not.toContain("labels");
+  const before = await computeApprovalId(jira, await jira.getIssue("KAN-1"), REQUEST_STATUS);
   await jira.addLabel("KAN-1", "ai-enabled");
   await jira.removeLabel("KAN-1", "ai-enabled");
   await jira.addLabel("KAN-1", "other");
-  expect(
-    await computeApprovalId(jira, await jira.getIssue("KAN-1"), DELEGATION_REQUEST_STATUS),
-  ).toBe(before);
-  expect((await findWorkspaceCandidates(jira, delegationWorkspace)).map((i) => i.key)).toEqual([
-    "KAN-1",
-  ]);
+  expect(await computeApprovalId(jira, await jira.getIssue("KAN-1"), REQUEST_STATUS)).toBe(before);
+  expect((await findWorkspaceCandidates(jira, testWorkspace)).map((i) => i.key)).toEqual(["KAN-1"]);
 });
 
 it("keeps read-only issue diagnostics and removes opt-in and label migration endpoints", async () => {
@@ -70,7 +62,7 @@ it("keeps read-only issue diagnostics and removes opt-in and label migration end
     expect(view.statusCode).toBe(200);
     expect(view.json()).not.toHaveProperty("optInLabel");
     expect(view.json()).not.toHaveProperty("optedIn");
-    expect(view.json().blockers).toContainEqual(expect.objectContaining({ code: "not_requested" }));
+    expect(view.json().delegation).toMatchObject({ stage: "not_delegated" });
     expect(
       (await router.app.inject({ method: "GET", url: "/api/v1/admin/issues/KAN-1" })).statusCode,
     ).toBe(401);
@@ -108,9 +100,9 @@ it("never replays a pending transition authorized under the removed label rules"
         {
           kind: "transition",
           params: {
-            to: "작업 중",
-            from: ["AI 작업 요청"],
-            approvalStatus: "AI 작업 요청",
+            to: REVIEW_STATUS,
+            from: [IN_PROGRESS_STATUS],
+            approvalStatus: IN_PROGRESS_STATUS,
             approvalId: job.approvalId,
             optInLabel: "ai-enabled",
           },
@@ -121,7 +113,7 @@ it("never replays a pending transition authorized under the removed label rules"
     expect(listBatchReportSteps(router.db, "obsolete-label-transition")[0]).toMatchObject({
       status: "skipped",
     });
-    expect((await router.jira.getIssue("KAN-1")).statusName).toBe("AI 작업 요청");
+    expect((await router.jira.getIssue("KAN-1")).statusName).toBe(IN_PROGRESS_STATUS);
   } finally {
     await router.close();
   }

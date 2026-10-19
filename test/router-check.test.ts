@@ -3,10 +3,12 @@ import { FakeJiraGateway } from "../src/jira/fake.js";
 import { runRouterCheck } from "../src/router/check.js";
 import {
   buildRouterConfig,
+  DONE_STATUS,
   IN_PROGRESS_STATUS,
-  PLANNING_STATUS,
+  PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
   REVIEW_STATUS,
+  TODO_STATUS,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
@@ -25,7 +27,14 @@ function jiraWithProject(statuses: string[]): FakeJiraGateway {
   return jira;
 }
 
-const ALL_STATUSES = ["To Do", REQUEST_STATUS, PLANNING_STATUS, IN_PROGRESS_STATUS, REVIEW_STATUS];
+const ALL_STATUSES = [
+  TODO_STATUS,
+  REQUEST_STATUS,
+  PLAN_REVIEW_STATUS,
+  IN_PROGRESS_STATUS,
+  REVIEW_STATUS,
+  DONE_STATUS,
+];
 
 describe("router check", () => {
   const config = buildRouterConfig({ workers: [workerPolicy()] });
@@ -54,14 +63,14 @@ describe("router check", () => {
   it("checks the transitions Router needs on a sample issue", async () => {
     const jira = jiraWithProject(ALL_STATUSES);
     jira.seedIssue({ key: "KAN-1", statusName: REQUEST_STATUS, projectKey: "KAN" }, [
-      { id: "1", name: "Start", toStatusName: IN_PROGRESS_STATUS },
+      { id: "1", name: "Planned", toStatusName: PLAN_REVIEW_STATUS },
     ]);
     jira.seedIssue({ key: "KAN-2", statusName: IN_PROGRESS_STATUS, projectKey: "KAN" }, []);
 
     const ok = await runRouterCheck(jira, config, { issueKey: "KAN-1" });
     expect(ok).toContainEqual({
       level: "ok",
-      message: expect.stringContaining(`→ "${IN_PROGRESS_STATUS}"`),
+      message: expect.stringContaining(`→ "${PLAN_REVIEW_STATUS}"`),
     });
 
     const missing = await runRouterCheck(jira, config, { issueKey: "KAN-2" });

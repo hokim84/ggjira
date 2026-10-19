@@ -9,25 +9,16 @@ const workspace: WorkspaceConfig = {
   projectKeys: ["KAN"],
   workflow: {
     requestStatus: "AI 작업 요청",
+    planReviewStatus: "계획 검토 대기",
     inProgressStatus: "작업 중",
     reviewStatus: "AI 작업 완료",
   },
 };
 
 describe("buildWorkspaceJql", () => {
-  it("queries only requestStatus when no planningStatus is configured", () => {
+  it("queries only the request status, never the shared in-progress status", () => {
     expect(buildWorkspaceJql(workspace)).toBe(
       'project in ("KAN") AND status in ("AI 작업 요청") ORDER BY created ASC',
-    );
-  });
-
-  it("includes planningStatus when configured", () => {
-    const withPlanning: WorkspaceConfig = {
-      ...workspace,
-      workflow: { ...workspace.workflow, planningStatus: "AI 계획 요청" },
-    };
-    expect(buildWorkspaceJql(withPlanning)).toBe(
-      'project in ("KAN") AND status in ("AI 작업 요청", "AI 계획 요청") ORDER BY created ASC',
     );
   });
 

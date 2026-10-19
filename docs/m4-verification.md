@@ -153,3 +153,21 @@ legacy·label 모드와 M4의 기록·검토·보호 기능은 그대로다(labe
   `router-issue-view`(보류 이유, 다른 프로젝트·잘못된 키 거절, Jira 404·403·429 구분),
   `router-prompts`(프롬프트 조회).
 - PR #3의 CI(`408a0e5`)에서 `npm run check`가 통과했다.
+
+## 9. 워크플로 하나와 승인된 계획을 실행 계약으로 (ADR 0047)
+
+legacy 모드와 이관 도구를 지우고, 구현 계약을 이슈 설명의 절 대신 승인된 계획에서 읽게 했다.
+
+- 설정: `mode`·`planningStatus`·`needsDecisionStatus`는 `Unrecognized key`로 거절하고, `planReviewStatus`는
+  필수다(`router-config`).
+- 계약: 하위 작업·부모의 계약을 계획에서 만들고, 완료 정의가 빈 실행 단위를 찾는다(`pm-plan-render`). 그런 계획은
+  적용하지 않는다(`router-reporting` "refuses a plan whose executable unit has no definition of done").
+  envelope의 계약은 승인된 계획과 같다(`router-reporting`, `router-worker-api`).
+- 승인·배정: 요청 상태만 후보이고, 사람이 작업 중으로 옮긴 이슈는 가져가지 않는다. 승인된 계획의 구현만 배정한다.
+  v1 해시로 찍힌 job은 취소된다(`router-scheduler`).
+- readiness 보류 제거: migration 15가 열린 보류와 주의 항목을 닫는다(`router-db`).
+- 실행 기록: 계획 뒤 첫 구현은 `initial`, 같은 계획의 재승인은 `rework`다(`router-execution-records`).
+- 통합: Router 하나와 Fake 워커 둘이 실제 HTTP로 요청 → 계획 → 사람 승인 → 구현 → 결과 검토를 끝까지
+  돈다(`router-integration`).
+- `npx vitest run`(이 Windows 머신): 580개 중 565 통과, 15 실패. 15개는 기존과 같은 `spawn EFTYPE`이다.
+  `typecheck`·`lint`·`format:check`는 통과.

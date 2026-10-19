@@ -21,27 +21,6 @@ const JOB_STATE_LABELS = {
 /** A failed run keeps its approval's slot (ADR 0021): it does not run again by itself. */
 const STOPPED_JOB_STATES = new Set(["failed", "timed_out", "recovery_required"]);
 
-/** Why it would not start and what a person does about it (codes from src/router/issue-view.ts). */
-const BLOCKERS = {
-  not_requested: [
-    (view) => `요청 상태("${view.requestStatus}")가 아닙니다`,
-    "AI에게 (다시) 맡길 때만 Jira에서 요청 상태로 옮기세요. 검토·완료 중이면 그대로 두면 됩니다.",
-  ],
-  no_assignee: [() => "담당자가 없습니다", "Jira에서 담당자(인간 책임자)를 지정하세요."],
-  inputs_changed: [
-    () => "승인 뒤 요청 내용이 바뀌었습니다",
-    "내용을 확인하고 AI 참여를 껐다 켜서 새로 승인하세요.",
-  ],
-  approval_held: [
-    () => "관리자가 이 승인의 작업을 취소했습니다",
-    "다시 맡기려면 AI 참여를 껐다 켜세요(새 승인).",
-  ],
-  readiness_hold: [
-    () => "구현 요청에 계약 절이 빠져 있습니다",
-    "설명에 빠진 절을 채우면 다음 조회 때 시작됩니다.",
-  ],
-};
-
 export const REVIEW_CLASS = {
   immediate: ["개별 검토 필요", "badge-bad"],
   standard: ["일반 검토 대기", "badge-ok"],
@@ -72,7 +51,6 @@ const ATTENTION_KINDS = {
   decision_needed: "결정 필요",
   scope_deviation: "범위 이탈",
   review_required: "개별 검토 필요",
-  readiness_hold: "계약 보완 필요",
   report_blocked: "Jira 반영 막힘",
   plan_approval_refused: "계획 승인 아님",
 };
@@ -315,54 +293,24 @@ export function renderIssues(root, ctx) {
   const historyEl = h("div");
   const messageEl = h("div");
 
-  function blockerList(view) {
-    if (view.openJob) {
-      const kind = JOB_KIND_LABELS[view.openJob.kind] || view.openJob.kind;
-      const state = JOB_STATE_LABELS[view.openJob.state] || view.openJob.state;
-      const stopped = STOPPED_JOB_STATES.has(view.openJob.state);
-      return h(
-        "p",
-        {},
-        h(
-          "span",
-          { class: `badge ${stopped ? "badge-bad" : "badge-ok"}` },
-          `${kind} 작업 ${state}`,
-        ),
-        " ",
-        h("code", {}, view.openJob.jobId),
-        stopped
-          ? h(
-              "div",
-              { class: "hint" },
-              view.mode === "delegation"
-                ? "같은 승인으로는 다시 돌지 않습니다. 같은 계획으로 다시: 계획 검토 → 진행. 범위를 바꾸려면 요청 상태로 옮겨 다시 계획하세요."
-                : "같은 승인으로는 다시 돌지 않습니다. 원인을 고친 뒤 요청 상태로 다시 옮기세요.",
-            )
-          : null,
-      );
-    }
-    if (!view.blockers.length) {
-      return h(
-        "p",
-        {},
-        h("span", { class: "badge badge-ok" }, "시작 가능"),
-        " 다음 조회(최대 1분) 때 Router가 시작합니다.",
-      );
-    }
+  function openJob(view) {
+    if (!view.openJob) return h("span", { class: "muted" }, "열린 작업 없음");
+    const kind = JOB_KIND_LABELS[view.openJob.kind] || view.openJob.kind;
+    const state = JOB_STATE_LABELS[view.openJob.state] || view.openJob.state;
+    const stopped = STOPPED_JOB_STATES.has(view.openJob.state);
     return h(
-      "ul",
-      { class: "blockers" },
-      view.blockers.map((blocker) =>
-        h(
-          "li",
-          { title: blocker.message },
-          h("strong", {}, BLOCKERS[blocker.code]?.[0](view) ?? blocker.message),
-          blocker.missing?.length
-            ? h("span", {}, " — 빠진 절: ", blocker.missing.join(", "))
-            : null,
-          BLOCKERS[blocker.code] ? h("div", { class: "hint" }, BLOCKERS[blocker.code][1]) : null,
-        ),
-      ),
+      "p",
+      {},
+      h("span", { class: `badge ${stopped ? "badge-bad" : "badge-ok"}` }, `${kind} 작업 ${state}`),
+      " ",
+      h("code", {}, view.openJob.jobId),
+      stopped
+        ? h(
+            "div",
+            { class: "hint" },
+            "같은 승인으로는 다시 돌지 않습니다. 같은 계획으로 다시: 계획 검토 → 진행. 범위를 바꾸려면 요청 상태로 옮겨 다시 계획하세요.",
+          )
+        : null,
     );
   }
 
@@ -384,13 +332,6 @@ export function renderIssues(root, ctx) {
               h("strong", {}, view.issueKey),
             ),
             h("span", { class: "muted" }, ` · ${view.summary}`),
-          ),
-          h(
-            "div",
-            { class: "worker-badges" },
-            view.mode === "delegation"
-              ? h("span", { class: "badge badge-muted" }, "상태 위임")
-              : h("span", { class: "badge badge-muted" }, "legacy"),
           ),
         ),
         h(
@@ -417,9 +358,9 @@ export function renderIssues(root, ctx) {
           ),
           h("dt", {}, "workspace"),
           h("dd", {}, view.workspaceId),
-          ...(view.delegation ? delegationRows(view) : []),
+          ...delegationRows(view),
           h("dt", {}, "Router"),
-          h("dd", {}, view.delegation && !view.openJob ? "열린 작업 없음" : blockerList(view)),
+          h("dd", {}, openJob(view)),
         ),
       ),
     );

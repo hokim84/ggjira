@@ -14,13 +14,8 @@ import { reconcileCandidates } from "../../src/router/scheduler.js";
 import { handlePullRequestClosed } from "../../src/router/github.js";
 import { buildRouterServer } from "../../src/router/server.js";
 import { WorkerService, type WorkerServiceDeps } from "../../src/router/worker-service.js";
-import {
-  buildRouterConfig,
-  issueDescription,
-  ManualClock,
-  REQUEST_STATUS,
-  workerPolicy,
-} from "./router-fixtures.js";
+import { type ApprovedIssueOptions, reapprove, seedApprovedIssue } from "./approved-plan.js";
+import { buildRouterConfig, ManualClock, workerPolicy } from "./router-fixtures.js";
 
 export const ADMIN_TOKEN = "admin-token-at-least-16-chars";
 export const WEBHOOK_SECRET = "webhook-secret-at-least-16-chars";
@@ -137,22 +132,27 @@ export class RouterHarness {
     rmSync(this.dataDir, { recursive: true, force: true });
   }
 
-  /** Seeds an approved issue and runs a reconcile so it has a `queued` job. */
-  async seedQueuedJob(key = "KAN-1"): Promise<void> {
-    this.jira.seedIssue(
-      {
-        key,
-        summary: `Implement ${key}`,
-        statusName: REQUEST_STATUS,
-        projectKey: "KAN",
-        assigneeAccountId: "user-1",
-        description: issueDescription(),
-      },
-      [
-        { id: "revoke", name: "Revoke", toStatusName: "To Do" },
-        { id: "request", name: "Request", toStatusName: REQUEST_STATUS },
-      ],
+  /** `seedApprovedIssue` (test/helpers/approved-plan.ts) on this Router's DB, Jira and clock. */
+  seedApprovedIssue(key = "KAN-1", opts: ApprovedIssueOptions = {}): Promise<void> {
+    const workspace = this.config.workspaces[0];
+    if (!workspace) throw new Error("seedApprovedIssue needs a workspace");
+    return seedApprovedIssue(
+      { db: this.db, jira: this.jira, workspace, now: this.clock.now() },
+      key,
+      opts,
     );
+  }
+
+  /** A human approves the issue's plan again: a new approval of the same plan (ADR 0044). */
+  reapprove(key = "KAN-1"): Promise<void> {
+    const workspace = this.config.workspaces[0];
+    if (!workspace) throw new Error("reapprove needs a workspace");
+    return reapprove(this.jira, workspace, key);
+  }
+
+  /** Seeds an approved issue and runs a reconcile so it has a `queued` implementation job. */
+  async seedQueuedJob(key = "KAN-1"): Promise<void> {
+    await this.seedApprovedIssue(key);
     await this.reconcile();
   }
 

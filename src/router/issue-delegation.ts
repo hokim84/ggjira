@@ -15,7 +15,7 @@ import {
 import { parseTaskApprovalId } from "./report-journal.js";
 
 /**
- * Where a `delegation`-mode issue stands (ADR 0044), for the admin API and the web UI. Read-only:
+ * Where an issue stands (ADR 0044), for the admin API and the web UI. Read-only:
  * delegating, approving and withdrawing are status moves in Jira; the UI only says which is next.
  *
  * - `not_delegated`: nothing of AI's — a person's issue, wherever it is.
@@ -123,7 +123,7 @@ export async function readIssueDelegation(
     stage,
     statuses: {
       request: requestStatus,
-      planReview: planReviewStatus ?? "",
+      planReview: planReviewStatus,
       inProgress: inProgressStatus,
       review: reviewStatus,
       done: doneStatus ?? null,

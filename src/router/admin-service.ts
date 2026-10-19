@@ -50,7 +50,6 @@ import {
 import { createPairingCode } from "./db/pairing.js";
 import { listProviderUsage } from "./db/provider-usage.js";
 import { type PullRequestRow, listRecentPullRequests } from "./db/pull-requests.js";
-import { type ReadinessHoldRow, listOpenReadinessHolds } from "./db/readiness-holds.js";
 import {
   type ReportStepRow,
   listBlockedReportSteps,
@@ -68,14 +67,6 @@ import {
   listReviewTargets,
 } from "./db/review-targets.js";
 import { getWorker, listWorkers, revokeWorker, setWorkerEnabled } from "./db/workers.js";
-import {
-  DelegationMigrationError,
-  type DelegationMigrationPlan,
-  type DelegationMigrationResult,
-  type DelegationMigrationTarget,
-  applyDelegationMigration,
-  planDelegationMigration,
-} from "./delegation-migration.js";
 import type { PullRequestPollReport } from "./github.js";
 import {
   type IssueView,
@@ -260,21 +251,16 @@ const MAX_PAGE_SIZE = 200;
 /** The workflow fields that decide which issues are approved work (see
  *  `assertApprovalRulesUnchangedUnderLiveJobs`). */
 function approvalRules(workspace: WorkspaceConfig) {
-  const { mode, requestStatus, planningStatus, inProgressStatus } = workspace.workflow;
+  // ADR 0044: the plan-review status is where approvals come from, and a run's own moves to
+  // review/done are re-checked against it.
+  const { requestStatus, planReviewStatus, inProgressStatus, reviewStatus, doneStatus } =
+    workspace.workflow;
   return {
-    mode: mode ?? "legacy",
     requestStatus,
-    planningStatus: planningStatus ?? null,
+    planReviewStatus,
     inProgressStatus,
-    // ADR 0044: in `delegation` mode the plan-review status is where approvals come from, and a
-    // run's own moves to review/done are re-checked against it.
-    ...(mode === "delegation"
-      ? {
-          planReviewStatus: workspace.workflow.planReviewStatus ?? null,
-          reviewStatus: workspace.workflow.reviewStatus,
-          doneStatus: workspace.workflow.doneStatus ?? null,
-        }
-      : {}),
+    reviewStatus,
+    doneStatus: doneStatus ?? null,
   };
 }
 
@@ -519,11 +505,6 @@ export class AdminService {
     return [...batches.values()];
   }
 
-  /** Implementation requests Router is holding for an incomplete scope contract (ADR 0034). */
-  listReadinessHolds(): ReadinessHoldRow[] {
-    return listOpenReadinessHolds(this.db);
-  }
-
   retryReportBatch(batchId: string, actor: string): { requeued: number } {
     return { requeued: retryReportBatch(this.db, { batchId, actor, now: this.now() }) };
   }
@@ -619,8 +600,7 @@ export class AdminService {
   }
 
   /**
-   * A workspace's approval rules (mode and the statuses that request and run
-   * work) cannot change under a job that may still run — the job was approved under the old rules
+   * A workspace's approval rules (the statuses that request, approve and run work) cannot change under a job that may still run — the job was approved under the old rules
    * and would be revoked, or kept, by the new ones. Drain or cancel those jobs first. Failed and
    * timed-out jobs run nothing; the next pass closes them under the new rules.
    */
@@ -730,60 +710,6 @@ export class AdminService {
     return { ...this.readConfig(), appliedWithout };
   }
 
-  /** Read-only: what moving the workspace onto status delegation means per issue (ADR 0044). */
-  async planDelegationMigration(
-    workspaceId: string,
-    target: DelegationMigrationTarget,
-  ): Promise<DelegationMigrationPlan> {
-    const workspace = this.requireWorkspace(workspaceId);
-    try {
-      return await planDelegationMigration({
-        db: this.db,
-        jira: this.deps.jira,
-        workspace,
-        target,
-        now: this.now(),
-      });
-    } catch (error) {
-      if (error instanceof DelegationMigrationError) {
-        throw new AdminError(409, "not_migratable", error.message);
-      }
-      throw new AdminError(502, "jira_error", (error as Error).message);
-    }
-  }
-
-  /** Records the pre-switch baseline (held events); every issue's outcome goes to the audit log. */
-  async applyDelegationMigration(
-    plan: DelegationMigrationPlan,
-    actor: string,
-  ): Promise<{ results: DelegationMigrationResult[] }> {
-    const workspace = this.requireWorkspace(plan.workspaceId);
-    try {
-      const results = await applyDelegationMigration({
-        db: this.db,
-        jira: this.deps.jira,
-        workspace,
-        plan,
-        now: () => this.now(),
-        onResult: (result) => {
-          appendAudit(this.db, {
-            at: this.now(),
-            actor,
-            action: `migration.delegation.${result.outcome}`,
-            subject: result.issueKey,
-            detail: { workspaceId: workspace.id, detail: result.detail },
-          });
-        },
-      });
-      return { results };
-    } catch (error) {
-      if (error instanceof DelegationMigrationError) {
-        throw new AdminError(409, "not_migratable", error.message);
-      }
-      throw new AdminError(502, "jira_error", (error as Error).message);
-    }
-  }
-
   // --- review targets (M4-11, ADR 0040) ------------------------------------------------------
 
   /** Every result pinned for review on the issue (newest first) and the human acts Router saw
@@ -869,12 +795,6 @@ export class AdminService {
 
   private issueViewDeps() {
     return { db: this.db, jira: this.deps.jira, config: this.config };
-  }
-
-  private requireWorkspace(workspaceId: string): WorkspaceConfig {
-    const workspace = this.config.workspaces.find((entry) => entry.id === workspaceId);
-    if (!workspace) throw new AdminError(404, "unknown_workspace", `no workspace "${workspaceId}"`);
-    return workspace;
   }
 
   /** Statuses and subtask issue types of a Jira project, for the web UI pickers (read-only). */

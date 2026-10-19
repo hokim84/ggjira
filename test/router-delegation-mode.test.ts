@@ -10,14 +10,14 @@ import { handlePullRequestClosed } from "../src/router/github.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import { verifyActiveJobs } from "../src/router/scheduler.js";
 import {
-  DELEGATION_DONE_STATUS,
-  DELEGATION_REQUEST_STATUS,
-  DELEGATION_TODO_STATUS,
-  DELEGATION_TRANSITIONS,
+  DONE_STATUS,
+  REQUEST_STATUS,
+  TODO_STATUS,
+  WORKFLOW_TRANSITIONS,
   PLAN_REVIEW_STATUS,
-  RESULT_REVIEW_STATUS,
-  SHARED_IN_PROGRESS_STATUS,
-  delegationWorkspace,
+  REVIEW_STATUS,
+  IN_PROGRESS_STATUS,
+  testWorkspace,
   issueDescription,
 } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
@@ -88,8 +88,8 @@ describe("delegation mode (ADR 0044)", () => {
   let requestCounter = 0;
 
   beforeEach(async () => {
-    router = new RouterHarness({ config: { workspaces: [delegationWorkspace] } });
-    router.jira.setCreatedIssueTransitions(DELEGATION_TRANSITIONS);
+    router = new RouterHarness({ config: { workspaces: [testWorkspace] } });
+    router.jira.setCreatedIssueTransitions(WORKFLOW_TRANSITIONS);
     worker = await router.connectWorker("worker-1");
   });
 
@@ -105,7 +105,7 @@ describe("delegation mode (ADR 0044)", () => {
       {
         key,
         summary: `Work on ${key}`,
-        statusName: opts.status ?? DELEGATION_TODO_STATUS,
+        statusName: opts.status ?? TODO_STATUS,
         projectKey: "KAN",
         assigneeAccountId: "user-1",
         description: opts.description ?? issueDescription(),
@@ -114,7 +114,7 @@ describe("delegation mode (ADR 0044)", () => {
           ? { parentKey: opts.parentKey, isSubtask: true, issueTypeName: "Sub-task" }
           : {}),
       },
-      DELEGATION_TRANSITIONS,
+      WORKFLOW_TRANSITIONS,
     );
   }
 
@@ -185,7 +185,7 @@ describe("delegation mode (ADR 0044)", () => {
 
   /** Requests a plan for `key`, has the worker return `plan`, and applies it to Jira. */
   async function planned(key: string, plan: Record<string, unknown>): Promise<JobEnvelope> {
-    await move(key, DELEGATION_REQUEST_STATUS);
+    await move(key, REQUEST_STATUS);
     const envelope = await startJob();
     expect(envelope.kind).toBe("planning");
     await submit(envelope, {
@@ -199,7 +199,7 @@ describe("delegation mode (ADR 0044)", () => {
 
   /** The human approves the plan: from plan review to the shared in-progress status. */
   async function approve(key: string): Promise<void> {
-    await move(key, SHARED_IN_PROGRESS_STATUS);
+    await move(key, IN_PROGRESS_STATUS);
     await router.reconcile();
     expect((await process()).blocked).toEqual([]);
   }
@@ -211,7 +211,7 @@ describe("delegation mode (ADR 0044)", () => {
     expect((await router.reconcile()).jobsCreated).toEqual([]);
 
     // A running plan is not withdrawn by a label either.
-    await move("KAN-1", DELEGATION_REQUEST_STATUS);
+    await move("KAN-1", REQUEST_STATUS);
     const envelope = await startJob();
     await router.jira.removeLabel("KAN-1", "ai-enabled");
     await router.jira.addLabel("KAN-1", "other");
@@ -222,7 +222,7 @@ describe("delegation mode (ADR 0044)", () => {
 
   it("makes one planning job for a request, even with a full contract, and never retries a failed plan (2)", async () => {
     seed("KAN-1");
-    await move("KAN-1", DELEGATION_REQUEST_STATUS);
+    await move("KAN-1", REQUEST_STATUS);
     await router.reconcile();
     await router.reconcile();
     expect(jobsFor("KAN-1").map((job) => job.kind)).toEqual(["planning"]);
@@ -230,30 +230,28 @@ describe("delegation mode (ADR 0044)", () => {
     const envelope = await nextAndStart();
     await process();
     // Planning happens in the request status: the start moves nothing, the card says it runs.
-    expect(await status("KAN-1")).toBe(DELEGATION_REQUEST_STATUS);
+    expect(await status("KAN-1")).toBe(REQUEST_STATUS);
     expect(commentsOn("KAN-1").join("\n")).toContain("GGJIRA started planning this request");
 
     await submit(envelope, { status: "failed", summary: "broke", failureReason: "no idea" });
     await process();
     const issue = await router.jira.getIssue("KAN-1");
-    expect(issue.statusName).toBe(DELEGATION_REQUEST_STATUS);
+    expect(issue.statusName).toBe(REQUEST_STATUS);
     expect(issue.labels).toEqual(["ggjira-failed"]);
-    expect(commentsOn("KAN-1").join("\n")).toContain(
-      `the issue stays in "${DELEGATION_REQUEST_STATUS}"`,
-    );
+    expect(commentsOn("KAN-1").join("\n")).toContain(`the issue stays in "${REQUEST_STATUS}"`);
     expect((await router.reconcile()).jobsCreated).toEqual([]);
     expect((await router.reconcile()).jobsCreated).toEqual([]);
   });
 
   it("treats request → withdraw → request as two delegations, and replays as one (3)", async () => {
     seed("KAN-1");
-    await move("KAN-1", DELEGATION_REQUEST_STATUS);
+    await move("KAN-1", REQUEST_STATUS);
     await router.reconcile();
     const first = getOpenJobForIssue(router.db, "KAN-1");
 
-    await move("KAN-1", DELEGATION_TODO_STATUS);
+    await move("KAN-1", TODO_STATUS);
     expect((await router.reconcile()).jobsCancelled).toEqual([first?.id]);
-    await move("KAN-1", DELEGATION_REQUEST_STATUS);
+    await move("KAN-1", REQUEST_STATUS);
     await router.reconcile();
     const second = getOpenJobForIssue(router.db, "KAN-1");
     expect(second?.id).not.toBe(first?.id);
@@ -269,14 +267,14 @@ describe("delegation mode (ADR 0044)", () => {
   it("plans a delegated subtask, but not into subtasks of its own", async () => {
     seed("KAN-1");
     seed("KAN-2", { parentKey: "KAN-1" });
-    await move("KAN-2", DELEGATION_REQUEST_STATUS);
+    await move("KAN-2", REQUEST_STATUS);
     const envelope = await startJob();
     expect(envelope.kind).toBe("planning");
     await submit(envelope, { status: "planned", summary: SPLIT_PLAN.summary, plan: SPLIT_PLAN });
     await process();
 
     expect(router.jira.createdIssues).toEqual([]);
-    expect(await status("KAN-2")).toBe(DELEGATION_REQUEST_STATUS);
+    expect(await status("KAN-2")).toBe(REQUEST_STATUS);
     expect(commentsOn("KAN-2").join("\n")).toContain("is a subtask");
     expect(getLatestPlanReview(router.db, "KAN-2")?.outcome).toBe("not_applied");
   });
@@ -289,7 +287,7 @@ describe("delegation mode (ADR 0044)", () => {
     const comments = commentsOn("KAN-1").join("\n");
     expect(comments).toContain("Plan applied.");
     expect(comments).toContain(
-      `To approve this plan: move the issue from "${PLAN_REVIEW_STATUS}" to "${SHARED_IN_PROGRESS_STATUS}".`,
+      `To approve this plan: move the issue from "${PLAN_REVIEW_STATUS}" to "${IN_PROGRESS_STATUS}".`,
     );
     expect(getLatestPlanReview(router.db, "KAN-1")).toMatchObject({
       outcome: "planned",
@@ -302,10 +300,10 @@ describe("delegation mode (ADR 0044)", () => {
 
   it("runs nothing when a human moves their own issue from To Do to In Progress (5)", async () => {
     seed("KAN-1");
-    await move("KAN-1", SHARED_IN_PROGRESS_STATUS);
+    await move("KAN-1", IN_PROGRESS_STATUS);
     // Even from plan review: without a plan Router applied, it is just a person's move.
     seed("KAN-2", { status: PLAN_REVIEW_STATUS });
-    await move("KAN-2", SHARED_IN_PROGRESS_STATUS);
+    await move("KAN-2", IN_PROGRESS_STATUS);
 
     const report = await router.reconcile();
     expect(report.jobsCreated).toEqual([]);
@@ -327,13 +325,13 @@ describe("delegation mode (ADR 0044)", () => {
 
     const envelope = await nextAndStart();
     await process();
-    expect(await status("KAN-1")).toBe(SHARED_IN_PROGRESS_STATUS);
+    expect(await status("KAN-1")).toBe(IN_PROGRESS_STATUS);
     // A valid AI run in the shared status is not withdrawn by being there (9).
     expect((await verify()).jobsCancelRequested).toEqual([]);
 
     await submit(envelope);
     expect((await process()).blocked).toEqual([]);
-    expect(await status("KAN-1")).toBe(RESULT_REVIEW_STATUS);
+    expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     await router.reconcile();
     // Router's own move to review completes the plan; it is not a withdrawal (10).
     expect(listPlanDeployments(router.db, "KAN-1")[0]?.state).toBe("completed");
@@ -344,11 +342,9 @@ describe("delegation mode (ADR 0044)", () => {
     seed("KAN-1");
     await planned("KAN-1", DECISION_PLAN);
     expect(await status("KAN-1")).toBe(PLAN_REVIEW_STATUS);
-    expect(commentsOn("KAN-1").join("\n")).toContain(
-      `move it back to "${DELEGATION_REQUEST_STATUS}"`,
-    );
+    expect(commentsOn("KAN-1").join("\n")).toContain(`move it back to "${REQUEST_STATUS}"`);
 
-    await move("KAN-1", SHARED_IN_PROGRESS_STATUS);
+    await move("KAN-1", IN_PROGRESS_STATUS);
     await router.reconcile();
     await router.reconcile();
     await process();
@@ -367,10 +363,10 @@ describe("delegation mode (ADR 0044)", () => {
     seed("KAN-1");
     await planned("KAN-1", SINGLE_PLAN);
     // Requested again, then dragged on before the new plan exists.
-    await move("KAN-1", DELEGATION_REQUEST_STATUS);
+    await move("KAN-1", REQUEST_STATUS);
     await router.reconcile();
     await move("KAN-1", PLAN_REVIEW_STATUS);
-    await move("KAN-1", SHARED_IN_PROGRESS_STATUS);
+    await move("KAN-1", IN_PROGRESS_STATUS);
     await router.reconcile();
     await process();
 
@@ -381,19 +377,19 @@ describe("delegation mode (ADR 0044)", () => {
 
   it("waits for a plan still being applied, then deploys it once, through restarts (7)", async () => {
     seed("KAN-1");
-    await move("KAN-1", DELEGATION_REQUEST_STATUS);
+    await move("KAN-1", REQUEST_STATUS);
     const envelope = await startJob();
     await submit(envelope, { status: "planned", summary: SPLIT_PLAN.summary, plan: SPLIT_PLAN });
     // The human approves before Router has written the plan to Jira.
     await move("KAN-1", PLAN_REVIEW_STATUS);
-    await move("KAN-1", SHARED_IN_PROGRESS_STATUS);
+    await move("KAN-1", IN_PROGRESS_STATUS);
     const early = await router.reconcile();
     expect(early.held.map((held) => held.reason).join("\n")).toContain("not fully applied");
     expect(listPlanDeployments(router.db, "KAN-1")[0]?.state).toBe("waiting_plan_apply");
 
     await process();
     // The plan's own move to plan review gave way to the human's move.
-    expect(await status("KAN-1")).toBe(SHARED_IN_PROGRESS_STATUS);
+    expect(await status("KAN-1")).toBe(IN_PROGRESS_STATUS);
     await router.restart();
     await router.reconcile();
     await router.reconcile();
@@ -413,13 +409,13 @@ describe("delegation mode (ADR 0044)", () => {
     // Created wherever Jira starts a new subtask (the fake: "To Do").
     expect(await status(apiKey)).toBe("To Do");
     // A subtask a person added by hand, in progress, is never taken.
-    seed("KAN-50", { parentKey: "KAN-1", status: SHARED_IN_PROGRESS_STATUS });
+    seed("KAN-50", { parentKey: "KAN-1", status: IN_PROGRESS_STATUS });
     // Before the approval nothing runs, not even the tasks.
     expect((await router.reconcile()).jobsCreated).toEqual([]);
 
     await approve("KAN-1");
-    expect(await status(apiKey)).toBe(SHARED_IN_PROGRESS_STATUS);
-    expect(await status(uiKey)).toBe(SHARED_IN_PROGRESS_STATUS);
+    expect(await status(apiKey)).toBe(IN_PROGRESS_STATUS);
+    expect(await status(uiKey)).toBe(IN_PROGRESS_STATUS);
     await router.reconcile();
     await router.reconcile();
 
@@ -434,22 +430,22 @@ describe("delegation mode (ADR 0044)", () => {
     const api = await nextAndStart();
     await submit(api);
     await process();
-    expect(await status(apiKey)).toBe(RESULT_REVIEW_STATUS);
+    expect(await status(apiKey)).toBe(REVIEW_STATUS);
     // Review alone does not complete a dependency.
     await router.reconcile();
     expect(getOpenJobForIssue(router.db, uiKey)?.state).toBe("waiting");
 
-    await move(apiKey, DELEGATION_DONE_STATUS);
+    await move(apiKey, DONE_STATUS);
     await router.reconcile();
     expect(getOpenJobForIssue(router.db, uiKey)?.state).toBe("queued");
     const ui = await nextAndStart();
     await submit(ui);
     await process();
-    await move(uiKey, DELEGATION_DONE_STATUS);
+    await move(uiKey, DONE_STATUS);
     await router.reconcile();
     expect((await process()).blocked).toEqual([]);
 
-    expect(await status("KAN-1")).toBe(RESULT_REVIEW_STATUS);
+    expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     expect(listPlanDeployments(router.db, "KAN-1")[0]?.state).toBe("completed");
     expect(commentsOn("KAN-1").join("\n")).toContain("All subtasks of the approved plan are done");
     expect(jobsFor("KAN-1").map((job) => job.kind)).toEqual(["planning"]);
@@ -464,7 +460,7 @@ describe("delegation mode (ADR 0044)", () => {
     const api = await nextAndStart();
     await process();
 
-    await move("KAN-1", DELEGATION_TODO_STATUS);
+    await move("KAN-1", TODO_STATUS);
     await router.reconcile();
     expect(listPlanDeployments(router.db, "KAN-1")[0]?.state).toBe("revoked");
     expect(getJob(router.db, api.jobId)?.state).toBe("cancel_requested");
@@ -476,9 +472,9 @@ describe("delegation mode (ADR 0044)", () => {
     await submit(api);
     await process();
     expect(getJob(router.db, api.jobId)?.state).toBe("cancelled");
-    expect(await status("KAN-1001")).toBe(SHARED_IN_PROGRESS_STATUS);
+    expect(await status("KAN-1001")).toBe(IN_PROGRESS_STATUS);
     // Moving it back is not a new approval of the old plan: only plan review → in progress is.
-    await move("KAN-1", SHARED_IN_PROGRESS_STATUS);
+    await move("KAN-1", IN_PROGRESS_STATUS);
     expect((await router.reconcile()).jobsCreated).toEqual([]);
   });
 
@@ -488,11 +484,11 @@ describe("delegation mode (ADR 0044)", () => {
     await approve("KAN-1");
     const envelope = await startJob();
 
-    await move("KAN-1", DELEGATION_DONE_STATUS);
+    await move("KAN-1", DONE_STATUS);
     expect((await verify()).jobsCancelRequested).toEqual([envelope.jobId]);
     await submit(envelope);
     await process();
-    expect(await status("KAN-1")).toBe(DELEGATION_DONE_STATUS);
+    expect(await status("KAN-1")).toBe(DONE_STATUS);
     const finish = listJobReportSteps(router.db, envelope.jobId).filter(
       (step) => step.kind === "transition",
     );
@@ -530,9 +526,9 @@ describe("delegation mode (ADR 0044)", () => {
     const failure = commentsOn("KAN-1").find(
       (body) => body.startsWith("[GGJIRA:REPORT") && body.includes("Execution failed."),
     );
-    expect(failure).toContain(`stays in "${SHARED_IN_PROGRESS_STATUS}"`);
+    expect(failure).toContain(`stays in "${IN_PROGRESS_STATUS}"`);
     expect(failure).toContain(
-      `Next: fix the cause, then move the issue to "${PLAN_REVIEW_STATUS}" and then to "${SHARED_IN_PROGRESS_STATUS}"`,
+      `Next: fix the cause, then move the issue to "${PLAN_REVIEW_STATUS}" and then to "${IN_PROGRESS_STATUS}"`,
     );
     await router.jira.removeLabel("KAN-1", "ggjira-failed");
     expect((await router.reconcile()).jobsCreated).toEqual([]);
@@ -562,7 +558,7 @@ describe("delegation mode (ADR 0044)", () => {
       git: { repository: "git", baseSha: "a".repeat(40), headSha: head, committed: true },
     });
     await process();
-    expect(await status("KAN-1")).toBe(RESULT_REVIEW_STATUS);
+    expect(await status("KAN-1")).toBe(REVIEW_STATUS);
 
     handlePullRequestClosed(
       router.db,
@@ -571,7 +567,7 @@ describe("delegation mode (ADR 0044)", () => {
       router.clock.now(),
     );
     expect((await process()).blocked).toEqual([]);
-    expect(await status("KAN-1")).toBe(DELEGATION_DONE_STATUS);
+    expect(await status("KAN-1")).toBe(DONE_STATUS);
     await router.reconcile();
     expect(getLatestPlanReview(router.db, "KAN-1")?.closedAt).not.toBeNull();
     expect((await router.reconcile()).jobsCreated).toEqual([]);

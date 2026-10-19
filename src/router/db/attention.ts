@@ -12,7 +12,6 @@ export type AttentionKind =
   | "decision_needed"
   | "scope_deviation"
   | "review_required"
-  | "readiness_hold"
   | "report_blocked"
   | "plan_approval_refused";
 

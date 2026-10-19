@@ -3,6 +3,7 @@ import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
 import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { expireLeases } from "../src/router/leases.js";
+import { TODO_STATUS } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 
 describe("lease expiry", () => {
@@ -96,7 +97,7 @@ describe("lease expiry", () => {
   it("moves a cancel_requested job whose worker went silent to recovery_required, not cancelled", async () => {
     router = new RouterHarness();
     const envelope = await reserveAndMaybeStart(true);
-    await router.jira.transitionIssue("KAN-1", "Revoke");
+    await router.jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
     await router.reconcile();
     expect(getJob(router.db, envelope.jobId)?.state).toBe("cancel_requested");
 
