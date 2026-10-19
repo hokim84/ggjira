@@ -247,9 +247,12 @@ export const AdminJiraProjectRequestSchema = z.object({ projectKey: z.string().m
 export const AdminWorkflowCheckRequestSchema = z.object({
   projectKey: z.string().min(1),
   workflow: z.object({
+    /** Which hops Router makes depends on the mode (`delegation` has its own, ADR 0044). */
+    mode: z.enum(["legacy", "label", "delegation"]).optional(),
     requestStatus: z.string().min(1),
     inProgressStatus: z.string().min(1),
     reviewStatus: z.string().min(1),
+    planReviewStatus: z.string().min(1).optional(),
     planningStatus: z.string().min(1).optional(),
     needsDecisionStatus: z.string().min(1).optional(),
     doneStatus: z.string().min(1).optional(),
@@ -283,6 +286,36 @@ export const AdminLabelMigrationApplyRequestSchema = z.object({
       action: z.enum(["add-label-and-request", "move-to-review", "manual", "blocked"]),
       reason: z.string(),
       approved: z.boolean(),
+    }),
+  ),
+});
+
+const DelegationMigrationTargetSchema = z.object({
+  requestStatus: z.string().min(1),
+  planReviewStatus: z.string().min(1),
+});
+
+/** `POST /api/v1/admin/migrations/delegation/plan` — read-only list of a workspace's issues and
+ *  what moving it onto status delegation means for each (ADR 0044). */
+export const AdminDelegationMigrationPlanRequestSchema = z.object({
+  workspaceId: z.string().min(1),
+  target: DelegationMigrationTargetSchema,
+});
+
+/** `POST /api/v1/admin/migrations/delegation/apply` — records the baseline for a reviewed plan's
+ *  workspace; writes nothing to Jira. */
+export const AdminDelegationMigrationApplyRequestSchema = z.object({
+  workspaceId: z.string().min(1),
+  target: DelegationMigrationTargetSchema,
+  createdAt: z.string(),
+  entries: z.array(
+    z.object({
+      issueKey: z.string().min(1),
+      summary: z.string(),
+      status: z.string(),
+      labels: z.array(z.string()),
+      action: z.enum(["keep", "manual", "blocked"]),
+      reason: z.string(),
     }),
   ),
 });

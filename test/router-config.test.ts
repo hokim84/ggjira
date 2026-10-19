@@ -303,6 +303,72 @@ describe("loadRouterConfig", () => {
     });
   });
 
+  describe("delegation mode (ADR 0044)", () => {
+    function delegationConfig(workflow: Record<string, unknown>) {
+      return validConfig({
+        workspaces: [
+          {
+            id: "ws-1",
+            repositoryId: "repo-1",
+            projectKeys: ["KAN"],
+            workflow: {
+              mode: "delegation",
+              requestStatus: "AI 계획 요청",
+              planReviewStatus: "계획 검토 대기",
+              inProgressStatus: "작업 중",
+              reviewStatus: "결과 검토",
+              doneStatus: "완료",
+              ...workflow,
+            },
+          },
+        ],
+      });
+    }
+
+    it("accepts a delegation workspace", () => {
+      const config = loadRouterConfig(writeConfig(delegationConfig({})));
+      expect(config.workspaces[0]?.workflow).toMatchObject({
+        mode: "delegation",
+        planReviewStatus: "계획 검토 대기",
+      });
+    });
+
+    it.each([
+      [
+        "without a plan-review status",
+        { planReviewStatus: undefined },
+        /planReviewStatus is required/,
+      ],
+      ["with an opt-in label", { optInLabel: "ai-enabled" }, /optInLabel is not used/],
+      ["with a planning status", { planningStatus: "Plan" }, /planningStatus is not used/],
+      [
+        "with a decision status",
+        { needsDecisionStatus: "Decide" },
+        /needsDecisionStatus is not used/,
+      ],
+      [
+        "whose plan review is the result review",
+        { planReviewStatus: "결과 검토" },
+        /reviewStatus must differ from workflow.planReviewStatus/,
+      ],
+      [
+        "whose request is the done status",
+        { doneStatus: "AI 계획 요청" },
+        /doneStatus must differ from workflow.requestStatus/,
+      ],
+    ])("rejects a delegation workspace %s", (_name, workflow, message) => {
+      expect(() => loadRouterConfig(writeConfig(delegationConfig(workflow)))).toThrow(message);
+    });
+
+    it("rejects a plan-review status outside delegation mode", () => {
+      expect(() =>
+        loadRouterConfig(
+          writeConfig(delegationConfig({ mode: "label", optInLabel: "ai", planReviewStatus: "X" })),
+        ),
+      ).toThrow(/planReviewStatus is only used in/);
+    });
+  });
+
   it("rejects configVersion values other than 5", () => {
     expect(() => loadRouterConfig(writeConfig(validConfig({ configVersion: 4 })))).toThrow(
       RouterConfigError,

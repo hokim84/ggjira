@@ -78,6 +78,7 @@ export class FakeJiraGateway implements JiraGateway {
   };
   private issueCounter = 0;
   private changelogCounter = 0;
+  private createdIssueTransitions: JiraTransition[] = [];
 
   seedIssue(
     issue: Partial<JiraIssue> & Pick<JiraIssue, "key">,
@@ -100,6 +101,11 @@ export class FakeJiraGateway implements JiraGateway {
     };
     this.issues.set(full.key, full);
     this.transitionsByKey.set(full.key, availableTransitions);
+  }
+
+  /** Transitions every issue `createIssue` makes from now on offers (by default none). */
+  setCreatedIssueTransitions(transitions: JiraTransition[]): void {
+    this.createdIssueTransitions = transitions;
   }
 
   seedUser(user: JiraUser): void {
@@ -363,18 +369,21 @@ export class FakeJiraGateway implements JiraGateway {
     this.createdIssues.push(input);
     this.issueCounter += 1;
     const key = `${input.projectKey}-${1000 + this.issueCounter}`;
-    this.seedIssue({
-      key,
-      summary: input.summary,
-      description: input.description ?? null,
-      statusName: "To Do",
-      labels: input.labels ?? [],
-      issueTypeName: input.issueTypeName,
-      parentKey: input.parentKey ?? null,
-      projectKey: input.projectKey,
-      assigneeAccountId: input.assigneeAccountId ?? null,
-      executionAgentOptionId: null,
-    });
+    this.seedIssue(
+      {
+        key,
+        summary: input.summary,
+        description: input.description ?? null,
+        statusName: "To Do",
+        labels: input.labels ?? [],
+        issueTypeName: input.issueTypeName,
+        parentKey: input.parentKey ?? null,
+        projectKey: input.projectKey,
+        assigneeAccountId: input.assigneeAccountId ?? null,
+        executionAgentOptionId: null,
+      },
+      this.createdIssueTransitions,
+    );
     if (input.assigneeAccountId) {
       this.assignments.push({ key, accountId: input.assigneeAccountId });
     }

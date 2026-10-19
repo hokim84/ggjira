@@ -34,11 +34,15 @@ const ROUTER_RESERVED_LABELS = [SUPERSEDED_LABEL, "ggjira-agent", "ggjira-worksp
  * ordinary workflow: `requestStatus` is then the ordinary "To Do", an issue takes part only while
  * it carries `optInLabel`, and planning vs. implementation is decided by the request itself
  * (src/router/workflow-mode.ts), so `planningStatus`/`needsDecisionStatus` are not used.
+ *
+ * `mode: "delegation"` (ADR 0044) delegates by status instead: moving an issue to `requestStatus`
+ * ("AI plan request") always starts with planning, a plan waits for a human in `planReviewStatus`,
+ * and moving it from there to the shared `inProgressStatus` approves that plan. Labels play no part.
  */
 const WorkflowStatusSchema = z
   .object({
     /** Unset means "legacy": the status-based workflow above. */
-    mode: z.enum(["legacy", "label"]).optional(),
+    mode: z.enum(["legacy", "label", "delegation"]).optional(),
     /** The label that opts an issue in to AI work in `label` mode. Jira labels carry no spaces. */
     optInLabel: z
       .string()
@@ -50,6 +54,9 @@ const WorkflowStatusSchema = z
     requestStatus: nfcString,
     inProgressStatus: nfcString,
     reviewStatus: nfcString,
+    /** `delegation` mode only: where a plan waits for a human (ADR 0044). Moving the issue from
+     *  here to `inProgressStatus` approves the plan. */
+    planReviewStatus: nfcString.optional(),
     planningStatus: nfcString.optional(),
     needsDecisionStatus: nfcString.optional(),
     /** Where Router moves an issue from `reviewStatus` once the worker's GitHub pull request is
@@ -86,6 +93,51 @@ const WorkflowStatusSchema = z
           path: [field],
           message: `workflow.${field} is not used in "label" mode; remove it (ADR 0037)`,
         });
+      }
+    }
+    if (workflow.mode !== "delegation" && workflow.planReviewStatus) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["planReviewStatus"],
+        message: 'workflow.planReviewStatus is only used in "delegation" mode (ADR 0044)',
+      });
+    }
+    if (workflow.mode === "delegation") {
+      if (!workflow.planReviewStatus) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["planReviewStatus"],
+          message: 'workflow.planReviewStatus is required when workflow.mode is "delegation"',
+        });
+      }
+      for (const field of ["optInLabel", "planningStatus", "needsDecisionStatus"] as const) {
+        if (!workflow[field]) continue;
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: `workflow.${field} is not used in "delegation" mode; remove it (ADR 0044)`,
+        });
+      }
+      // Each step has to be its own status, or one column would hide two different stages.
+      const seen = new Map<string, string>();
+      for (const field of [
+        "requestStatus",
+        "planReviewStatus",
+        "inProgressStatus",
+        "reviewStatus",
+        "doneStatus",
+      ] as const) {
+        const status = workflow[field];
+        if (!status) continue;
+        const other = seen.get(status);
+        if (other) {
+          ctx.addIssue({
+            code: "custom",
+            path: [field],
+            message: `workflow.${field} must differ from workflow.${other} in "delegation" mode`,
+          });
+        }
+        seen.set(status, field);
       }
     }
   });

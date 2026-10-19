@@ -25,6 +25,14 @@ import {
   type LabelMigrationTarget,
   planLabelMigration,
 } from "./label-migration.js";
+import {
+  applyDelegationMigration,
+  DelegationMigrationError,
+  type DelegationMigrationPlan,
+  type DelegationMigrationResult,
+  type DelegationMigrationTarget,
+  planDelegationMigration,
+} from "./delegation-migration.js";
 import type { PullRequestPollReport } from "./github.js";
 import {
   IssueOptInError,
@@ -269,6 +277,15 @@ function approvalRules(workspace: WorkspaceConfig) {
     requestStatus,
     planningStatus: planningStatus ?? null,
     inProgressStatus,
+    // ADR 0044: in `delegation` mode the plan-review status is where approvals come from, and a
+    // run's own moves to review/done are re-checked against it.
+    ...(mode === "delegation"
+      ? {
+          planReviewStatus: workspace.workflow.planReviewStatus ?? null,
+          reviewStatus: workspace.workflow.reviewStatus,
+          doneStatus: workspace.workflow.doneStatus ?? null,
+        }
+      : {}),
   };
 }
 
@@ -779,6 +796,60 @@ export class AdminService {
         throw new AdminError(409, "not_migratable", error.message);
       }
       throw error;
+    }
+  }
+
+  /** Read-only: what moving the workspace onto status delegation means per issue (ADR 0044). */
+  async planDelegationMigration(
+    workspaceId: string,
+    target: DelegationMigrationTarget,
+  ): Promise<DelegationMigrationPlan> {
+    const workspace = this.requireWorkspace(workspaceId);
+    try {
+      return await planDelegationMigration({
+        db: this.db,
+        jira: this.deps.jira,
+        workspace,
+        target,
+        now: this.now(),
+      });
+    } catch (error) {
+      if (error instanceof DelegationMigrationError) {
+        throw new AdminError(409, "not_migratable", error.message);
+      }
+      throw new AdminError(502, "jira_error", (error as Error).message);
+    }
+  }
+
+  /** Records the pre-switch baseline (held events); every issue's outcome goes to the audit log. */
+  async applyDelegationMigration(
+    plan: DelegationMigrationPlan,
+    actor: string,
+  ): Promise<{ results: DelegationMigrationResult[] }> {
+    const workspace = this.requireWorkspace(plan.workspaceId);
+    try {
+      const results = await applyDelegationMigration({
+        db: this.db,
+        jira: this.deps.jira,
+        workspace,
+        plan,
+        now: () => this.now(),
+        onResult: (result) => {
+          appendAudit(this.db, {
+            at: this.now(),
+            actor,
+            action: `migration.delegation.${result.outcome}`,
+            subject: result.issueKey,
+            detail: { workspaceId: workspace.id, detail: result.detail },
+          });
+        },
+      });
+      return { results };
+    } catch (error) {
+      if (error instanceof DelegationMigrationError) {
+        throw new AdminError(409, "not_migratable", error.message);
+      }
+      throw new AdminError(502, "jira_error", (error as Error).message);
     }
   }
 

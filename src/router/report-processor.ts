@@ -10,7 +10,7 @@ import {
 } from "../pm/metadata.js";
 import { PlanApplyError, renderParentPlan, renderTaskDescription } from "../pm/plan-render.js";
 import type { ReadinessGap } from "../issue/readiness.js";
-import { computeApprovalId } from "./approval.js";
+import { computeApprovalId, computeDelegationApprovalIds } from "./approval.js";
 import {
   listPendingReadinessNotices,
   markReadinessNotice,
@@ -45,6 +45,7 @@ import type {
   SupersedeParams,
   TransitionParams,
 } from "./report-journal.js";
+import { parseTaskApprovalId } from "./report-journal.js";
 
 /**
  * Executes the report journal (src/router/report-journal.ts) against Jira
@@ -165,7 +166,7 @@ async function runTransition(
   step: ReportStepRow,
   params: TransitionParams,
 ): Promise<StepOutcome> {
-  const issue = await jira.getIssue(step.issueKey);
+  const issue = await jira.getIssue(params.issueKey ?? step.issueKey);
   if (issue.statusName === params.to) return { status: "applied" };
   if (!params.from.includes(issue.statusName)) {
     return {
@@ -173,12 +174,38 @@ async function runTransition(
       reason: `${issue.key} is in "${issue.statusName}", not ${params.from.map((s) => `"${s}"`).join(" or ")}; a human moved it`,
     };
   }
-  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus, params.optInLabel);
-  if (approvalId !== params.approvalId) {
+  if (!(await approvalStillStands(jira, issue, params))) {
     return { status: "skipped", reason: `${issue.key} was re-approved since this job was created` };
   }
   await write(() => jira.transitionIssueToStatus(issue.key, params.to));
   return { status: "applied" };
+}
+
+/** Re-derives the approval a transition was journaled under, by the rule it was journaled with
+ *  (ADR 0044's rules for `delegation`-mode implementations; the status entry otherwise). */
+async function approvalStillStands(
+  jira: JiraGateway,
+  issue: JiraIssue,
+  params: TransitionParams,
+): Promise<boolean> {
+  const rule = params.approvalRule;
+  if (rule?.kind === "plan-approval") {
+    const parent = rule.issueKey === issue.key ? issue : await jira.getIssue(rule.issueKey);
+    const { planApprovalId } = await computeDelegationApprovalIds(jira, parent, rule);
+    return planApprovalId !== null && planApprovalOf(params.approvalId) === planApprovalId;
+  }
+  if (rule?.kind === "plan-task") {
+    const run = parseTaskApprovalId(params.approvalId);
+    if (!run) return false;
+    return (await computeApprovalId(jira, issue, rule.inProgressStatus)) === run.entryId;
+  }
+  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus, params.optInLabel);
+  return approvalId === params.approvalId;
+}
+
+/** The plan approval inside a task run's approval id, or the id itself for the plan's own. */
+function planApprovalOf(approvalId: string): string {
+  return parseTaskApprovalId(approvalId)?.planApprovalId ?? approvalId;
 }
 
 /** Finds a subtask created by `step` (its marker is in the description). */
@@ -365,6 +392,7 @@ async function runStep(
         ...(created.length > 0
           ? ["", "Created subtasks:", ...created.map((key) => `- ${key}`)]
           : []),
+        ...(params.next?.length ? ["", ...params.next] : []),
         "",
         params.signature,
       ].join("\n");

@@ -175,20 +175,22 @@ export function renderSetup(root) {
       const options = wizard.statuses;
       const kind = options.length ? "select" : "text";
       const labelMode = ws.workflow.mode === "label";
+      const delegationMode = ws.workflow.mode === "delegation";
       // ADR 0037: label mode uses an opt-in label on the ordinary workflow instead of AI statuses.
+      // ADR 0044: delegation mode delegates by status and always plans first.
       const mode = field(ws, "workflow.mode", "AI 참여 방식", {
         kind: "select",
-        options: ["label"],
+        options: ["label", "delegation"],
         optional: true,
-        hint: "label: opt-in 라벨이 붙은 이슈만 일반 할 일/진행/검토 상태로 처리. 비우면 AI 전용 상태",
+        hint: "label: opt-in 라벨이 붙은 이슈만 일반 할 일/진행/검토 상태로 처리. delegation: 요청 상태로 옮기면 계획부터, 계획 검토 → 진행이 승인. 비우면 AI 전용 상태",
       });
       mode.addEventListener("change", () => {
-        if (ws.workflow.mode === "label") {
+        if (ws.workflow.mode === "label" || ws.workflow.mode === "delegation") {
           ws.workflow.planningStatus = undefined;
           ws.workflow.needsDecisionStatus = undefined;
-        } else {
-          ws.workflow.optInLabel = undefined;
         }
+        if (ws.workflow.mode !== "label") ws.workflow.optInLabel = undefined;
+        if (ws.workflow.mode !== "delegation") ws.workflow.planReviewStatus = undefined;
         drawStatuses();
       });
       fill(
@@ -200,19 +202,34 @@ export function renderSetup(root) {
         field(
           ws,
           "workflow.requestStatus",
-          labelMode ? "요청 상태 (할 일)" : "요청 상태 (사람이 AI에게 맡김)",
+          labelMode
+            ? "요청 상태 (할 일)"
+            : delegationMode
+              ? "AI 계획 요청 상태 (사람이 AI에게 맡김)"
+              : "요청 상태 (사람이 AI에게 맡김)",
           { kind, options },
         ),
-        field(ws, "workflow.inProgressStatus", "진행 상태 (Router가 옮김)", { kind, options }),
+        delegationMode
+          ? field(ws, "workflow.planReviewStatus", "계획 검토 상태 (승인 대기)", {
+              kind,
+              options,
+            })
+          : null,
+        field(
+          ws,
+          "workflow.inProgressStatus",
+          delegationMode ? "작업 중 상태 (사람과 AI 공용)" : "진행 상태 (Router가 옮김)",
+          { kind, options },
+        ),
         field(ws, "workflow.reviewStatus", "검토 상태 (완료 후)", { kind, options }),
-        labelMode
+        labelMode || delegationMode
           ? null
           : field(ws, "workflow.planningStatus", "계획 요청 상태 (선택)", {
               kind,
               options,
               optional: true,
             }),
-        labelMode
+        labelMode || delegationMode
           ? null
           : field(ws, "workflow.needsDecisionStatus", "결정 필요 상태 (선택)", {
               kind,
@@ -284,6 +301,12 @@ export function renderSetup(root) {
       }
       if (ws.workflow.mode === "label" && !ws.workflow.optInLabel) {
         missing.push({ path: "workflow.optInLabel", message: "label 방식에는 필수입니다" });
+      }
+      if (ws.workflow.mode === "delegation" && !ws.workflow.planReviewStatus) {
+        missing.push({
+          path: "workflow.planReviewStatus",
+          message: "delegation 방식에는 필수입니다",
+        });
       }
       if (missing.length) {
         showFieldErrors(form, missing);

@@ -122,6 +122,22 @@ export function getOpenJobForIssue(db: Database.Database, issueKey: string): Job
   return row ? toJobRow(row) : undefined;
 }
 
+/** Whether a job for this exact approval already ran to completion (ADR 0044: one request, one
+ *  run — a request still showing after its result is not a new one). */
+export function hasSucceededJobForApproval(
+  db: Database.Database,
+  issueKey: string,
+  approvalId: string,
+): boolean {
+  return Boolean(
+    db
+      .prepare(
+        "SELECT 1 FROM jobs WHERE issue_key = ? AND approval_id = ? AND state = 'succeeded' LIMIT 1",
+      )
+      .get(issueKey, approvalId),
+  );
+}
+
 /** Jobs ready to be leased to a worker, oldest first (scheduler's assignment pass). */
 /** Jobs created for the same issue before `jobId` (earlier approvals or closed runs). */
 export function countEarlierJobsForIssue(

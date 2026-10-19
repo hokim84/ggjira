@@ -1,4 +1,5 @@
-// Issue view: one issue's AI participation (label mode, M4-04, ADR 0039).
+// Issue view: one issue's AI participation (label mode, M4-04, ADR 0039; delegation mode,
+// ADR 0044 — where it stands, the next move in Jira, no label toggle).
 
 import { admin } from "./api.js";
 import { clear, errorNotice, fill, h, notice } from "./dom.js";
@@ -79,7 +80,93 @@ const ATTENTION_KINDS = {
   review_required: "개별 검토 필요",
   readiness_hold: "계약 보완 필요",
   report_blocked: "Jira 반영 막힘",
+  plan_approval_refused: "계획 승인 아님",
 };
+
+/** Delegation stages (src/router/issue-delegation.ts): what it is, and the next move in Jira. */
+const DELEGATION_STAGES = {
+  not_delegated: [
+    "AI에 맡기지 않음",
+    (s) =>
+      `사람의 작업입니다. AI에 맡기려면 "${s.request}"로 옮기세요. 라벨은 아무것도 시작하지 않습니다.`,
+  ],
+  plan_requested: ["계획 요청됨", () => "워커가 계획을 쓰기를 기다립니다."],
+  planning: ["계획 작성 중", (s) => `계획이 끝나면 "${s.planReview}"로 옮겨집니다.`],
+  plan_review: [
+    "계획 검토 대기",
+    (s) =>
+      `계획을 읽고, 승인하려면 "${s.planReview}" → "${s.inProgress}"로 옮기세요. 바꾸려면 설명을 고쳐 "${s.request}"로 옮기세요.`,
+  ],
+  plan_needs_decision: [
+    "결정 필요",
+    (s) =>
+      `결정 요청 댓글에 "Decision: <id>"로 답한 뒤 "${s.request}"로 옮기세요. 이 상태로는 승인되지 않습니다.`,
+  ],
+  approved_waiting: ["승인됨 · 계획 반영 대기", () => "계획이 Jira에 다 반영되면 시작합니다."],
+  running: [
+    "승인된 계획 실행",
+    (s) => `철회하려면 "${s.inProgress}" 밖으로 옮기세요. 실행 중이면 몇 초 안에 중단 요청됩니다.`,
+  ],
+  coordinating: [
+    "하위 작업 조정",
+    (s) =>
+      `하위 작업이 승인된 계획으로 실행됩니다. 모두 "${s.done ?? "완료"}"면 "${s.review}"로 옮겨집니다.`,
+  ],
+  task: [
+    "승인된 계획의 하위 작업",
+    (s) =>
+      `다시 실행하려면 "${s.inProgress}" 밖으로 옮겼다가 돌아오게 하세요(같은 계획 안의 재시도).`,
+  ],
+  result_review: ["결과 검토", () => "검토 화면에서 판단을 남기거나 PR을 머지하세요."],
+  done: ["완료", () => "끝났습니다."],
+};
+
+const DEPLOYMENT_STATES = {
+  waiting_plan_apply: "반영 대기",
+  active: "실행 허용",
+  completed: "완료",
+  revoked: "철회",
+};
+
+/** ADR 0044: the stage, the plan and its approval, and what a person does next. */
+function delegationRows(view) {
+  const d = view.delegation;
+  const [label, next] = DELEGATION_STAGES[d.stage] || [d.stage, () => ""];
+  return [
+    h("dt", {}, "위임 단계"),
+    h(
+      "dd",
+      {},
+      h("span", { class: "badge badge-ok" }, label),
+      d.parentKey ? h("span", { class: "muted" }, ` (${d.parentKey}의 계획)`) : null,
+      h("div", { class: "hint" }, next(d.statuses)),
+    ),
+    d.plan ? h("dt", {}, "계획") : null,
+    d.plan
+      ? h(
+          "dd",
+          {},
+          h("code", {}, d.plan.version),
+          ` · ${d.plan.outcome}`,
+          d.plan.taskIds.length ? ` · 하위 작업 ${d.plan.taskIds.join(", ")}` : " · 이슈 자체",
+          d.plan.closed ? h("span", { class: "muted" }, " (닫힘)") : null,
+        )
+      : null,
+    d.deployment ? h("dt", {}, "승인") : null,
+    d.deployment
+      ? h(
+          "dd",
+          {},
+          DEPLOYMENT_STATES[d.deployment.state] || d.deployment.state,
+          " ",
+          h("code", {}, d.deployment.approvalId),
+          d.deployment.reason ? h("div", { class: "hint" }, d.deployment.reason) : null,
+        )
+      : null,
+    d.heldBy ? h("dt", {}, "보류") : null,
+    d.heldBy ? h("dd", {}, `${d.heldBy} — 이 승인으로는 실행하지 않습니다`) : null,
+  ];
+}
 
 /** Opens the issue view on `key` (used by the dashboard's attention list). */
 export function openIssue(key) {
@@ -257,7 +344,9 @@ export function renderIssues(root, ctx) {
               { class: "hint" },
               view.mode === "label"
                 ? "같은 승인으로는 다시 돌지 않습니다. 원인을 고친 뒤 요청 상태로 다시 옮기거나 AI 참여를 껐다 켜세요."
-                : "같은 승인으로는 다시 돌지 않습니다. 원인을 고친 뒤 요청 상태로 다시 옮기세요.",
+                : view.mode === "delegation"
+                  ? "같은 승인으로는 다시 돌지 않습니다. 같은 계획으로 다시: 계획 검토 → 진행. 범위를 바꾸려면 요청 상태로 옮겨 다시 계획하세요."
+                  : "같은 승인으로는 다시 돌지 않습니다. 원인을 고친 뒤 요청 상태로 다시 옮기세요.",
             )
           : null,
       );
@@ -339,11 +428,13 @@ export function renderIssues(root, ctx) {
           h(
             "div",
             { class: "worker-badges" },
-            view.mode !== "label"
-              ? h("span", { class: "badge badge-muted" }, "legacy")
-              : view.optedIn
-                ? h("span", { class: "badge badge-ok" }, "AI 참여 켜짐")
-                : h("span", { class: "badge badge-muted" }, "AI 참여 꺼짐"),
+            view.mode === "delegation"
+              ? h("span", { class: "badge badge-muted" }, "상태 위임")
+              : view.mode !== "label"
+                ? h("span", { class: "badge badge-muted" }, "legacy")
+                : view.optedIn
+                  ? h("span", { class: "badge badge-ok" }, "AI 참여 켜짐")
+                  : h("span", { class: "badge badge-muted" }, "AI 참여 꺼짐"),
           ),
         ),
         h(
@@ -370,8 +461,9 @@ export function renderIssues(root, ctx) {
           ),
           h("dt", {}, "workspace"),
           h("dd", {}, view.workspaceId),
+          ...(view.delegation ? delegationRows(view) : []),
           h("dt", {}, "Router"),
-          h("dd", {}, blockerList(view)),
+          h("dd", {}, view.delegation && !view.openJob ? "열린 작업 없음" : blockerList(view)),
         ),
         toggle(view),
       ),
@@ -447,7 +539,7 @@ export function renderIssues(root, ctx) {
       h(
         "small",
         { class: "hint" },
-        "label 방식 workspace의 이슈에서 AI 참여(opt-in 라벨)를 확인하고 켜거나 끕니다.",
+        "label 방식 workspace에서는 AI 참여(opt-in 라벨)를 켜거나 끄고, delegation 방식에서는 위임 단계와 다음에 옮길 상태를 봅니다.",
       ),
     ),
     h(

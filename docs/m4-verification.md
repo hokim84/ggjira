@@ -101,3 +101,38 @@
 
 F01~F07은 하나도 구현하지 않았다. 고위험 PR의 필수 리뷰를 GitHub branch protection으로 강제하는 설정과 그 확인은
 운영자 작업이다.
+
+## 7. M4 이후 조정: 상태 위임과 계획 우선 (ADR 0044)
+
+`docs/M4_STATUS_DELEGATION_CHANGE_REVIEW.md`의 방향을 새 모드 `workflow.mode: "delegation"`으로 구현했다.
+legacy·label 모드와 M4의 기록·검토·보호 기능은 그대로다. 세부 규칙은 사용자가 정했다.
+
+- 계획 승인 = 계획 검토 대기 → 작업 중.
+- 하위 티켓은 승인 전에 생성(실행만 승인 뒤).
+
+| 문서 §5 시나리오 | 확인한 테스트 |
+|---|---|
+| 1 라벨 조작 무효 | `router-delegation-mode` "never plans, runs or withdraws anything because of a label" |
+| 2 요청 1건 = PM job 1개, 실패 후 재시도 없음 | "makes one planning job for a request…" |
+| 3 요청→철회→재요청, 중복·재시작 | "treats request → withdraw → request as two delegations…" |
+| 4 계획 성공 → 계획 검토 대기, 자동 구현 없음 | "puts a finished plan in plan review…" |
+| 5 할 일 → 작업 중(사람) 무효 | "runs nothing when a human moves their own issue…" |
+| 6 유효한 승인만 배포 | "deploys the current plan…", "does not approve a plan that waits for a decision", "…for an earlier request" |
+| 7 승인 재전송·부분 반영·재시작 | "waits for a plan still being applied, then deploys it once, through restarts" |
+| 8 말단 재계획 없음, 사람 하위 작업 제외 | "runs the tasks of an approved plan without planning them again…" |
+| 9 공용 작업 중의 유효 실행 유지 | "deploys the current plan…"(verify 무취소) |
+| 10 철회·완료 뒤 늦은 결과 | "withdraws a plan when its parent leaves in progress…", "asks a running implementation to stop…" |
+| 11 이유·다음 행동, 라벨 제거로 재개 없음 | "says why a run failed and what to do…" |
+| 12 결과 검토·PR 머지·완료 | "moves review → done when the reviewed pull request is merged" |
+| 13 M4 이슈 이관 뒤 자동 재실행 없음 | `router-delegation-migration` |
+
+- 단위 테스트: `router-config`(delegation 검증), `router-workflow-mode`, `router-approval`
+  (`computeDelegationApprovalIds`), `router-workflow-check`(delegation hop), `router-db`(migration 14).
+- DB: migration 14(`plan_reviews`, `plan_deployments`) 추가. 1~13은 그대로다. Worker 프로토콜 2 유지.
+- `npx vitest run`(이 Windows 머신): 651개 중 636 통과, 15 실패.
+  - 실패는 기존과 같은 `spawn EFTYPE`이다(변경 전 main에서도 15개).
+  - 앞선 두 번의 전체 실행에서는 `worker-push`·`worker-scope` 2개가 시간 초과로 더 실패했다. 이 둘은 git을 직접
+    실행하는 Worker 테스트로 router 코드를 쓰지 않는다. 파일만 따로 돌리거나 다시 전체를 돌리면 통과한다.
+  - `typecheck`·`lint`·`format:check`는 통과.
+- Linux 전체 검사: 이 PC에서는 Docker 데몬이 꺼져 있어 돌리지 못했다. PR CI에서 확인한다.
+- 실제 Jira에서의 확인(`router check`, 보드 드래그)은 수동 절차(runbook §34)로 남는다.

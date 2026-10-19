@@ -113,7 +113,7 @@ export async function retryJob(
     );
   }
   // Outside any transaction: never hold the DB while waiting on Jira.
-  const check = await checkJobAgainstJira(deps.jira, deps.config, before);
+  const check = await checkJobAgainstJira(deps.jira, deps.config, before, deps.db);
   if (check.verdict === "revoked") {
     throw new RecoveryError("approval_revoked", `cannot retry ${before.id}: ${check.reason}`);
   }

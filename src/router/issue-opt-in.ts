@@ -10,7 +10,8 @@ import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { getApprovalHoldActor, INPUTS_CHANGED_HOLD_ACTOR } from "./db/holds.js";
 import { getOpenJobForIssue } from "./db/jobs.js";
 import { listOpenReadinessHolds } from "./db/readiness-holds.js";
-import { isLabelMode, labelsInclude } from "./workflow-mode.js";
+import { type IssueDelegationView, readIssueDelegation } from "./issue-delegation.js";
+import { isDelegationMode, isLabelMode, labelsInclude, workflowModeOf } from "./workflow-mode.js";
 
 /**
  * Turning one issue's AI participation on or off from the Router (M4-03, ADR 0039): only the
@@ -69,7 +70,7 @@ export interface IssueOptInView {
   labels: string[];
   assigned: boolean;
   workspaceId: string;
-  mode: "legacy" | "label";
+  mode: "legacy" | "label" | "delegation";
   /** `null` in legacy mode, where labels opt nothing in. */
   optInLabel: string | null;
   optedIn: boolean;
@@ -77,6 +78,8 @@ export interface IssueOptInView {
   openJob: { jobId: string; kind: JobKind; state: JobState } | null;
   /** Empty with no open job: the next reconcile may start it. */
   blockers: OptInBlocker[];
+  /** `delegation` mode (ADR 0044): where the issue stands in the delegate → plan → approve flow. */
+  delegation?: IssueDelegationView;
 }
 
 export interface SetOptInResult {
@@ -181,7 +184,9 @@ export async function setIssueOptIn(
   if (!isLabelMode(workspace)) {
     throw new IssueOptInError(
       "not_label_mode",
-      `workspace "${workspace.id}" uses the legacy AI statuses; an opt-in label means nothing there`,
+      isDelegationMode(workspace)
+        ? `workspace "${workspace.id}" delegates by status (ADR 0044); a label never starts or stops AI work there`
+        : `workspace "${workspace.id}" uses the legacy AI statuses; an opt-in label means nothing there`,
     );
   }
   const label = workspace.workflow.optInLabel as string;
@@ -254,12 +259,15 @@ async function buildView(
     labels: issue.labels,
     assigned: issue.assigneeAccountId !== null,
     workspaceId: workspace.id,
-    mode: labelMode ? "label" : "legacy",
+    mode: workflowModeOf(workspace),
     optInLabel,
     optedIn,
     requestStatus,
     openJob: job ? { jobId: job.id, kind: job.kind, state: job.state } : null,
     blockers: job ? [] : await blockersOf(deps, workspace, issue, optedIn),
+    ...(isDelegationMode(workspace)
+      ? { delegation: await readIssueDelegation(deps, workspace, issue) }
+      : {}),
   };
 }
 
@@ -269,6 +277,8 @@ async function blockersOf(
   issue: JiraIssue,
   optedIn: boolean,
 ): Promise<OptInBlocker[]> {
+  // In `delegation` mode the stage (see `delegation`) says what happens next, not a blocker list.
+  if (isDelegationMode(workspace)) return [];
   if (!isLabelMode(workspace)) {
     return [
       {

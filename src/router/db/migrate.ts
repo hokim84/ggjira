@@ -5,6 +5,7 @@ import {
   EXECUTION_RECORD_STATEMENTS,
   GITHUB_STATEMENTS,
   JOB_ASSESSMENT_STATEMENTS,
+  PLAN_DELEGATION_STATEMENTS,
   PROVIDER_USAGE_STATEMENTS,
   PULL_REQUEST_CHECK_STATEMENTS,
   READINESS_HOLD_STATEMENTS,
@@ -119,6 +120,13 @@ const MIGRATIONS: readonly Migration[] = [
     description: "execution_records (provider call and usage behind every result; M4-12)",
     up(db) {
       for (const statement of EXECUTION_RECORD_STATEMENTS) db.exec(statement);
+    },
+  },
+  {
+    version: 14,
+    description: "plan_reviews, plan_deployments (status delegation, plan approval; ADR 0044)",
+    up(db) {
+      for (const statement of PLAN_DELEGATION_STATEMENTS) db.exec(statement);
     },
   },
 ];

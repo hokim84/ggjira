@@ -700,3 +700,93 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 - `run-all.bat`의 포트는 Router 설정의 `http.port`(없으면 8787)에서 읽는다. 두 번 실행하면 워커가 하나 더 뜬다.
 - 실제 Jira·LLM CLI를 쓰는 실행이다. 시험만 하려면 `GGJIRA_ROUTER_CONFIG`·`GGJIRA_WORKER_CONFIG`를 없는 경로로
   두고 띄우면 셋업 모드와 워커 첫 실행 질문까지만 간다.
+
+## 34. delegation 모드: 상태로 위임하고 계획부터 (ADR 0044)
+
+delegation 모드 workspace에서는 라벨이 아무것도 시작하거나 멈추지 않는다. 사람이 보드에서 이슈를 옮겨
+위임하고, 승인하고, 철회한다. 설정 예:
+
+```json
+"workflow": {
+  "mode": "delegation",
+  "requestStatus": "AI 계획 요청",
+  "planReviewStatus": "계획 검토 대기",
+  "inProgressStatus": "작업 중",
+  "reviewStatus": "결과 검토",
+  "doneStatus": "완료"
+}
+```
+
+다섯 상태는 서로 달라야 한다. `optInLabel`·`planningStatus`·`needsDecisionStatus`는 쓰지 않는다(있으면 설정 오류).
+`AI 계획 요청`·`계획 검토 대기`는 Jira 워크플로에 새로 만든다. 보드에서는 각 상태를 다른 컬럼에 매핑해 서로 다른
+단계가 한 컬럼에 숨지 않게 한다. `ggjira router check`와 웹 UI 설정의 "Router가 하는 전이"는 다음 전이를 확인한다.
+
+- 요청 → 계획 검토
+- 계획 검토 → 작업 중(사람이 하는 승인)
+- 작업 중 → 결과 검토
+- 결과 검토 → 완료
+
+새 하위 작업이 작업 중으로 갈 수 있는지는 사람이 직접 확인한다(경고로 나온다).
+
+### 흐름
+
+1. **위임**: 담당자가 있는 이슈를 `AI 계획 요청`으로 옮긴다. 계약 유무와 상관없이 계획 job 하나가 생긴다.
+   계획하는 동안 이슈는 요청 상태에 있고 "GGJIRA started planning" 댓글이 달린다.
+2. **계획 검토**: 계획이 끝나면 `계획 검토 대기`로 옮겨지고 "Plan applied." 댓글이 달린다. 하위 작업으로 나눈
+   계획이면 하위 이슈도 이때 생기지만, 승인 전에는 아무것도 실행되지 않는다. 결정이 필요한 계획도 여기에 온다.
+   결정 요청 댓글에 `Decision: <id>`로 답하고 `AI 계획 요청`으로 다시 옮긴다.
+3. **승인**: 계획을 읽고 `계획 검토 대기 → 작업 중`으로 옮긴다. 승인 댓글("Plan … approved")이 달린다.
+   - 하위 작업이 없는 계획: 이슈 자신이 구현된다.
+   - 하위 작업이 있는 계획: Router가 하위 작업을 작업 중으로 옮긴다. 각각 구현되고, 의존성은 앞 작업이 `완료`이거나
+     검토 화면에서 확인됐을 때 풀린다(결과 검토 도착만으로는 안 풀린다). 모두 완료되면 부모가 `결과 검토`로 간다.
+4. **결과 검토·완료**: ADR 0040~0043·0027 그대로다(검토 화면, PR 머지 → 완료).
+
+할 일 → 작업 중처럼 사람이 자기 이슈를 옮기는 것은 AI와 무관하다. 계획 없이 작업 중에 있는 이슈는 가져가지 않는다.
+사람이 만든 하위 이슈(`ggjira.plan-task` 없음)도 가져가지 않는다.
+
+### 철회·재시도·범위 변경
+
+- **철회**: 부모를 작업 중 밖으로(할 일 등) 옮긴다. 승인(배포)이 철회되고, 대기 중인 job은 취소되며, 실행 중인 job은
+  몇 초 안에 중단 요청을 받는다. 늦게 온 결과는 반영하지 않는다. 다시 작업 중으로 옮기는 것만으로는 승인이 아니다.
+  승인은 계획 검토 → 작업 중 이동뿐이다. 하위 작업 하나만 멈추려면 그 하위 작업을 작업 중 밖으로 옮기거나
+  `jobs cancel`을 쓴다.
+- **같은 계획으로 다시**: 실패한 이슈는 작업 중에 `ggjira-failed` 라벨과 함께 남는다. 라벨을 떼도 다시 돌지 않는다.
+  - 부모: `계획 검토 대기 → 작업 중`으로 다시 옮긴다(새 승인).
+  - 하위 작업: 작업 중 밖으로 옮겼다가 되돌리거나 `ggjira router jobs retry <jobId>`를 쓴다.
+- **범위 변경**: 설명을 고쳐 `AI 계획 요청`으로 옮긴다. 새 계획이 이전 계획과 그 승인을 대신한다.
+
+### 시작되지 않을 때
+
+- 웹 UI 이슈 화면 또는 `ggjira router issue show KEY`의 `stage`가 위임 단계와 다음 이동을 알려 준다.
+  `plan`은 최신 계획(버전·outcome·하위 작업), `approval`은 승인 기록과 상태다.
+  - `waiting_plan_apply`: 계획이 Jira에 다 반영되기를 기다린다. `ggjira router reports list`로 막힌 단계를 본다.
+  - `revoked`: 승인이 철회됐다. 이유가 함께 나온다.
+- "did not take the move … as approval" 댓글과 `계획 승인 아님` 주의 항목: 그 이동은 승인이 아니다.
+  - 결정 대기 계획: 결정에 답하고 요청 상태로 옮긴다.
+  - 이전 요청의 계획: 새 계획이 나올 때까지 기다리거나 다시 요청한다.
+  - Jira의 계획 버전이 다름: 다시 요청한다.
+- 라벨을 바꾸는 이슈 화면 토글은 delegation workspace에서 `409 not_label_mode`다.
+
+### label·legacy → delegation 전환
+
+1. 기준선: `ggjira router backup`과 설정·비밀 파일 사본을 저장소 밖에 둔다.
+2. Jira 워크플로에 `AI 계획 요청`·`계획 검토 대기` 상태와 전이를 추가한다(아직 아무도 쓰지 않는다).
+3. 제안(Jira를 바꾸지 않음):
+   `ggjira router migrate-delegation plan --workspace <id> --request "AI 계획 요청" --plan-review "계획 검토 대기" --out plan.json`
+   - `keep`: 사람의 작업이거나 그대로 둘 결과.
+   - `manual`: 이전 규칙에서 AI를 기다리던 이슈(라벨 + 할 일 등). 전환 뒤 아무것도 집어 가지 않는다. 맡길 이슈는
+     전환 뒤 사람이 `AI 계획 요청`으로 옮긴다. 라벨만 있는 이슈를 일괄로 옮기지 않는다.
+   - `blocked`: 아직 실행될 수 있는 job이 있다. 끝나기를 기다리거나 `jobs cancel`.
+   이전 규칙이 쓰던 상태를 요청·계획 검토 상태로 고르면 `409 not_migratable`이다.
+4. 기준선 기록: `ggjira router migrate-delegation apply plan.json`. 실행될 수 있는 job이 남아 있으면 거절된다.
+   Jira에는 아무것도 쓰지 않는다. 전환 시점에 이미 요청 상태에 있는 이슈의 요청과, 계획 검토 → 작업 중 이력을
+   `admin_holds`(actor `migration:delegation`)에 남긴다. 그래서 전환이나 과거 이력이 새 요청·승인이 되지 않는다.
+   `audit_log`에는 `migration.delegation.*`로 남는다. 다시 실행해도 같은 기준선이다.
+5. 설정 전환: 웹 UI 설정에서 AI 참여 방식을 delegation으로 바꾸고, 같은 요청·계획 검토 상태를 지정해 저장한다.
+   실행될 수 있는 job이 있으면 409 `workspace_busy`다.
+6. 관찰: 첫 reconcile의 `held`에 "requested before the switch to delegation"이 나오면 기준선이 동작한 것이다.
+   그 이슈를 맡기려면 요청 상태 밖으로 옮겼다가 다시 넣는다.
+7. 되돌리기: 설정을 이전 모드로 되돌린다(같은 `workspace_busy` 규칙). migration 14의 테이블과 기준선 hold는
+   남지만 다른 모드에서는 읽지 않는다. 승인된 계획의 부모가 작업 중에 그대로 있으면, 나중에 다시 delegation으로
+   돌아왔을 때 그 승인으로 하위 작업이 이어진다. 이어지지 않게 하려면 되돌리기 전에 부모를 작업 중 밖으로 옮겨
+   철회한다.

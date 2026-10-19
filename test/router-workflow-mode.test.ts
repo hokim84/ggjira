@@ -6,9 +6,17 @@ import {
   candidateStatuses,
   decisionTransitionTarget,
   hasOptIn,
+  isDependencyResolved,
+  reRequestHint,
   resolveJobKind,
 } from "../src/router/workflow-mode.js";
 import {
+  DELEGATION_DONE_STATUS,
+  DELEGATION_REQUEST_STATUS,
+  delegationWorkspace,
+  PLAN_REVIEW_STATUS,
+  RESULT_REVIEW_STATUS,
+  SHARED_IN_PROGRESS_STATUS,
   labelWorkspace,
   LABEL_REVIEW_STATUS,
   PLANNING_STATUS,
@@ -112,9 +120,61 @@ describe("workflow mode (ADR 0037)", () => {
     expect(candidateStatuses(testWorkspace)).toEqual([REQUEST_STATUS, PLANNING_STATUS]);
   });
 
+  describe("delegation mode (ADR 0044)", () => {
+    it("plans every request, whatever its contract or type", () => {
+      for (const [ready, isSubtask, task] of [
+        [true, false, null],
+        [false, true, null],
+        [true, true, planTask],
+      ] as const) {
+        expect(
+          resolveJobKind({
+            workspace: delegationWorkspace,
+            issue: { statusName: DELEGATION_REQUEST_STATUS, isSubtask },
+            requirements: requirements(ready),
+            planTask: task,
+            parentPlanHasTasks: false,
+          }),
+        ).toBe("planning");
+      }
+    });
+
+    it("finds candidates by the request status only, and ignores labels", () => {
+      expect(candidateStatuses(delegationWorkspace)).toEqual([DELEGATION_REQUEST_STATUS]);
+      expect(approvalStatusFor("planning", delegationWorkspace)).toBe(DELEGATION_REQUEST_STATUS);
+      expect(approvalStatusFor("implementation", delegationWorkspace)).toBe(
+        SHARED_IN_PROGRESS_STATUS,
+      );
+      expect(hasOptIn({ labels: [] }, delegationWorkspace)).toBe(true);
+    });
+
+    it("sends a planning question to plan review and keeps an implementation stop in progress", () => {
+      expect(decisionTransitionTarget(delegationWorkspace, "planning")).toBe(PLAN_REVIEW_STATUS);
+      expect(decisionTransitionTarget(delegationWorkspace, "implementation")).toBeNull();
+    });
+
+    it("tells how to re-run the same plan or plan it again", () => {
+      expect(reRequestHint(delegationWorkspace, "planning")).toBe(
+        `move the issue to "${DELEGATION_REQUEST_STATUS}" again`,
+      );
+      expect(reRequestHint(delegationWorkspace, "implementation")).toContain(
+        `"${PLAN_REVIEW_STATUS}" and then to "${SHARED_IN_PROGRESS_STATUS}"`,
+      );
+    });
+
+    it("counts a dependency done only when done or confirmed, not on review", () => {
+      expect(isDependencyResolved(delegationWorkspace, RESULT_REVIEW_STATUS, false)).toBe(false);
+      expect(isDependencyResolved(delegationWorkspace, RESULT_REVIEW_STATUS, true)).toBe(true);
+      expect(isDependencyResolved(delegationWorkspace, DELEGATION_DONE_STATUS, false)).toBe(true);
+      // The other modes keep "reached review" as done.
+      expect(isDependencyResolved(labelWorkspace, LABEL_REVIEW_STATUS, false)).toBe(true);
+      expect(isDependencyResolved(testWorkspace, REQUEST_STATUS, false)).toBe(false);
+    });
+  });
+
   it("leaves a decision request where it is in label mode", () => {
-    expect(decisionTransitionTarget(labelWorkspace)).toBeNull();
-    expect(decisionTransitionTarget(testWorkspace)).toBe(REVIEW_STATUS);
+    expect(decisionTransitionTarget(labelWorkspace, "planning")).toBeNull();
+    expect(decisionTransitionTarget(testWorkspace, "planning")).toBe(REVIEW_STATUS);
     expect(LABEL_REVIEW_STATUS).not.toBe(REVIEW_STATUS);
   });
 });

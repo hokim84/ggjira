@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { JiraGateway } from "../jira/gateway.js";
-import type { JiraChangelogItem, JiraIssue } from "../jira/types.js";
+import type { JiraChangelogEntry, JiraChangelogItem, JiraIssue } from "../jira/types.js";
 import type { JobKind } from "../contracts/protocol.js";
 import { computeExecutionInputHash, isLegacyInputHash } from "../issue/input-hash.js";
 import type { IssueRequirements } from "../issue/requirements.js";
@@ -40,6 +40,60 @@ export async function computeApprovalId(
   }
   const latest = approvingEntries.reduce((a, b) => (a.created > b.created ? a : b));
   return latest.id;
+}
+
+/** What a `delegation`-mode issue's changelog says about its request and plan approval. */
+export interface DelegationApprovalIds {
+  /** The latest entry into the request status, as `computeApprovalId` gives it. */
+  requestApprovalId: string;
+  /** The latest move from the plan-review status to the in-progress status made after that
+   *  request, or `null` when there is none. Only a status move a human made from the plan-review
+   *  status counts (ADR 0044); Router itself never makes that move. */
+  planApprovalId: string | null;
+}
+
+/**
+ * The two events of a delegated issue: which request started its current plan, and which move to
+ * in progress approved a plan after it. There is no fallback for the approval: an issue that never
+ * moved from plan review to in progress has approved nothing, even if it sits in progress.
+ */
+export async function computeDelegationApprovalIds(
+  jira: JiraGateway,
+  issue: JiraIssue,
+  statuses: { requestStatus: string; planReviewStatus: string; inProgressStatus: string },
+): Promise<DelegationApprovalIds> {
+  // Oldest first; entries Jira stamped with the same time keep the order Jira listed them in.
+  const ordered = (await jira.getIssueChangelog(issue.key))
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) =>
+      a.entry.created === b.entry.created
+        ? a.index - b.index
+        : a.entry.created < b.entry.created
+          ? -1
+          : 1,
+    )
+    .map(({ entry }) => entry);
+  const isStatusMove = (entry: JiraChangelogEntry, from: string | null, to: string) =>
+    entry.items.some(
+      (item) =>
+        item.field === "status" &&
+        item.toString === to &&
+        (from === null || item.fromString === from),
+    );
+  let request: JiraChangelogEntry | undefined;
+  let approval: JiraChangelogEntry | undefined;
+  for (const entry of ordered) {
+    if (isStatusMove(entry, null, statuses.requestStatus)) {
+      request = entry;
+      approval = undefined;
+    } else if (isStatusMove(entry, statuses.planReviewStatus, statuses.inProgressStatus)) {
+      approval = entry;
+    }
+  }
+  return {
+    requestApprovalId: request?.id ?? `created:${issue.key}`,
+    planApprovalId: approval?.id ?? null,
+  };
 }
 
 /** Jira records a label edit as the space-separated label lists before and after it. */

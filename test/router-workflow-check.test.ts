@@ -53,6 +53,25 @@ describe("routerWorkflowHops", () => {
   });
 });
 
+describe("routerWorkflowHops in delegation mode (ADR 0044)", () => {
+  it("checks the plan review hops, the human approval included", () => {
+    const hops = routerWorkflowHops({
+      mode: "delegation",
+      requestStatus: "AI 계획 요청",
+      planReviewStatus: "계획 검토 대기",
+      inProgressStatus: "작업 중",
+      reviewStatus: "결과 검토",
+      doneStatus: "완료",
+    });
+    expect(hops.map((hop) => `${hop.label}: ${hop.from}→${hop.to}`)).toEqual([
+      "계획 완료: AI 계획 요청→계획 검토 대기",
+      "계획 승인(사람): 계획 검토 대기→작업 중",
+      "작업 완료: 작업 중→결과 검토",
+      "PR 머지 후 완료: 결과 검토→완료",
+    ]);
+  });
+});
+
 describe("checkWorkflowHops", () => {
   it("confirms each hop on an issue in its source status", async () => {
     const jira = seededJira();

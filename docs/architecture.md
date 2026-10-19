@@ -54,6 +54,7 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 workspace마다 `workflow.mode`가 있다(ADR 0037, `src/router/workflow-mode.ts`). 기본값 `legacy`는 AI
 전용 상태(요청·계획 요청·결정 대기)로 일한다. `label`은 일반 할 일/진행/검토/완료 흐름에서
 `workflow.optInLabel`이 붙은 이슈만 맡는다. 계획 요청 상태와 결정 대기 상태는 없다.
+`delegation`(ADR 0044)은 상태로 위임하고 항상 계획부터 한다. 아래 "delegation 모드"에서 따로 설명한다.
 
 1. 후보: workspace별 JQL이다. legacy는 `project in (...) AND status in (request, planning)`이고,
    label은 `status = 할 일 AND labels = <optInLabel>`이다(코드에서도 라벨을 다시 확인). v4 메타 이슈
@@ -79,6 +80,24 @@ workspace마다 `workflow.mode`가 있다(ADR 0037, `src/router/workflow-mode.ts
 5. 관리자 hold: `jobs cancel`을 한 승인은 다시 배정하지 않는다(`admin_holds`, ADR 0022).
 6. Jev 관찰 평가(ADR 0030): `TYPESAFE_API_KEY`가 있으면 `assess` 루프가 새 job마다 모델 등급과
    준비 상태를 Jev에 묻고 `job_assessments`에 기록한다. 아직 어떤 결정에도 쓰지 않는다.
+
+### delegation 모드 (ADR 0044, `src/router/delegation.ts`)
+
+1. 위임: `requestStatus`(AI 계획 요청) 진입이 위임 사건이다. 그 상태의 이슈는 언제나 planning job 하나가 된다.
+   계획은 요청 상태에서 진행되고, 결과는 `planReviewStatus`로 간다. 결과를 저장하는 트랜잭션에서 `plan_reviews`에
+   계획 버전·요청 승인 id·outcome·task id를 남긴다(migration 14).
+2. 승인: reconcile이 Router가 아는 열린 계획의 이슈만 다시 읽는다. 공용 '작업 중'을 검색하지 않는다. 최신 요청
+   이후의 마지막 `planReviewStatus → inProgressStatus` 이동이 최신 `planned` 계획에 대한 것이고, 기준선 hold가
+   없으며, 계획이 Jira에 다 반영됐고 버전이 같으면 `plan_deployments`에 한 번 기록한다. 그 뒤에야 실행을 허용한다.
+   승인이 아닌 이동은 댓글 1회와 `plan_approval_refused` 주의 항목만 남긴다.
+3. 실행:
+   - 하위 작업이 없는 계획: 부모가 implementation job이다(승인 id = 배포 승인).
+   - 하위 작업이 있는 계획: 활성화 저널이 하위 작업을 '작업 중'으로 옮긴다. 하위 작업은
+     `<배포 승인>#<taskId>@<작업 중 진입>` 승인으로 구현된다. 계획을 다시 하지 않는다.
+   - 의존성은 done 또는 F01 확인으로만 풀린다. 모든 하위 작업이 완료되면 부모가 결과 검토로 간다.
+4. 철회: 부모가 '작업 중'을 벗어나면 배포가 철회된다. 열린 job은 verify·reverify에서 취소되거나 중단 요청을
+   받는다. Worker API는 배포가 `active`인지 DB에서 본다. 저널의 전이 단계는 `approvalRule`(`plan-approval`·
+   `plan-task`)로 같은 승인을 다시 계산한다.
 
 ## Worker API (`/api/v1`, `src/router/worker-service.ts`)
 

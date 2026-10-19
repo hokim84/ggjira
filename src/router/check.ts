@@ -1,7 +1,7 @@
 import type { JiraGateway } from "../jira/gateway.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { checkWorkflowHops } from "./workflow-check.js";
-import { hasOptIn, isLabelMode, optInLabelOf } from "./workflow-mode.js";
+import { hasOptIn, isDelegationMode, isLabelMode, optInLabelOf } from "./workflow-mode.js";
 
 /**
  * `ggjira router check`: confirms the Router config matches the real Jira before `serve`
@@ -26,6 +26,9 @@ function configuredStatuses(workspace: WorkspaceConfig): Array<[label: string, s
     ["requestStatus", workflow.requestStatus],
     ["inProgressStatus", workflow.inProgressStatus],
     ["reviewStatus", workflow.reviewStatus],
+    ...(workflow.planReviewStatus
+      ? [["planReviewStatus", workflow.planReviewStatus] as [string, string]]
+      : []),
     ...(workflow.planningStatus
       ? [["planningStatus", workflow.planningStatus] as [string, string]]
       : []),
@@ -94,9 +97,11 @@ async function checkProject(
     });
   }
 
-  // A `label`-mode workspace plans too (any request without a contract, ADR 0037).
+  // A `label`-mode workspace plans too (any request without a contract, ADR 0037), and a
+  // `delegation`-mode one plans every request (ADR 0044).
   const labelMode = isLabelMode(workspace);
-  if (workspace.workflow.planningStatus || labelMode) {
+  const delegationMode = isDelegationMode(workspace);
+  if (workspace.workflow.planningStatus || labelMode || delegationMode) {
     const subtaskType = config.planning.subtaskIssueType;
     const found = issueTypes.find((type) => type.name.normalize("NFC") === subtaskType);
     items.push(
@@ -109,7 +114,12 @@ async function checkProject(
     );
     // The REST API does not expose a workflow's initial status, so this stays a manual check. In
     // `label` mode a new subtask carries no opt-in label, so its initial status does not matter.
-    if (!labelMode)
+    if (delegationMode)
+      items.push({
+        level: "warn",
+        message: `${where}: confirm by hand that a new "${subtaskType}" can move to "${workspace.workflow.inProgressStatus}" — Router moves the tasks of an approved plan there (ADR 0044)`,
+      });
+    else if (!labelMode)
       items.push({
         level: "warn",
         message: `${where}: confirm by hand that a new "${subtaskType}" starts in a status other than "${workspace.workflow.requestStatus}" — otherwise every PM subtask would be dispatched before a human approves it`,
@@ -120,6 +130,17 @@ async function checkProject(
 /** What each status's issue must be able to reach next for Router's own transitions. */
 function expectedNextStatuses(workspace: WorkspaceConfig, current: string): string[] {
   const { workflow } = workspace;
+  if (isDelegationMode(workspace) && workflow.planReviewStatus) {
+    const next = new Map<string, string[]>([
+      [workflow.requestStatus, [workflow.planReviewStatus]],
+      [workflow.planReviewStatus, [workflow.inProgressStatus]],
+      [workflow.inProgressStatus, [workflow.reviewStatus]],
+      ...(workflow.doneStatus
+        ? [[workflow.reviewStatus, [workflow.doneStatus]] as [string, string[]]]
+        : []),
+    ]);
+    return next.get(current) ?? [];
+  }
   if (current === workflow.requestStatus || current === workflow.planningStatus) {
     return [workflow.inProgressStatus];
   }

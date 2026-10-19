@@ -18,6 +18,7 @@ import { AdminClient } from "./admin-client.js";
 import { type CheckItem, runRouterCheck } from "./check.js";
 import { loadRouterConfig, type RouterConfig } from "./config.js";
 import type { LabelMigrationPlan, LabelMigrationResult } from "./label-migration.js";
+import type { DelegationMigrationPlan, DelegationMigrationResult } from "./delegation-migration.js";
 import type { IssueOptInView, SetOptInResult } from "./issue-opt-in.js";
 import type { ReviewQueueItem, ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
 import type { AttentionItemRow } from "./db/attention.js";
@@ -54,8 +55,9 @@ export const ROUTER_USAGE = `ggjira router <command>
   jobs list [--state <s>] [--limit <n>] [--cursor <c>] | show <jobId>
        cancel <jobId> | retry <jobId> | resolve <jobId>
   reports list | retry <batchId>
-  issue show <KEY> | opt-in <KEY> on|off  an issue's AI participation (label mode): show why it
-                                         would not start, or add/remove the opt-in label
+  issue show <KEY> | opt-in <KEY> on|off  an issue's AI participation: where it stands (delegation
+                                         mode), or why it would not start and the opt-in label
+                                         (label mode)
   issue reviews <KEY>                    results pinned for review, and merges seen against them
   attention [--all|--resolved] [--issue KEY]  what a human must look at (open by default)
   reviews [--immediate|--standard] [--held|--all] [--assignee <accountId>] [--parent KEY]
@@ -68,7 +70,10 @@ export const ROUTER_USAGE = `ggjira router <command>
   backup
   migrate-labels plan --workspace <id> --label <l> --to-do <status> --review <status> [--out <f>]
   migrate-labels apply <plan file>       move a legacy workspace onto the label workflow
-                                         (ADR 0037); apply runs only "approved": true entries`;
+                                         (ADR 0037); apply runs only "approved": true entries
+  migrate-delegation plan --workspace <id> --request <status> --plan-review <status> [--out <f>]
+  migrate-delegation apply <plan file>   record the baseline before switching a workspace to
+                                         status delegation (ADR 0044); moves nothing in Jira`;
 
 const DEFAULT_CONFIG = "router.config.json";
 
@@ -472,6 +477,26 @@ function printIssueOptIn(io: CliIo, view: IssueOptInView): void {
   io.out(`${view.issueKey}  ${view.summary}`);
   io.out(`  status:   ${view.statusName}`);
   io.out(`  labels:   ${view.labels.length ? view.labels.join(", ") : "(none)"}`);
+  const delegation = view.delegation;
+  if (delegation) {
+    io.out(`  stage:    ${delegation.stage} (delegation mode; labels start or stop nothing)`);
+    if (delegation.plan) {
+      io.out(
+        `  plan:     ${delegation.plan.version} ${delegation.plan.outcome}${delegation.plan.taskIds.length ? ` tasks [${delegation.plan.taskIds.join(", ")}]` : ""}${delegation.plan.closed ? " (closed)" : ""}`,
+      );
+    }
+    if (delegation.deployment) {
+      io.out(
+        `  approval: ${delegation.deployment.approvalId} ${delegation.deployment.state}${delegation.deployment.reason ? ` — ${delegation.deployment.reason}` : ""}`,
+      );
+    }
+    if (delegation.parentKey) io.out(`  task of:  ${delegation.parentKey}`);
+    if (delegation.heldBy) io.out(`  held by:  ${delegation.heldBy}`);
+    if (view.openJob) {
+      io.out(`  job:      ${view.openJob.jobId} (${view.openJob.kind}, ${view.openJob.state})`);
+    }
+    return;
+  }
   io.out(
     view.optInLabel
       ? `  opt-in:   ${view.optedIn ? "on" : "off"} (label "${view.optInLabel}")`
@@ -743,6 +768,61 @@ async function migrateLabels(parsed: ParsedArgs, io: CliIo): Promise<number> {
   throw new UsageError(`unknown migrate-labels subcommand "${sub}"`);
 }
 
+/** `migrate-delegation plan|apply` (ADR 0044, runbook §34): plan lists what the switch means per
+ *  issue; apply records the baseline. Neither moves anything in Jira. */
+async function migrateDelegation(parsed: ParsedArgs, io: CliIo): Promise<number> {
+  const client = adminClient(parsed, io);
+  const sub = requirePositional(parsed, 1, "migrate-delegation subcommand (plan|apply)");
+  if (sub === "plan") {
+    const plan = await client.post<DelegationMigrationPlan>("/migrations/delegation/plan", {
+      workspaceId: requireOption(parsed, "workspace"),
+      target: {
+        requestStatus: requireOption(parsed, "request"),
+        planReviewStatus: requireOption(parsed, "plan-review"),
+      },
+    });
+    const out = stringOption(parsed, "out");
+    if (out) writeFileSync(out, `${JSON.stringify(plan, null, 2)}\n`);
+    else printJson(io, plan);
+    if (!parsed.values.json) {
+      for (const line of formatTable(
+        ["ISSUE", "STATUS", "ACTION", "REASON"],
+        plan.entries.map((e) => [e.issueKey, e.status, e.action, e.reason]),
+      )) {
+        io.out(line);
+      }
+      if (out) {
+        io.out(
+          `\nWrote ${out}. Nothing was changed in Jira. Once no entry is "blocked", run: ggjira router migrate-delegation apply ${out}`,
+        );
+      }
+    }
+    return 0;
+  }
+  if (sub === "apply") {
+    const file = requirePositional(parsed, 2, "plan file");
+    const plan = JSON.parse(readFileSync(file, "utf-8")) as DelegationMigrationPlan;
+    const { results } = await client.post<{ results: DelegationMigrationResult[] }>(
+      "/migrations/delegation/apply",
+      plan,
+    );
+    if (parsed.values.json) printJson(io, results);
+    else {
+      for (const line of formatTable(
+        ["ISSUE", "OUTCOME", "DETAIL"],
+        results.map((r) => [r.issueKey, r.outcome, r.detail]),
+      )) {
+        io.out(line);
+      }
+      io.out(
+        `\nBaseline recorded. Now switch workspace "${plan.workspaceId}" to mode "delegation" with requestStatus "${plan.target.requestStatus}" and planReviewStatus "${plan.target.planReviewStatus}".`,
+      );
+    }
+    return results.some((result) => result.outcome === "failed") ? 1 : 0;
+  }
+  throw new UsageError(`unknown migrate-delegation subcommand "${sub}"`);
+}
+
 export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
   const [command, ...rest] = args;
   switch (command) {
@@ -827,6 +907,17 @@ export async function runRouterCli(args: string[], io: CliIo): Promise<number> {
           label: { type: "string" },
           "to-do": { type: "string" },
           review: { type: "string" },
+          out: { type: "string" },
+        }),
+        io,
+      );
+    case "migrate-delegation":
+      return migrateDelegation(
+        parseCommandArgs(args, {
+          ...COMMON_OPTIONS,
+          workspace: { type: "string" },
+          request: { type: "string" },
+          "plan-review": { type: "string" },
           out: { type: "string" },
         }),
         io,

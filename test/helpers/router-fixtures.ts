@@ -49,6 +49,38 @@ export const LABEL_TRANSITIONS = [
   DONE_STATUS,
 ].map((status) => ({ id: `t-${status}`, name: `To ${status}`, toStatusName: status }));
 
+/** A `delegation`-mode workspace (ADR 0044): delegated by status, always planned first. */
+export const DELEGATION_TODO_STATUS = "할 일";
+export const DELEGATION_REQUEST_STATUS = "AI 계획 요청";
+export const PLAN_REVIEW_STATUS = "계획 검토 대기";
+export const SHARED_IN_PROGRESS_STATUS = "작업 중";
+export const RESULT_REVIEW_STATUS = "결과 검토";
+export const DELEGATION_DONE_STATUS = "완료";
+
+export const delegationWorkspace: WorkspaceConfig = {
+  id: "ws1",
+  repositoryId: "repo1",
+  projectKeys: ["KAN"],
+  workflow: {
+    mode: "delegation",
+    requestStatus: DELEGATION_REQUEST_STATUS,
+    planReviewStatus: PLAN_REVIEW_STATUS,
+    inProgressStatus: SHARED_IN_PROGRESS_STATUS,
+    reviewStatus: RESULT_REVIEW_STATUS,
+    doneStatus: DELEGATION_DONE_STATUS,
+  },
+};
+
+/** Every move between the delegation workflow's statuses. */
+export const DELEGATION_TRANSITIONS = [
+  DELEGATION_TODO_STATUS,
+  DELEGATION_REQUEST_STATUS,
+  PLAN_REVIEW_STATUS,
+  SHARED_IN_PROGRESS_STATUS,
+  RESULT_REVIEW_STATUS,
+  DELEGATION_DONE_STATUS,
+].map((status) => ({ id: `t-${status}`, name: `To ${status}`, toStatusName: status }));
+
 /** A description whose scope contract is complete (ADR 0034) unless `acceptance`/`verification`
  *  is passed as `[]`, so implementation requests built from it dispatch by default. */
 export function issueDescription(

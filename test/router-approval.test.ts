@@ -4,6 +4,7 @@ import { FakeJiraGateway } from "../src/jira/fake.js";
 import type { PlanTaskMetadata } from "../src/pm/metadata.js";
 import {
   computeApprovalId,
+  computeDelegationApprovalIds,
   computeInputHash,
   computeLegacyInputHash,
   inputHashMatches,
@@ -58,6 +59,62 @@ describe("computeApprovalId", () => {
     );
 
     expect(secondApprovalId).not.toBe(firstApprovalId);
+  });
+});
+
+describe("computeDelegationApprovalIds (ADR 0044)", () => {
+  const STATUSES = {
+    requestStatus: "AI 계획 요청",
+    planReviewStatus: "계획 검토 대기",
+    inProgressStatus: "작업 중",
+  };
+
+  function seeded(): FakeJiraGateway {
+    const jira = new FakeJiraGateway();
+    jira.seedIssue(
+      { key: "KAN-1", statusName: "할 일" },
+      ["할 일", ...Object.values(STATUSES)].map((status) => ({
+        id: status,
+        name: status,
+        toStatusName: status,
+      })),
+    );
+    return jira;
+  }
+
+  const idsOf = async (jira: FakeJiraGateway) =>
+    computeDelegationApprovalIds(jira, await jira.getIssue("KAN-1"), STATUSES);
+
+  it("approves nothing for an issue a person moved to in progress", async () => {
+    const jira = seeded();
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
+    expect(await idsOf(jira)).toEqual({ requestApprovalId: "created:KAN-1", planApprovalId: null });
+  });
+
+  it("is the move from plan review to in progress after the latest request", async () => {
+    const jira = seeded();
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.planReviewStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
+    const changelog = await jira.getIssueChangelog("KAN-1");
+    expect(await idsOf(jira)).toEqual({
+      requestApprovalId: changelog[0]?.id,
+      planApprovalId: changelog[2]?.id,
+    });
+  });
+
+  it("forgets an approval once the issue is requested again", async () => {
+    const jira = seeded();
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.planReviewStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
+    const changelog = await jira.getIssueChangelog("KAN-1");
+    expect(await idsOf(jira)).toEqual({
+      requestApprovalId: changelog[3]?.id,
+      planApprovalId: null,
+    });
   });
 });
 

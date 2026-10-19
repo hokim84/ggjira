@@ -13,7 +13,8 @@ export type AttentionKind =
   | "scope_deviation"
   | "review_required"
   | "readiness_hold"
-  | "report_blocked";
+  | "report_blocked"
+  | "plan_approval_refused";
 
 export type AttentionSeverity = "immediate" | "standard";
 

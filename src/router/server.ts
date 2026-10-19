@@ -8,6 +8,8 @@ import {
   AdminIssueOptInRequestSchema,
   AdminReviewJudgmentRequestSchema,
   AdminJiraProjectRequestSchema,
+  AdminDelegationMigrationApplyRequestSchema,
+  AdminDelegationMigrationPlanRequestSchema,
   AdminLabelMigrationApplyRequestSchema,
   AdminLabelMigrationPlanRequestSchema,
   AdminWorkflowCheckRequestSchema,
@@ -417,6 +419,17 @@ function registerAdminRoutes(
         ),
       );
 
+      scope.post("/migrations/delegation/plan", async (request) => {
+        const body = parseBody(AdminDelegationMigrationPlanRequestSchema, request.body);
+        return admin.planDelegationMigration(body.workspaceId, body.target);
+      });
+      scope.post("/migrations/delegation/apply", async (request) =>
+        admin.applyDelegationMigration(
+          parseBody(AdminDelegationMigrationApplyRequestSchema, request.body),
+          actorOf(request),
+        ),
+      );
+
       scope.get<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
         admin.issueOptIn(request.params.key),
       );
@@ -483,6 +496,10 @@ function registerAdminRoutes(
       scope.post("/jira/workflow-check", async (request) => {
         const body = parseBody(AdminWorkflowCheckRequestSchema, request.body);
         return admin.checkWorkflow(body.projectKey, {
+          ...(body.workflow.mode ? { mode: body.workflow.mode } : {}),
+          ...(body.workflow.planReviewStatus
+            ? { planReviewStatus: body.workflow.planReviewStatus }
+            : {}),
           requestStatus: body.workflow.requestStatus,
           inProgressStatus: body.workflow.inProgressStatus,
           reviewStatus: body.workflow.reviewStatus,
