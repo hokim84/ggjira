@@ -340,6 +340,8 @@ v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 �
 적용되며, 저장하면 곧바로 열린 PR을 다시 확인한다(ADR 0032).
 
 진단:
+- `router check`의 `GitHub <owner>/<repo>` 줄이 PR을 읽을 수 있는지 미리 알려 준다. 대상은 config 저장소의 GitHub
+  `cloneUrl`과 이미 기록된 PR의 저장소다. 확인에 실패한 PR은 확인 필요 항목 `pull_request_unchecked`로도 뜬다.
 - 먼저 설정 > GitHub 영역의 **추적 중인 PR** 목록을 본다. "지금 확인"으로 바로 다시 확인할 수 있다.
   - "확인 실패 — private repository needs GITHUB_TOKEN": 비공개 저장소인데 토큰이 없다. 토큰을 넣는다.
   - "token cannot see this repository": 토큰에 그 저장소의 Pull requests 읽기 권한이 없다.
@@ -558,6 +560,8 @@ Router는 서명이 맞는 웹훅의 이벤트 종류·이슈 키·프로젝트�
 | `review_required` | 고위험·미검증·커밋 없음 등 개별 검토 | 결과를 직접 확인 | 검토 커밋과 같은 PR 머지, 새 결과, 새 승인 |
 | `readiness_hold` | 계약 절이 빠져 시작 안 함 | 설명에 Acceptance Criteria·Verification 추가 | 계약이 채워짐 |
 | `report_blocked` | Jira 반영이 막힘 | 원인(워크플로·권한)을 고치고 `router reports retry` | 재시도가 반영됨 |
+| `unassigned` | 담당자 없는 이슈를 위임해 시작 안 함(댓글 1회) | 이슈에 담당자를 지정 | 다음 패스에서 job이 생김 |
+| `pull_request_unchecked` | Router가 GitHub에서 PR을 확인하지 못함. 머지해도 Jira에 반영되지 않음 | 증거의 오류대로 `GITHUB_TOKEN`을 넣거나 권한을 고침(§21 진단) | 다음 확인 성공, 또는 PR 종료 |
 
 - 해소는 기록일 뿐이다. 해소됐다고 실행이 시작되지 않는다. 실행은 Jira의 새 요청(승인)만 시작한다.
 - `--all`이나 `--resolved`로 해소 이력을 본다. "recurred after"는 해소된 같은 사건의 재발이다.
@@ -667,6 +671,8 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 ### 흐름
 
 1. **위임**: 담당자가 있는 이슈를 `AI 계획 요청`으로 옮긴다. 설명 형식과 상관없이 계획 job 하나가 생긴다.
+   담당자가 없으면 시작하지 않고 "has no assignee" 댓글을 한 번 달고 확인 필요 항목 `unassigned`를 남긴다.
+   담당자를 지정하면 다음 패스(최대 1분)에서 시작한다.
    계획하는 동안 이슈는 요청 상태에 있고 "GGJIRA started planning" 댓글이 달린다.
 2. **계획 검토**: 계획이 끝나면 `계획 검토 대기`로 옮겨지고 "Plan applied." 댓글이 달린다. 하위 작업으로 나눈
    계획이면 하위 이슈도 이때 생기지만, 승인 전에는 아무것도 실행되지 않는다. 결정이 필요한 계획도 여기에 온다.

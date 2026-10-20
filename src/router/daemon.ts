@@ -137,7 +137,7 @@ export class RouterDaemon {
       now: this.now,
       reconcileNow: () => this.reconcileNow(),
       applyConfig: (config) => this.applyConfig(config),
-      github: { webhook: Boolean(deps.github?.webhookSecret) },
+      github: { webhook: Boolean(deps.github?.webhookSecret), token: () => this.githubToken },
       secrets: {
         ...(deps.secretsPath ? { secretsPath: deps.secretsPath } : {}),
         slots: {

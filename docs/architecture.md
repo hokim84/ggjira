@@ -87,6 +87,8 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
    이후의 마지막 `planReviewStatus → inProgressStatus` 이동이 최신 `planned` 계획에 대한 것이고, 관리자 hold가
    없으며, 계획이 Jira에 다 반영됐고 버전이 같으면 `plan_deployments`에 한 번 기록한다. 그 뒤에야 실행을 허용한다.
    승인이 아닌 이동은 댓글 1회와 `plan_approval_refused` 주의 항목만 남긴다.
+   담당자가 없는 이슈는 요청이든 승인이든 실행하지 않는다. 승인 id마다 한 번 댓글을 달고 `unassigned` 주의
+   항목을 남기며, 담당자가 생겨 job이 만들어지면 해소한다(`src/router/scheduler.ts` `holdUnassigned`).
 3. 실행:
    - 하위 작업이 없는 계획: 부모가 implementation job이다(승인 id = 배포 승인).
    - 하위 작업이 있는 계획: 활성화 저널이 하위 작업을 '작업 중'으로 옮긴다. 하위 작업은
@@ -189,6 +191,9 @@ result 저장 ─▶ [<resultId>]         구현 성공: 댓글 → 실패 라�
 push 직전에 `authorize`(stage `push`)로 권한을 다시 확인한다(ADR 0026). GitHub 원격이고 `createPullRequest`면 워커가
 `gh`로 PR을 열어 결과에 담는다. Router는 이를 `pull_requests`에 기록하고, `/webhooks/github`(HMAC 검증) 또는
 5분 폴링으로 머지를 알게 되면 이슈를 검토 상태에서 `doneStatus`로 옮긴다(ADR 0027, `src/router/github.ts`).
+폴링이 실패한 PR은 `pull_request_unchecked` 주의 항목이 되고(PR마다 하나, 다음 성공이나 PR 종료 때 해소),
+`router check`는 config의 GitHub `cloneUrl`과 이미 기록된 PR의 저장소마다 PR 목록을 읽을 수 있는지 확인한다.
+워커가 쓰는 PR 본문은 Router 설정을 모르므로 "머지하면 완료"라고 단정하지 않는다.
 
 ## 웹 UI와 셋업 모드 (ADR 0023)
 

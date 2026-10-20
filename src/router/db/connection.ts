@@ -15,3 +15,9 @@ export function openRouterDb(path: string): Database.Database {
   runMigrations(db);
   return db;
 }
+
+/** Opens an existing store only to read it, without migrating — for CLI commands that look at
+ *  a store a running Router owns. Throws when the file does not exist. */
+export function openRouterDbReadOnly(path: string): Database.Database {
+  return new Database(path, { readonly: true, fileMustExist: true });
+}

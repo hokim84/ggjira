@@ -1,5 +1,7 @@
 import type { JiraGateway } from "../jira/gateway.js";
+import { githubRepoSlug } from "../worker/worktree.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
+import type { FetchLike } from "./github.js";
 import { checkWorkflowHops } from "./workflow-check.js";
 
 /**
@@ -165,10 +167,86 @@ async function checkSampleIssue(
   }
 }
 
+/**
+ * The GitHub repositories Router follows pull requests in: those the config clones from GitHub,
+ * and those workers already opened pull requests in (Router learns a repository from the first).
+ */
+export function githubRepositoriesToCheck(
+  config: RouterConfig,
+  pullRequestRepos: readonly string[],
+): string[] {
+  const slugs = config.repositories
+    .map((repository) => (repository.cloneUrl ? githubRepoSlug(repository.cloneUrl) : undefined))
+    .filter((slug): slug is string => Boolean(slug));
+  return [...new Set([...slugs, ...pullRequestRepos].map((slug) => slug.toLowerCase()))].sort();
+}
+
+/**
+ * Whether Router can read each repository's pull requests the way the poll does (ADR 0027, 0032):
+ * GitHub answers 404 for a private repository it won't show, so a merge would go unnoticed.
+ */
+export async function checkGithubRepositories(input: {
+  repos: readonly string[];
+  token?: string | undefined;
+  fetch?: FetchLike;
+}): Promise<CheckItem[]> {
+  const fetchImpl = input.fetch ?? ((url, init) => fetch(url, init));
+  const items: CheckItem[] = [];
+  for (const repo of input.repos) {
+    let status: number;
+    try {
+      const response = await fetchImpl(
+        `https://api.github.com/repos/${repo}/pulls?state=all&per_page=1`,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/vnd.github+json",
+            "user-agent": "ggjira-router",
+            "x-github-api-version": "2022-11-28",
+            ...(input.token ? { authorization: `Bearer ${input.token}` } : {}),
+          },
+        },
+      );
+      status = response.status;
+    } catch (error) {
+      items.push({
+        level: "warn",
+        message: `GitHub ${repo}: cannot reach GitHub (${errorText(error)})`,
+      });
+      continue;
+    }
+    if (status === 200) {
+      items.push({
+        level: "ok",
+        message: `GitHub ${repo}: pull requests are readable${input.token ? " with GITHUB_TOKEN" : " without a token"}`,
+      });
+    } else if (status === 404) {
+      items.push({
+        level: "fail",
+        message: input.token
+          ? `GitHub ${repo}: GITHUB_TOKEN cannot see this repository (give it Pull requests: read); merges are not noticed`
+          : `GitHub ${repo}: not visible without a token; a private repository needs GITHUB_TOKEN, or merges are not noticed`,
+      });
+    } else if (status === 401) {
+      items.push({ level: "fail", message: `GitHub ${repo}: GITHUB_TOKEN is invalid or expired` });
+    } else {
+      items.push({
+        level: "warn",
+        message: `GitHub ${repo}: GitHub answered ${status}${status === 403 || status === 429 ? " (rate limited or forbidden)" : ""}`,
+      });
+    }
+  }
+  return items;
+}
+
 export async function runRouterCheck(
   jira: JiraGateway,
   config: RouterConfig,
-  opts: { issueKey?: string } = {},
+  opts: {
+    issueKey?: string;
+    /** GitHub repositories to check (`githubRepositoriesToCheck`) and the token Router polls with. */
+    github?: { repos: readonly string[]; token?: string | undefined; fetch?: FetchLike };
+  } = {},
 ): Promise<CheckItem[]> {
   const items: CheckItem[] = [];
   try {
@@ -206,6 +284,7 @@ export async function runRouterCheck(
     });
   }
 
+  if (opts.github) items.push(...(await checkGithubRepositories(opts.github)));
   if (opts.issueKey) await checkSampleIssue(jira, config, opts.issueKey, items);
   return items;
 }

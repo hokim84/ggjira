@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
-import { runRouterCheck } from "../src/router/check.js";
+import {
+  checkGithubRepositories,
+  githubRepositoriesToCheck,
+  runRouterCheck,
+} from "../src/router/check.js";
 import {
   buildRouterConfig,
   DONE_STATUS,
@@ -91,5 +95,70 @@ describe("router check", () => {
     expect(items).toEqual([
       { level: "fail", message: "Jira authentication failed: 401 Unauthorized" },
     ]);
+  });
+});
+
+describe("router check: GitHub", () => {
+  it("lists the repositories Router follows pull requests in", () => {
+    const config = buildRouterConfig({ workers: [workerPolicy()] });
+    const withClone = {
+      ...config,
+      repositories: [
+        { id: "a", cloneUrl: "https://github.com/Acme/App.git" },
+        { id: "b", cloneUrl: "https://gitlab.com/acme/other.git" },
+      ],
+    };
+    expect(githubRepositoriesToCheck(withClone, ["acme/app", "Acme/Tools"])).toEqual([
+      "acme/app",
+      "acme/tools",
+    ]);
+  });
+
+  it("says what to do when GitHub will not show the pull requests", async () => {
+    const requests: string[] = [];
+    const answers: Record<string, number> = { "acme/public": 200, "acme/private": 404 };
+    const fetch = async (url: string, init: RequestInit) => {
+      requests.push(`${url} ${(init.headers as Record<string, string>).authorization ?? "-"}`);
+      const repo = url.split("/repos/")[1]?.split("/pulls")[0] ?? "";
+      return new Response("[]", { status: answers[repo] ?? 500 });
+    };
+
+    const anonymous = await checkGithubRepositories({
+      repos: ["acme/public", "acme/private"],
+      fetch,
+    });
+    expect(anonymous).toEqual([
+      { level: "ok", message: "GitHub acme/public: pull requests are readable without a token" },
+      {
+        level: "fail",
+        message: expect.stringContaining(
+          "acme/private: not visible without a token; a private repository needs GITHUB_TOKEN",
+        ),
+      },
+    ]);
+    expect(requests[0]).toBe(
+      "https://api.github.com/repos/acme/public/pulls?state=all&per_page=1 -",
+    );
+
+    const withToken = await checkGithubRepositories({ repos: ["acme/private"], token: "t", fetch });
+    expect(withToken[0]?.message).toMatch(/GITHUB_TOKEN cannot see this repository/);
+    answers["acme/private"] = 401;
+    const expired = await checkGithubRepositories({ repos: ["acme/private"], token: "t", fetch });
+    expect(expired[0]).toEqual({
+      level: "fail",
+      message: "GitHub acme/private: GITHUB_TOKEN is invalid or expired",
+    });
+  });
+
+  it("runs as part of router check", async () => {
+    const jira = jiraWithProject(ALL_STATUSES);
+    const config = buildRouterConfig({ workers: [workerPolicy()] });
+    const items = await runRouterCheck(jira, config, {
+      github: { repos: ["acme/app"], fetch: async () => new Response("[]", { status: 404 }) },
+    });
+    expect(items.at(-1)).toMatchObject({
+      level: "fail",
+      message: expect.stringContaining("GitHub acme/app:"),
+    });
   });
 });

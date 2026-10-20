@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
+import { listAttentionItems } from "../src/router/db/attention.js";
 import { openRouterDb } from "../src/router/db/connection.js";
 import { getJob, getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
 import { RuleDecisionProvider } from "../src/router/decision.js";
@@ -148,6 +149,37 @@ describe("reconcileCandidates", () => {
     ]);
     expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
     expect(getOpenJobForIssue(db, "KAN-2")?.state).toBe("queued");
+  });
+
+  it("tells the human once when a request has no assignee, and runs it once assigned", async () => {
+    jira.seedIssue({
+      key: "KAN-1",
+      statusName: REQUEST_STATUS,
+      projectKey: "KAN",
+      assigneeAccountId: null,
+      description: description(),
+    });
+    const deps = makeDeps(buildConfig());
+    const unassigned = () => listAttentionItems(db, { issueKey: "KAN-1", kind: "unassigned" });
+
+    // A comment that fails is tried again on the next pass.
+    jira.failNextComment("KAN-1");
+    const failed = await reconcileCandidates(deps, []);
+    expect(failed.held[0]?.reason).toMatch(/no human assignee; telling it on the issue failed/);
+    expect(unassigned()).toEqual([]);
+
+    await reconcileCandidates(deps, []);
+    await reconcileCandidates(deps, []);
+    const comments = jira.comments.filter((comment) => comment.key === "KAN-1");
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toMatch(/has no assignee[\s\S]*Next: assign the issue/);
+    expect(unassigned()).toMatchObject([{ status: "open", severity: "immediate" }]);
+    expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
+
+    await jira.assignIssue("KAN-1", "user-1");
+    await reconcileCandidates(deps, []);
+    expect(getOpenJobForIssue(db, "KAN-1")?.kind).toBe("planning");
+    expect(unassigned()).toMatchObject([{ status: "resolved" }]);
   });
 
   it("assigns a queued job to the only matching available worker", async () => {

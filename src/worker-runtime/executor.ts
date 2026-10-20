@@ -550,7 +550,7 @@ async function pushJobBranch(
         job.summary,
         ...(job.changes.length ? ["", "Changes:", ...job.changes.map((c) => `- ${c}`)] : []),
         "",
-        `Opened by GGJIRA for ${job.issueKey}. Merging it moves the Jira issue to done.`,
+        `Opened by GGJIRA for ${job.issueKey}. When GGJIRA Router can read this repository, it notes the merge on the Jira issue and, if a done status is configured, moves the issue there.`,
         `<!-- ggjira issue=${job.issueKey} job=${job.jobId} attempt=${job.attemptId} -->`,
       ].join("\n"),
     });

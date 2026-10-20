@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
+import { listAttentionItems } from "../src/router/db/attention.js";
 import { listAudit } from "../src/router/db/audit.js";
 import { getPullRequest } from "../src/router/db/pull-requests.js";
 import { listReviewRecords, listReviewTargets } from "../src/router/db/review-targets.js";
@@ -354,6 +355,19 @@ describe("GitHub pull request → Jira done", () => {
     expect(row?.state).toBe("open");
     expect(row?.lastCheckedAt).toBe(router.clock.now());
     expect(row?.lastError).toMatch(/404.*needs GITHUB_TOKEN/);
+    // Not only on the settings screen: a merge would go unnoticed, so a human is told.
+    const unchecked = () =>
+      listAttentionItems(router.db, { issueKey: "KAN-1", kind: "pull_request_unchecked" });
+    expect(unchecked()).toMatchObject([
+      { status: "open", severity: "immediate", evidence: { error: expect.stringMatching(/404/) } },
+    ]);
+    await pollPullRequests({
+      db: router.db,
+      config: router.config,
+      now: router.clock.now,
+      fetch: answer(404, { message: "Not Found" }),
+    });
+    expect(unchecked()).toMatchObject([{ status: "open", occurrences: 2 }]);
 
     await pollPullRequests({
       db: router.db,
@@ -365,6 +379,7 @@ describe("GitHub pull request → Jira done", () => {
     row = getPullRequest(router.db, "acme/app", 12);
     expect(row?.lastError).toBeNull();
     expect(row?.state).toBe("open");
+    expect(unchecked()).toMatchObject([{ status: "resolved", resolution: "GitHub answered" }]);
   });
 });
 

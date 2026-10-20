@@ -5,7 +5,7 @@ import type { AdminAddWorkerRequest, ProviderUsage } from "../contracts/api.js";
 import type { JobState } from "../contracts/job-state.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import { isWorkerDispatchable } from "./availability.js";
-import { type CheckItem, runRouterCheck } from "./check.js";
+import { type CheckItem, githubRepositoriesToCheck, runRouterCheck } from "./check.js";
 import {
   type ConfigIssue,
   canonicalJson,
@@ -49,7 +49,11 @@ import {
 } from "./db/jobs.js";
 import { createPairingCode } from "./db/pairing.js";
 import { listProviderUsage } from "./db/provider-usage.js";
-import { type PullRequestRow, listRecentPullRequests } from "./db/pull-requests.js";
+import {
+  type PullRequestRow,
+  listPullRequestRepos,
+  listRecentPullRequests,
+} from "./db/pull-requests.js";
 import {
   type ReportStepRow,
   listBlockedReportSteps,
@@ -227,7 +231,7 @@ export interface AdminServiceDeps {
    *  services swapped). Without it only this service's own view changes. */
   applyConfig?: (config: RouterConfig) => Promise<void>;
   /** Whether the GitHub webhook secret is set (it only changes on restart). */
-  github?: { webhook: boolean };
+  github?: { webhook: boolean; token?: () => string | undefined };
   /** Secrets the web UI can replace, written to `secretsPath` (ADR 0031, 0032). A slot left out
    *  shows as unset and not editable. */
   secrets?: { secretsPath?: string; slots: Partial<Record<SecretSlotId, SecretSlot>> };
@@ -838,7 +842,14 @@ export class AdminService {
     } catch (error) {
       return { items: [{ level: "fail", message: (error as Error).message }] };
     }
-    const items = await runRouterCheck(this.deps.jira, config, issueKey ? { issueKey } : {});
+    const github = {
+      repos: githubRepositoriesToCheck(config, listPullRequestRepos(this.deps.db)),
+      token: this.deps.github?.token?.(),
+    };
+    const items = await runRouterCheck(this.deps.jira, config, {
+      github,
+      ...(issueKey ? { issueKey } : {}),
+    });
     if (config.jira.baseUrl !== this.startedWith.jira.baseUrl) {
       items.unshift({
         level: "warn",

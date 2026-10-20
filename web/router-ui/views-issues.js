@@ -53,6 +53,8 @@ const ATTENTION_KINDS = {
   review_required: "개별 검토 필요",
   report_blocked: "Jira 반영 막힘",
   plan_approval_refused: "계획 승인 아님",
+  unassigned: "담당자 없음",
+  pull_request_unchecked: "PR 확인 실패",
 };
 
 /** Delegation stages (src/router/issue-delegation.ts): what it is, and the next move in Jira. */

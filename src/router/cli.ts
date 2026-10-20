@@ -15,12 +15,13 @@ import { JiraClient } from "../jira/client.js";
 import { rootLogger } from "../logger.js";
 import { AdminClient } from "./admin-client.js";
 import type { AdminBlockedBatch, AdminWorkerView, RouterStatus } from "./admin-service.js";
-import { type CheckItem, runRouterCheck } from "./check.js";
+import { type CheckItem, githubRepositoriesToCheck, runRouterCheck } from "./check.js";
 import { defaultSecretsPath, randomSecret, routerConfigTemplate } from "./config-store.js";
 import { type RouterConfig, loadRouterConfig } from "./config.js";
 import { RouterDaemon } from "./daemon.js";
 import type { AttentionItemRow } from "./db/attention.js";
-import { openRouterDb } from "./db/connection.js";
+import { openRouterDb, openRouterDbReadOnly } from "./db/connection.js";
+import { listPullRequestRepos } from "./db/pull-requests.js";
 import type { ExecutionRecordRow, ExecutionTotals } from "./db/execution-records.js";
 import type { JobPage, JobRow } from "./db/jobs.js";
 import type { ReviewQueueItem, ReviewRecordRow, ReviewTargetRow } from "./db/review-targets.js";
@@ -268,8 +269,28 @@ async function check(parsed: ParsedArgs, io: CliIo): Promise<number> {
     config.executionAgent ? { executionAgentFieldId: config.executionAgent.fieldId } : {},
   );
   const issueKey = stringOption(parsed, "issue");
-  items.push(...(await runRouterCheck(jira, config, issueKey ? { issueKey } : {})));
+  const github = {
+    repos: githubRepositoriesToCheck(config, pullRequestReposOf(config.db.path)),
+    token: loadRouterGithubSecrets(io.env, secretsPath(parsed, io)).token,
+  };
+  items.push(
+    ...(await runRouterCheck(jira, config, { github, ...(issueKey ? { issueKey } : {}) })),
+  );
   return printCheckItems(io, items);
+}
+
+/** Repositories of the pull requests Router already follows; none before the first `serve`. */
+function pullRequestReposOf(dbPath: string): string[] {
+  try {
+    const db = openRouterDbReadOnly(dbPath);
+    try {
+      return listPullRequestRepos(db);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
 }
 
 function adminTokenFromSecretsFile(file: string): string | undefined {
@@ -468,7 +489,7 @@ function printIssueView(io: CliIo, view: IssueView): void {
   io.out(`${view.issueKey}  ${view.summary}`);
   io.out(`  status:   ${view.statusName}`);
   io.out(`  labels:   ${view.labels.length ? view.labels.join(", ") : "(none)"}`);
-  io.out(`  stage:    ${delegation.stage} (labels start or stop nothing)`);
+  io.out(`  stage:    ${delegation.stage}`);
   if (delegation.plan) {
     io.out(
       `  plan:     ${delegation.plan.version} ${delegation.plan.outcome}${delegation.plan.taskIds.length ? ` tasks [${delegation.plan.taskIds.join(", ")}]` : ""}${delegation.plan.closed ? " (closed)" : ""}`,

@@ -32,7 +32,7 @@ import { inputHashMatches } from "./approval.js";
 import { isDependencyResolved, reRequestHint } from "./workflow-mode.js";
 import { reconcileDelegatedPlans } from "./delegation.js";
 import { isLatestReviewConfirmed } from "./db/review-targets.js";
-import { resolveAttention } from "./db/attention.js";
+import { listAttentionItems, recordAttention, resolveAttention } from "./db/attention.js";
 import { SETTLED_BY_NEW_APPROVAL } from "./attention.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 import {
@@ -314,7 +314,67 @@ async function reconcileIssue(
     return;
   }
 
+  if (decision.target === "human" && !issue.assigneeAccountId) {
+    await holdUnassigned(deps, issue, approvalId, decision.reason, report);
+    return;
+  }
   report.held.push({ issueKey: issue.key, target: decision.target, reason: decision.reason });
+}
+
+/**
+ * A request nobody is responsible for does not run (rule 1 of `RuleDecisionProvider`). Without a
+ * word on the issue it would only sit in the request status, so the human is told once per
+ * request, on the issue, and an attention item stays open until the issue runs. A comment that
+ * fails is tried again on the next pass.
+ */
+async function holdUnassigned(
+  deps: SchedulerDeps,
+  issue: JiraIssue,
+  approvalId: string,
+  reason: string,
+  report: SchedulerReport,
+): Promise<void> {
+  const told = listAttentionItems(deps.db, {
+    status: "open",
+    issueKey: issue.key,
+    kind: "unassigned",
+  }).some((item) => item.approvalId === approvalId);
+  if (!told) {
+    const marker = `[GGJIRA:UNASSIGNED:${approvalId}]`;
+    try {
+      const comments = await deps.jira.getComments(issue.key);
+      if (!comments.some((comment) => comment.body.includes(marker))) {
+        await deps.jira.addComment(
+          issue.key,
+          [
+            marker,
+            "GGJIRA did not start this request: the issue has no assignee.",
+            "Impact: nothing runs; GGJIRA only runs work a person is responsible for.",
+            `Next: assign the issue to that person. GGJIRA starts on its next pass; the issue stays in "${issue.statusName}".`,
+          ].join("\n"),
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      report.held.push({
+        issueKey: issue.key,
+        target: "human",
+        reason: `${reason}; telling it on the issue failed (${message}), tried again next pass`,
+      });
+      return;
+    }
+    recordAttention(deps.db, {
+      issueKey: issue.key,
+      approvalId,
+      kind: "unassigned",
+      cause: "no human assignee",
+      severity: "immediate",
+      reason: "the issue was handed to GGJIRA without an assignee; nothing runs until it has one",
+      evidence: { statusName: issue.statusName },
+      now: deps.now(),
+    });
+  }
+  report.held.push({ issueKey: issue.key, target: "human", reason });
 }
 
 /** M4-09: a fresh approval of the issue settles what earlier runs left for a human. Bookkeeping
@@ -330,6 +390,12 @@ function settleOnNewApproval(
     kinds: SETTLED_BY_NEW_APPROVAL,
     resolution: `approved again (${approvalId})`,
     exceptApprovalId: approvalId,
+    now,
+  });
+  resolveAttention(db, {
+    issueKey,
+    kinds: ["unassigned"],
+    resolution: `assigned; the request runs (${approvalId})`,
     now,
   });
 }

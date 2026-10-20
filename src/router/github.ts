@@ -11,7 +11,7 @@ import {
   recordPullRequestCheck,
 } from "./db/pull-requests.js";
 import { insertReportBatch } from "./db/report-steps.js";
-import { resolveAttention } from "./db/attention.js";
+import { recordAttention, resolveAttention, resolveAttentionIncident } from "./db/attention.js";
 import {
   appendReviewRecord,
   getReviewTargetForAttempt,
@@ -135,6 +135,13 @@ export function handlePullRequestClosed(
       now,
     });
     if (!changed) return "already-closed";
+    resolveAttentionIncident(db, {
+      issueKey: row.issueKey,
+      kind: "pull_request_unchecked",
+      cause: pullRequestCause(row),
+      resolution: "the pull request closed",
+      now,
+    });
     const job = getJob(db, row.jobId);
     const workspace = job && config.workspaces.find((entry) => entry.id === job.workspaceId);
     const target = getReviewTargetForAttempt(db, row.attemptId);
@@ -230,6 +237,13 @@ export async function pollPullRequests(deps: {
         error: null,
         now: deps.now(),
       });
+      resolveAttentionIncident(deps.db, {
+        issueKey: pr.issueKey,
+        kind: "pull_request_unchecked",
+        cause: pullRequestCause(pr),
+        resolution: "GitHub answered",
+        now: deps.now(),
+      });
       if (!state.closed) continue;
       const outcome = handlePullRequestClosed(
         deps.db,
@@ -254,10 +268,26 @@ export async function pollPullRequests(deps: {
         error: message,
         now: deps.now(),
       });
+      // Otherwise the failure shows only on the settings screen while a merge goes unnoticed.
+      recordAttention(deps.db, {
+        issueKey: pr.issueKey,
+        approvalId: getJob(deps.db, pr.jobId)?.approvalId ?? null,
+        kind: "pull_request_unchecked",
+        cause: pullRequestCause(pr),
+        severity: "immediate",
+        reason: `Router cannot check ${pr.repo}#${pr.number} on GitHub; its merge is not noted on the Jira issue until it can`,
+        evidence: { error: message },
+        now: deps.now(),
+      });
       report.errors.push({ repo: pr.repo, number: pr.number, error: message });
     }
   }
   return report;
+}
+
+/** One incident per pull request: its poll failing, whatever the reason this time. */
+function pullRequestCause(pr: { repo: string; number: number }): string {
+  return `${pr.repo.toLowerCase()}#${pr.number}`;
 }
 
 /** Says what to do about a failed poll, not just the status: GitHub answers 404 for a private
