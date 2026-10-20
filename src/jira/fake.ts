@@ -50,7 +50,7 @@ function unquote(value: string): string {
  * Test-only in-memory Jira substitute. Never used by production code.
  *
  * `searchIssues` understands a small, literal subset of JQL — clauses joined
- * by AND, comparing assignee/status/parent/project/labels — enough to
+ * by AND, comparing assignee/status/parent/project — enough to
  * exercise `findAssignedJobs` and PM subtask lookups without a real Jira.
  */
 export class FakeJiraGateway implements JiraGateway {
@@ -78,6 +78,7 @@ export class FakeJiraGateway implements JiraGateway {
   };
   private issueCounter = 0;
   private changelogCounter = 0;
+  private createdIssueTransitions: JiraTransition[] = [];
 
   seedIssue(
     issue: Partial<JiraIssue> & Pick<JiraIssue, "key">,
@@ -100,6 +101,11 @@ export class FakeJiraGateway implements JiraGateway {
     };
     this.issues.set(full.key, full);
     this.transitionsByKey.set(full.key, availableTransitions);
+  }
+
+  /** Transitions every issue `createIssue` makes from now on offers (by default none). */
+  setCreatedIssueTransitions(transitions: JiraTransition[]): void {
+    this.createdIssueTransitions = transitions;
   }
 
   seedUser(user: JiraUser): void {
@@ -225,13 +231,6 @@ export class FakeJiraGateway implements JiraGateway {
     const projectMatch = clause.match(/^project\s*=\s*(.+)$/i);
     if (projectMatch) {
       return issue.projectKey === unquote(projectMatch[1] ?? "");
-    }
-
-    const labelsMatch = clause.match(/^labels\s*=\s*(.+)$/i);
-    if (labelsMatch) {
-      // Jira matches labels case-insensitively.
-      const wanted = unquote(labelsMatch[1] ?? "").toLowerCase();
-      return issue.labels.some((label) => label.toLowerCase() === wanted);
     }
 
     // Unknown clause shape: fail closed rather than silently matching everything.
@@ -363,18 +362,21 @@ export class FakeJiraGateway implements JiraGateway {
     this.createdIssues.push(input);
     this.issueCounter += 1;
     const key = `${input.projectKey}-${1000 + this.issueCounter}`;
-    this.seedIssue({
-      key,
-      summary: input.summary,
-      description: input.description ?? null,
-      statusName: "To Do",
-      labels: input.labels ?? [],
-      issueTypeName: input.issueTypeName,
-      parentKey: input.parentKey ?? null,
-      projectKey: input.projectKey,
-      assigneeAccountId: input.assigneeAccountId ?? null,
-      executionAgentOptionId: null,
-    });
+    this.seedIssue(
+      {
+        key,
+        summary: input.summary,
+        description: input.description ?? null,
+        statusName: "To Do",
+        labels: input.labels ?? [],
+        issueTypeName: input.issueTypeName,
+        parentKey: input.parentKey ?? null,
+        projectKey: input.projectKey,
+        assigneeAccountId: input.assigneeAccountId ?? null,
+        executionAgentOptionId: null,
+      },
+      this.createdIssueTransitions,
+    );
     if (input.assigneeAccountId) {
       this.assignments.push({ key, accountId: input.assigneeAccountId });
     }

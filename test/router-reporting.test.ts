@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
@@ -14,22 +15,18 @@ import {
 import { RuleDecisionProvider } from "../src/router/decision.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import { verifyActiveJobs } from "../src/router/scheduler.js";
+import { reRequestHint } from "../src/router/workflow-mode.js";
 import {
   IN_PROGRESS_STATUS,
   issueDescription,
-  PLANNING_STATUS,
+  PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
   REVIEW_STATUS,
+  TODO_STATUS,
+  testWorkspace,
+  WORKFLOW_TRANSITIONS,
 } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
-
-const TRANSITIONS = [
-  { id: "t-progress", name: "Start", toStatusName: IN_PROGRESS_STATUS },
-  { id: "t-review", name: "Review", toStatusName: REVIEW_STATUS },
-  { id: "t-request", name: "Request", toStatusName: REQUEST_STATUS },
-  { id: "t-plan", name: "Plan", toStatusName: PLANNING_STATUS },
-  { id: "t-todo", name: "Back", toStatusName: "To Do" },
-];
 
 function lease(envelope: JobEnvelope) {
   return { attemptId: envelope.attemptId, leaseToken: envelope.leaseToken };
@@ -63,7 +60,8 @@ const twoTaskPlan = {
       taskId: "ui",
       title: "Build the UI",
       description: "Screens",
-      acceptance: [],
+      acceptance: ["shows the list"],
+      verification: ["npm run test -- ui"],
       dependencies: ["api"],
       requiredCapabilities: ["programming"],
     },
@@ -79,6 +77,7 @@ describe("Router Jira reporting journal", () => {
 
   beforeEach(async () => {
     router = new RouterHarness();
+    router.jira.setCreatedIssueTransitions(WORKFLOW_TRANSITIONS);
     worker = await router.connectWorker("worker-1");
   });
 
@@ -86,23 +85,20 @@ describe("Router Jira reporting journal", () => {
     await router.close();
   });
 
-  function seedIssue(key: string, statusName: string, extra: Record<string, unknown> = {}): void {
+  /** A human moves the issue to the request status: a plan is requested (ADR 0044). */
+  async function seedRequested(key: string): Promise<void> {
     router.jira.seedIssue(
       {
         key,
         summary: `Work on ${key}`,
-        statusName,
+        statusName: TODO_STATUS,
         projectKey: "KAN",
         assigneeAccountId: "user-1",
         description: issueDescription(),
-        ...extra,
       },
-      TRANSITIONS,
+      WORKFLOW_TRANSITIONS,
     );
-    router.jira.seedChangelogEntry(key, {
-      id: `${key}-approved`,
-      items: [{ field: "status", fromString: "To Do", toString: statusName }],
-    });
+    await router.jira.transitionIssueToStatus(key, REQUEST_STATUS);
   }
 
   function process() {
@@ -115,13 +111,24 @@ describe("Router Jira reporting journal", () => {
     return response.json() as JobEnvelope;
   }
 
-  async function startJob(key: string, status = REQUEST_STATUS): Promise<JobEnvelope> {
-    seedIssue(key, status);
+  async function startReserved(): Promise<JobEnvelope> {
     await router.reconcile();
     const envelope = await reserve();
     const start = await router.jobCall(worker, envelope.jobId, "start", lease(envelope));
     expect(start.json()).toMatchObject({ granted: true });
     return envelope;
+  }
+
+  /** Starts the implementation of an approved plan for `key`. */
+  async function startJob(key: string): Promise<JobEnvelope> {
+    await router.seedApprovedIssue(key, { summary: `Work on ${key}` });
+    return startReserved();
+  }
+
+  /** Starts the planning of a new request for `key`. */
+  async function startPlanning(key: string): Promise<JobEnvelope> {
+    await seedRequested(key);
+    return startReserved();
   }
 
   function submit(envelope: JobEnvelope, overrides: Record<string, unknown> = {}) {
@@ -132,6 +139,13 @@ describe("Router Jira reporting journal", () => {
     );
   }
 
+  /** The failure log a short failure comment points to (ADR 0048). */
+  function failureLogOf(comment: string): string {
+    const file = comment.match(/^자세한 내용: Router 머신의 (.+)$/m)?.[1];
+    if (!file) throw new Error(`no failure log in: ${comment}`);
+    return file;
+  }
+
   function commentsOn(key: string): string[] {
     return router.jira.comments.filter((comment) => comment.key === key).map((c) => c.body);
   }
@@ -140,9 +154,9 @@ describe("Router Jira reporting journal", () => {
     return (await router.jira.getIssue(key)).statusName;
   }
 
-  it("moves the issue to in-progress when execution is granted, then to review on success", async () => {
+  it("leaves an approved run in progress when it starts, then moves it to review on success", async () => {
     const envelope = await startJob("KAN-1");
-    expect(await status("KAN-1")).toBe(REQUEST_STATUS);
+    expect(await status("KAN-1")).toBe(IN_PROGRESS_STATUS);
 
     await process();
     expect(await status("KAN-1")).toBe(IN_PROGRESS_STATUS);
@@ -153,7 +167,7 @@ describe("Router Jira reporting journal", () => {
     expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     const comments = commentsOn("KAN-1");
     expect(comments).toHaveLength(1);
-    expect(comments[0]).toContain("Implementation completed.");
+    expect(comments[0]).toContain("구현을 완료했습니다.");
     expect(comments[0]).toContain("- src/a.ts");
     expect(comments[0]).toContain(`attempt: ${envelope.attemptId}`);
     // M4-11/M4-09: what to do comes first; a result whose commit is unknown is reviewed on its own.
@@ -161,9 +175,9 @@ describe("Router Jira reporting journal", () => {
       .split("\n")
       .filter((line) => !line.startsWith("[GGJIRA:"));
     expect([first, second, third]).toEqual([
-      "Implementation completed.",
-      "Needs your individual review before it is accepted:",
-      "- the worker did not report which commit this is (older worker)",
+      "구현을 완료했습니다.",
+      "받아들이기 전에 개별 검토가 필요합니다:",
+      "- 워커가 이 결과의 커밋을 보고하지 않았습니다(이전 버전 워커)",
     ]);
     expect(comments[0]).toContain(`approval: ${getJob(router.db, envelope.jobId)?.approvalId}`);
 
@@ -173,8 +187,8 @@ describe("Router Jira reporting journal", () => {
     expect(commentsOn("KAN-1")).toHaveLength(1);
   });
 
-  it("does not journal the start move twice when start is replayed", async () => {
-    const envelope = await startJob("KAN-1");
+  it("does not journal the planning-start note twice when start is replayed", async () => {
+    const envelope = await startPlanning("KAN-1");
     await router.jobCall(worker, envelope.jobId, "start", lease(envelope));
     const steps = listJobReportSteps(router.db, envelope.jobId);
     expect(steps.map((step) => step.batchId)).toEqual([`start:${envelope.attemptId}`]);
@@ -189,19 +203,26 @@ describe("Router Jira reporting journal", () => {
     const issue = await router.jira.getIssue("KAN-1");
     expect(issue.statusName).toBe(IN_PROGRESS_STATUS);
     expect(issue.labels).toContain("ggjira-failed");
-    expect(commentsOn("KAN-1")[0]).toContain("Failure Reason:\ntests red");
-    expect(commentsOn("KAN-1")[0]).toContain(`move the issue back to "${REQUEST_STATUS}"`);
+    // ADR 0048: the comment says what failed and what to do; the full text is in the log.
+    const comment = commentsOn("KAN-1")[0] ?? "";
+    expect(comment).toContain("실행 실패 [GGJ-999]: 분류되지 않은 오류: tests red.");
+    expect(comment).toContain(reRequestHint(testWorkspace, "implementation", "ko"));
+    expect(comment).not.toContain("Failure Reason:");
+    const log = readFileSync(failureLogOf(comment), "utf-8");
+    expect(log).toContain("Failure Reason:\ntests red");
+    expect(log).toContain("Summary:\nbroke");
+    expect(log).toContain(`ggjira job: ${envelope.jobId}`);
   });
 
   it("never overrides a status a human set while the job ran", async () => {
     const envelope = await startJob("KAN-1");
     await process();
-    await router.jira.transitionIssueToStatus("KAN-1", "To Do");
+    await router.jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
     // Too late for Router to notice before the result lands.
     await submit(envelope);
     const pass = await process();
 
-    expect(await status("KAN-1")).toBe("To Do");
+    expect(await status("KAN-1")).toBe(TODO_STATUS);
     expect(pass.skipped.map((entry) => entry.reason).join("\n")).toContain("a human moved it");
   });
 
@@ -238,7 +259,7 @@ describe("Router Jira reporting journal", () => {
     router.jira.seedIssue(
       { ...(await router.jira.getIssue("KAN-1")) },
       // No transition to review exists any more.
-      TRANSITIONS.filter((transition) => transition.toStatusName !== REVIEW_STATUS),
+      WORKFLOW_TRANSITIONS.filter((transition) => transition.toStatusName !== REVIEW_STATUS),
     );
 
     const pass = await process();
@@ -248,7 +269,7 @@ describe("Router Jira reporting journal", () => {
     expect(listBlockedReportSteps(router.db).map((step) => step.kind)).toEqual(["transition"]);
 
     // An admin fixes the workflow and retries: only the Jira side effects run again.
-    router.jira.seedIssue({ ...(await router.jira.getIssue("KAN-1")) }, TRANSITIONS);
+    router.jira.seedIssue({ ...(await router.jira.getIssue("KAN-1")) }, WORKFLOW_TRANSITIONS);
     expect(
       retryReportBatch(router.db, {
         batchId: `result-${envelope.attemptId}`,
@@ -264,7 +285,7 @@ describe("Router Jira reporting journal", () => {
 
   describe("planning results", () => {
     it("carries the planning context and PM prompt in the envelope", async () => {
-      seedIssue("KAN-9", PLANNING_STATUS);
+      await seedRequested("KAN-9");
       router.jira.seedComment("KAN-9", { body: "Please keep it small", authorAccountId: "user-1" });
       await router.reconcile();
       const envelope = await reserve();
@@ -275,7 +296,7 @@ describe("Router Jira reporting journal", () => {
       ]);
     });
 
-    it("applies a plan: subtasks under the human owner, plan metadata, superseded leftovers, review", async () => {
+    it("applies a plan: subtasks under the human owner, plan metadata, superseded leftovers, plan review", async () => {
       router.jira.seedIssue({
         key: "KAN-50",
         summary: "Old task",
@@ -283,9 +304,9 @@ describe("Router Jira reporting journal", () => {
         parentKey: "KAN-9",
         projectKey: "KAN",
       });
-      const envelope = await startJob("KAN-9", PLANNING_STATUS);
+      const envelope = await startPlanning("KAN-9");
       await process();
-      expect(await status("KAN-9")).toBe(IN_PROGRESS_STATUS);
+      expect(await status("KAN-9")).toBe(REQUEST_STATUS);
 
       await submit(envelope, { status: "planned", summary: "Split", plan: twoTaskPlan });
       const pass = await process();
@@ -317,7 +338,7 @@ describe("Router Jira reporting journal", () => {
       );
       expect((await router.jira.getIssue("KAN-50")).labels).toContain("ggjira-superseded");
       expect((await router.jira.getIssue("KAN-9")).description).toContain("GGJIRA:PLAN:START");
-      expect(await status("KAN-9")).toBe(REVIEW_STATUS);
+      expect(await status("KAN-9")).toBe(PLAN_REVIEW_STATUS);
       expect(commentsOn("KAN-9").at(-1)).toContain(`- ${apiKey}`);
 
       // Replaying the whole journal changes nothing.
@@ -326,23 +347,23 @@ describe("Router Jira reporting journal", () => {
       }
       await process();
       expect(router.jira.createdIssues).toHaveLength(2);
-      expect(commentsOn("KAN-9")).toHaveLength(1);
+      // The planning-start note and the plan itself, each once.
+      expect(commentsOn("KAN-9")).toHaveLength(2);
     });
 
-    it("dispatches a created subtask only while its plan version is current", async () => {
-      const envelope = await startJob("KAN-9", PLANNING_STATUS);
+    it("dispatches an approved plan's subtask only while its plan version is current", async () => {
+      const envelope = await startPlanning("KAN-9");
       await submit(envelope, { status: "planned", summary: "Split", plan: twoTaskPlan });
       await process();
       const apiKey = "KAN-1001";
       expect(router.jira.createdIssues[0]?.summary).toBe("Build the API");
-      router.jira.seedIssue(
-        { ...(await router.jira.getIssue(apiKey)), statusName: REQUEST_STATUS },
-        TRANSITIONS,
-      );
 
-      const first = await router.reconcile();
-      expect([...first.held, ...first.skipped]).toEqual([]);
-      expect(getOpenJobForIssue(router.db, apiKey)).toBeDefined();
+      // A human approves the plan; Router moves its tasks to in progress and runs the first.
+      await router.jira.transitionIssueToStatus("KAN-9", IN_PROGRESS_STATUS);
+      await router.reconcile();
+      await process();
+      await router.reconcile();
+      expect(getOpenJobForIssue(router.db, apiKey)).toMatchObject({ kind: "implementation" });
 
       // A replan moves the parent's plan on; the old task no longer counts as approved.
       await router.jira.setIssueProperty("KAN-9", PLAN_PROPERTY_KEY, {
@@ -355,7 +376,7 @@ describe("Router Jira reporting journal", () => {
     });
 
     it("holds an unconfirmable subtask creation for an admin instead of re-sending it", async () => {
-      const envelope = await startJob("KAN-9", PLANNING_STATUS);
+      const envelope = await startPlanning("KAN-9");
       await process();
       await submit(envelope, { status: "planned", summary: "Split", plan: twoTaskPlan });
       const original = router.jira.createIssue.bind(router.jira);
@@ -372,7 +393,7 @@ describe("Router Jira reporting journal", () => {
       const pass = await process(); // cannot find it by marker → recovery_required
       expect(pass.blocked).toEqual([expect.objectContaining({ status: "recovery_required" })]);
       expect(router.jira.createdIssues).toHaveLength(0);
-      expect(await status("KAN-9")).toBe(IN_PROGRESS_STATUS);
+      expect(await status("KAN-9")).toBe(REQUEST_STATUS);
 
       retryReportBatch(router.db, {
         batchId: `result-${envelope.attemptId}`,
@@ -381,11 +402,11 @@ describe("Router Jira reporting journal", () => {
       });
       await process();
       expect(router.jira.createdIssues).toHaveLength(2);
-      expect(await status("KAN-9")).toBe(REVIEW_STATUS);
+      expect(await status("KAN-9")).toBe(PLAN_REVIEW_STATUS);
     });
 
-    it("posts a decision request and parks the issue in review without needsDecisionStatus", async () => {
-      const envelope = await startJob("KAN-9", PLANNING_STATUS);
+    it("posts a decision request and parks the issue with the plans waiting for review", async () => {
+      const envelope = await startPlanning("KAN-9");
       await process();
       await submit(envelope, {
         status: "needs_decision",
@@ -405,16 +426,17 @@ describe("Router Jira reporting journal", () => {
       });
       await process();
 
-      const [comment] = commentsOn("KAN-9");
-      expect(comment).toContain("[GGJIRA:DECISION-REQUEST]");
+      const comment = commentsOn("KAN-9").find((body) =>
+        body.includes("[GGJIRA:DECISION-REQUEST]"),
+      );
       expect(comment).toContain(`planVersion: plan-${envelope.attemptId}`);
-      expect(comment).toContain(`move it back to "${PLANNING_STATUS}"`);
-      expect(await status("KAN-9")).toBe(REVIEW_STATUS);
+      expect(comment).toContain(`"${REQUEST_STATUS}" 상태로 다시 옮기세요`);
+      expect(await status("KAN-9")).toBe(PLAN_REVIEW_STATUS);
       expect(router.jira.createdIssues).toEqual([]);
     });
 
     it("reports a plan it must not apply as a failure, creating nothing", async () => {
-      const envelope = await startJob("KAN-9", PLANNING_STATUS);
+      const envelope = await startPlanning("KAN-9");
       await process();
       const cyclic = {
         ...twoTaskPlan,
@@ -424,9 +446,28 @@ describe("Router Jira reporting journal", () => {
       await process();
 
       expect(router.jira.createdIssues).toEqual([]);
-      expect(commentsOn("KAN-9")[0]).toContain("dependency cycle");
+      expect(commentsOn("KAN-9").at(-1)).toContain("dependency cycle");
       expect((await router.jira.getIssue("KAN-9")).labels).toContain("ggjira-failed");
-      expect(await status("KAN-9")).toBe(IN_PROGRESS_STATUS);
+      expect(await status("KAN-9")).toBe(REQUEST_STATUS);
+    });
+
+    it("refuses a plan whose executable unit has no definition of done (ADR 0047)", async () => {
+      const envelope = await startPlanning("KAN-9");
+      const vague = {
+        ...twoTaskPlan,
+        tasks: [
+          twoTaskPlan.tasks[0],
+          { ...twoTaskPlan.tasks[1], acceptance: [], verification: [] },
+        ],
+      };
+      await submit(envelope, { status: "planned", summary: "Vague", plan: vague });
+      await process();
+
+      expect(router.jira.createdIssues).toEqual([]);
+      expect(commentsOn("KAN-9").at(-1)).toContain(
+        "task ui has no acceptance criteria and verification",
+      );
+      expect(await status("KAN-9")).toBe(REQUEST_STATUS);
     });
   });
 
@@ -475,14 +516,15 @@ describe("Router Jira reporting journal", () => {
       await process();
 
       const [comment] = commentsOn("KAN-1");
-      expect(comment).toContain("stopped this implementation before commit and push");
-      expect(comment).toContain("Out of scope: Schema change (the API needs it)");
-      expect(comment).toContain("Question: Add a column to users?");
-      expect(comment).toContain("Impact: A migration is outside this ticket's scope.");
-      expect(comment).toContain(`move the issue to "${REQUEST_STATUS}" again`);
+      expect(comment).toContain("이 구현을 커밋·push 전에 멈췄습니다");
+      expect(comment).toContain("범위 밖: Schema change(the API needs it)");
+      expect(comment).toContain("질문: Add a column to users?");
+      expect(comment).toContain("영향: A migration is outside this ticket's scope.");
+      expect(comment).toContain(`이슈를 "${REQUEST_STATUS}" 상태로 옮겨 다시 계획하세요`);
       expect(comment).toContain(`- patch: ${evidence.patchFile}`);
       expect(comment).not.toContain("[GGJIRA:DECISION-REQUEST]");
-      expect(await status("KAN-1")).toBe(REVIEW_STATUS);
+      // It waits where it ran: in progress, under the plan, for the human's decision.
+      expect(await status("KAN-1")).toBe(IN_PROGRESS_STATUS);
       expect((await router.jira.getIssue("KAN-1")).labels).not.toContain("ggjira-failed");
       expect(getJob(router.db, envelope.jobId)?.state).toBe("succeeded");
     });
@@ -512,7 +554,7 @@ describe("Router Jira reporting journal", () => {
       await process();
 
       const [comment] = commentsOn("KAN-1");
-      expect(comment).toContain("Changed paths outside Allowed Paths:");
+      expect(comment).toContain("허용 경로 밖에서 바뀐 경로:");
       expect(comment).toContain("- db/schema.sql (added)");
       expect(comment).toContain("- lib/old.ts -> src/new.ts (renamed)");
     });
@@ -523,7 +565,9 @@ describe("Router Jira reporting journal", () => {
       await submit(envelope, { status: "needs_decision", summary: "?" });
       await process();
 
-      expect(commentsOn("KAN-1")[0]).toContain("carried no decision or deviation");
+      expect(commentsOn("KAN-1")[0]).toContain(
+        "실행 실패 [GGJ-403]: 결정이 필요하다고 보고했지만 결정 내용이 없습니다.",
+      );
       expect((await router.jira.getIssue("KAN-1")).labels).toContain("ggjira-failed");
     });
 
@@ -562,9 +606,14 @@ describe("Router Jira reporting journal", () => {
       });
       await process();
 
-      const [comment] = commentsOn("KAN-1");
-      expect(comment).toContain("Uncommitted changes were kept on the worker:");
-      expect(comment).toContain(`- patch: ${evidence.patchFile}`);
+      const comment = commentsOn("KAN-1")[0] ?? "";
+      expect(comment).toContain(
+        "실행 실패 [GGJ-302]: 완료 조건 검증에 실패했습니다: The change works.",
+      );
+      expect(comment).toContain("커밋하지 않은 변경은 워커에 보관했습니다(자세한 내용 참고).");
+      const log = readFileSync(failureLogOf(comment), "utf-8");
+      expect(log).toContain("Uncommitted changes were kept on the worker:");
+      expect(log).toContain(`- patch: ${evidence.patchFile}`);
     });
   });
 
@@ -579,7 +628,7 @@ describe("Router Jira reporting journal", () => {
       });
     }
 
-    it("does not treat Router's own move to in-progress, or its comments, as a revocation", async () => {
+    it("does not treat the shared in-progress status, or comments, as a revocation", async () => {
       const envelope = await startJob("KAN-1");
       await process();
       expect(await status("KAN-1")).toBe(IN_PROGRESS_STATUS);
@@ -594,7 +643,7 @@ describe("Router Jira reporting journal", () => {
     it("asks a running job to stop when a human moves its issue out of in-progress", async () => {
       const envelope = await startJob("KAN-1");
       await process();
-      await router.jira.transitionIssueToStatus("KAN-1", "To Do");
+      await router.jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
 
       const report = await verify();
       expect(report.jobsCancelRequested).toEqual([envelope.jobId]);
@@ -632,7 +681,7 @@ describe("Router Jira reporting journal", () => {
       ]);
       await process();
       expect(commentsOn("KAN-1").at(-1)).toContain(
-        "An admin (admin) confirmed the run is stopped.",
+        "관리자(admin)가 실행이 멈춘 것을 확인했습니다.",
       );
     });
 
@@ -666,7 +715,7 @@ describe("Router Jira reporting journal", () => {
       const envelope = await startJob("KAN-1");
       await process();
       await submit(envelope, { status: "failed", summary: "broke" });
-      await router.jira.transitionIssueToStatus("KAN-1", "To Do");
+      await router.jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
 
       await expect(
         retryJob(
@@ -677,13 +726,13 @@ describe("Router Jira reporting journal", () => {
       expect(getJob(router.db, envelope.jobId)?.state).toBe("failed");
     });
 
-    it("closes a failed job and dispatches a fresh one when a human re-requests the issue", async () => {
+    it("closes a failed job and dispatches a fresh one when a human approves the plan again", async () => {
       const envelope = await startJob("KAN-1");
       await process();
       await submit(envelope, { status: "failed", summary: "broke" });
       await process();
 
-      await router.jira.transitionIssueToStatus("KAN-1", REQUEST_STATUS);
+      await router.reapprove("KAN-1");
       await router.reconcile();
 
       expect(getJob(router.db, envelope.jobId)?.state).toBe("cancelled");

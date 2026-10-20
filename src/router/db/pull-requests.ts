@@ -129,6 +129,15 @@ export function recordPullRequestCheck(
   ).run(input.now, input.error, normalizeRepo(input.repo), input.number);
 }
 
+/** Every repository a worker opened a pull request in. */
+export function listPullRequestRepos(db: Database.Database): string[] {
+  return (
+    db.prepare("SELECT DISTINCT repo FROM pull_requests ORDER BY repo").all() as Array<{
+      repo: string;
+    }>
+  ).map((row) => row.repo);
+}
+
 /** Open PRs first, then the most recently closed, for the settings screen. */
 export function listRecentPullRequests(db: Database.Database, limit: number): PullRequestRow[] {
   const rows = db

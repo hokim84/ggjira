@@ -101,3 +101,73 @@
 
 F01~F07은 하나도 구현하지 않았다. 고위험 PR의 필수 리뷰를 GitHub branch protection으로 강제하는 설정과 그 확인은
 운영자 작업이다.
+
+## 7. M4 이후 조정: 상태 위임과 계획 우선 (ADR 0044)
+
+`docs/M4_STATUS_DELEGATION_CHANGE_REVIEW.md`의 방향을 새 모드 `workflow.mode: "delegation"`으로 구현했다.
+legacy·label 모드와 M4의 기록·검토·보호 기능은 그대로다(label 모드는 뒤이어 §8에서 제거했다). 세부 규칙은
+사용자가 정했다.
+
+- 계획 승인 = 계획 검토 대기 → 작업 중.
+- 하위 티켓은 승인 전에 생성(실행만 승인 뒤).
+
+| 문서 §5 시나리오 | 확인한 테스트 |
+|---|---|
+| 1 라벨 조작 무효 | `router-delegation-mode` "never plans, runs or withdraws anything because of a label" |
+| 2 요청 1건 = PM job 1개, 실패 후 재시도 없음 | "makes one planning job for a request…" |
+| 3 요청→철회→재요청, 중복·재시작 | "treats request → withdraw → request as two delegations…" |
+| 4 계획 성공 → 계획 검토 대기, 자동 구현 없음 | "puts a finished plan in plan review…" |
+| 5 할 일 → 작업 중(사람) 무효 | "runs nothing when a human moves their own issue…" |
+| 6 유효한 승인만 배포 | "deploys the current plan…", "does not approve a plan that waits for a decision", "…for an earlier request" |
+| 7 승인 재전송·부분 반영·재시작 | "waits for a plan still being applied, then deploys it once, through restarts" |
+| 8 말단 재계획 없음, 사람 하위 작업 제외 | "runs the tasks of an approved plan without planning them again…" |
+| 9 공용 작업 중의 유효 실행 유지 | "deploys the current plan…"(verify 무취소) |
+| 10 철회·완료 뒤 늦은 결과 | "withdraws a plan when its parent leaves in progress…", "asks a running implementation to stop…" |
+| 11 이유·다음 행동, 라벨 제거로 재개 없음 | "says why a run failed and what to do…" |
+| 12 결과 검토·PR 머지·완료 | "moves review → done when the reviewed pull request is merged" |
+| 13 M4 이슈 이관 뒤 자동 재실행 없음 | `router-delegation-migration` |
+
+- 단위 테스트: `router-config`(delegation 검증), `router-workflow-mode`, `router-approval`
+  (`computeDelegationApprovalIds`), `router-workflow-check`(delegation hop), `router-db`(migration 14).
+- DB: migration 14(`plan_reviews`, `plan_deployments`) 추가. 1~13은 그대로다. Worker 프로토콜 2 유지.
+- `npx vitest run`(이 Windows 머신): 651개 중 636 통과, 15 실패.
+  - 실패는 기존과 같은 `spawn EFTYPE`이다(변경 전 main에서도 15개).
+  - 앞선 두 번의 전체 실행에서는 `worker-push`·`worker-scope` 2개가 시간 초과로 더 실패했다. 이 둘은 git을 직접
+    실행하는 Worker 테스트로 router 코드를 쓰지 않는다. 파일만 따로 돌리거나 다시 전체를 돌리면 통과한다.
+  - `typecheck`·`lint`·`format:check`는 통과.
+- Linux 전체 검사: 이 PC에서는 Docker 데몬이 꺼져 있어 돌리지 못했다. PR #3의 CI(`cd166f3`)에서
+  `npm run check`가 통과했다(테스트 651개 전부 통과). Windows의 `spawn EFTYPE` 15개도 Linux에서는 통과한다.
+- 실제 Jira에서의 확인(`router check`, 보드 드래그)은 수동 절차(runbook §34)로 남는다.
+
+## 8. 라벨 기반 위임 제거 (ADR 0046)와 프롬프트 조회 (ADR 0045)
+
+같은 PR #3에서 label 모드를 없앴다. 남은 모드는 legacy와 delegation이고, 둘 다 상태로만 요청·승인·철회한다.
+
+- 제거: `mode: "label"`·`optInLabel` 설정(설정 오류로 거절), 라벨 조건의 후보 조회·승인 id·철회, label 이관
+  (`migrate-labels`, `/migrations/label/*`), opt-in API·CLI·웹 토글.
+- 남은 라벨: Router가 붙이는 `ggjira-failed`·`ggjira-superseded`(표시만, 떼도 다시 실행하지 않음)와 v4 메타
+  이슈(`ggjira-agent`·`ggjira-workspace`)를 후보에서 빼는 필터.
+- 예전 라벨 승인 정보가 남은 미완료 상태 이동은 다시 실행하지 않고 `skipped`로 둔다.
+- 이슈 조회는 읽기 전용 `GET /api/v1/admin/issues/:key`(`issue show`)로 남았다.
+- 테스트: `router-label-removal`(설정 거절, 라벨로 후보·승인 불변, 제거된 경로 404, 옛 저널 skipped),
+  `router-issue-view`(보류 이유, 다른 프로젝트·잘못된 키 거절, Jira 404·403·429 구분),
+  `router-prompts`(프롬프트 조회).
+- PR #3의 CI(`408a0e5`)에서 `npm run check`가 통과했다.
+
+## 9. 워크플로 하나와 승인된 계획을 실행 계약으로 (ADR 0047)
+
+legacy 모드와 이관 도구를 지우고, 구현 계약을 이슈 설명의 절 대신 승인된 계획에서 읽게 했다.
+
+- 설정: `mode`·`planningStatus`·`needsDecisionStatus`는 `Unrecognized key`로 거절하고, `planReviewStatus`는
+  필수다(`router-config`).
+- 계약: 하위 작업·부모의 계약을 계획에서 만들고, 완료 정의가 빈 실행 단위를 찾는다(`pm-plan-render`). 그런 계획은
+  적용하지 않는다(`router-reporting` "refuses a plan whose executable unit has no definition of done").
+  envelope의 계약은 승인된 계획과 같다(`router-reporting`, `router-worker-api`).
+- 승인·배정: 요청 상태만 후보이고, 사람이 작업 중으로 옮긴 이슈는 가져가지 않는다. 승인된 계획의 구현만 배정한다.
+  v1 해시로 찍힌 job은 취소된다(`router-scheduler`).
+- readiness 보류 제거: migration 15가 열린 보류와 주의 항목을 닫는다(`router-db`).
+- 실행 기록: 계획 뒤 첫 구현은 `initial`, 같은 계획의 재승인은 `rework`다(`router-execution-records`).
+- 통합: Router 하나와 Fake 워커 둘이 실제 HTTP로 요청 → 계획 → 사람 승인 → 구현 → 결과 검토를 끝까지
+  돈다(`router-integration`).
+- `npx vitest run`(이 Windows 머신): 580개 중 565 통과, 15 실패. 15개는 기존과 같은 `spawn EFTYPE`이다.
+  `typecheck`·`lint`·`format:check`는 통과.

@@ -1,11 +1,9 @@
-import { createHash } from "node:crypto";
-import type { JiraGateway } from "../jira/gateway.js";
-import type { JiraChangelogItem, JiraIssue } from "../jira/types.js";
 import type { JobKind } from "../contracts/protocol.js";
-import { computeExecutionInputHash, isLegacyInputHash } from "../issue/input-hash.js";
+import { computeExecutionInputHash } from "../issue/input-hash.js";
 import type { IssueRequirements } from "../issue/requirements.js";
+import type { JiraGateway } from "../jira/gateway.js";
+import type { JiraChangelogEntry, JiraIssue } from "../jira/types.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
-import { labelsInclude } from "./workflow-mode.js";
 
 /**
  * Identifies *which* entry into `requestStatus` this job is for
@@ -16,24 +14,15 @@ import { labelsInclude } from "./workflow-mode.js";
  * Falls back to a stable per-issue sentinel when the issue was created directly into
  * `requestStatus` (§3 "생성부터 요청 상태였던 이슈는 생성 이벤트를 사용한다") — a plain
  * `updated` timestamp is explicitly not used as the approval identifier.
- *
- * With `optInLabel` (a `label`-mode workspace, ADR 0037) the request is made by the label and the
- * status together, so the approval is whichever came last: entering `requestStatus` or adding the
- * label. Removing the label and adding it again is therefore a new approval, never the old one.
  */
 export async function computeApprovalId(
   jira: JiraGateway,
   issue: JiraIssue,
   requestStatus: string,
-  optInLabel?: string,
 ): Promise<string> {
   const changelog = await jira.getIssueChangelog(issue.key);
   const approvingEntries = changelog.filter((entry) =>
-    entry.items.some(
-      (item) =>
-        (item.field === "status" && item.toString === requestStatus) ||
-        (optInLabel !== undefined && item.field === "labels" && addsLabel(item, optInLabel)),
-    ),
+    entry.items.some((item) => item.field === "status" && item.toString === requestStatus),
   );
   if (approvingEntries.length === 0) {
     return `created:${issue.key}`;
@@ -42,34 +31,58 @@ export async function computeApprovalId(
   return latest.id;
 }
 
-/** Jira records a label edit as the space-separated label lists before and after it. */
-function addsLabel(item: JiraChangelogItem, label: string): boolean {
-  const split = (value: string | null) => (value ?? "").split(/\s+/).filter(Boolean);
-  return (
-    labelsInclude(split(item.toString), label) && !labelsInclude(split(item.fromString), label)
-  );
+/** What an issue's changelog says about its request and plan approval. */
+export interface DelegationApprovalIds {
+  /** The latest entry into the request status, as `computeApprovalId` gives it. */
+  requestApprovalId: string;
+  /** The latest move from the plan-review status to the in-progress status made after that
+   *  request, or `null` when there is none. Only a status move a human made from the plan-review
+   *  status counts (ADR 0044); Router itself never makes that move. */
+  planApprovalId: string | null;
 }
 
 /**
- * The v1 input hash (stage 2): parsed objective/acceptance/dependencies/constraints/
- * capabilities and the plan version — but not the title, the description's free text or the
- * execution strategy. Kept only so jobs created before ADR 0035 are judged by the rules they were
- * created under until they close; nothing new is stamped with it.
+ * The two events of a delegated issue: which request started its current plan, and which move to
+ * in progress approved a plan after it. There is no fallback for the approval: an issue that never
+ * moved from plan review to in progress has approved nothing, even if it sits in progress.
  */
-export function computeLegacyInputHash(
-  requirements: IssueRequirements,
-  planTask: PlanTaskMetadata | null,
-): string {
-  const canonical = {
-    objective: requirements.objective,
-    acceptanceCriteria: requirements.acceptanceCriteria,
-    dependencies: [...requirements.dependencies].sort(),
-    constraints: requirements.constraints,
-    requiredCapabilities: [...requirements.requiredCapabilities].sort(),
-    planVersion: planTask?.planVersion ?? null,
-    planWorkspaceId: planTask?.workspaceId ?? null,
+export async function computeDelegationApprovalIds(
+  jira: JiraGateway,
+  issue: JiraIssue,
+  statuses: { requestStatus: string; planReviewStatus: string; inProgressStatus: string },
+): Promise<DelegationApprovalIds> {
+  // Oldest first; entries Jira stamped with the same time keep the order Jira listed them in.
+  const ordered = (await jira.getIssueChangelog(issue.key))
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) =>
+      a.entry.created === b.entry.created
+        ? a.index - b.index
+        : a.entry.created < b.entry.created
+          ? -1
+          : 1,
+    )
+    .map(({ entry }) => entry);
+  const isStatusMove = (entry: JiraChangelogEntry, from: string | null, to: string) =>
+    entry.items.some(
+      (item) =>
+        item.field === "status" &&
+        item.toString === to &&
+        (from === null || item.fromString === from),
+    );
+  let request: JiraChangelogEntry | undefined;
+  let approval: JiraChangelogEntry | undefined;
+  for (const entry of ordered) {
+    if (isStatusMove(entry, null, statuses.requestStatus)) {
+      request = entry;
+      approval = undefined;
+    } else if (isStatusMove(entry, statuses.planReviewStatus, statuses.inProgressStatus)) {
+      approval = entry;
+    }
+  }
+  return {
+    requestApprovalId: request?.id ?? `created:${issue.key}`,
+    planApprovalId: approval?.id ?? null,
   };
-  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
 /**
@@ -94,15 +107,10 @@ export function computeInputHash(input: {
 }
 
 /**
- * Whether a job's stamped input hash still matches the approval as Jira shows it. A job stamped
- * before ADR 0035 carries a v1 hash and is compared with the v1 hash of the same inputs; it is
- * never silently re-stamped (only an admin retry does that, and the audit log records it).
- * `null` is a job created before input hashes existed at all.
+ * Whether a job's stamped input hash still matches the approval's inputs now. `null` is a job
+ * created without one. A job stamped by other rules (the v1 hash before ADR 0035) does not match:
+ * it needs a new approval (ADR 0047).
  */
-export function inputHashMatches(
-  jobInputHash: string | null,
-  approval: { inputHash: string; legacyInputHash?: string | undefined },
-): boolean {
-  if (jobInputHash === null || jobInputHash === approval.inputHash) return true;
-  return isLegacyInputHash(jobInputHash) && approval.legacyInputHash === jobInputHash;
+export function inputHashMatches(jobInputHash: string | null, approvalInputHash: string): boolean {
+  return jobInputHash === null || jobInputHash === approvalInputHash;
 }

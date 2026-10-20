@@ -63,6 +63,25 @@ export function readClaudeCallEvent(info: ClaudeCallInfo, event: unknown): Claud
 export interface CodexCallInfo {
   threadId?: string;
   usage?: CallUsage;
+  /** Why the turn failed, from `turn.failed` — the cause stderr does not tell (e.g. a model the
+   *  account cannot use). */
+  failure?: string;
+}
+
+/** `turn.failed` carries the API error as text, often itself a JSON error body. */
+function codexFailureMessage(error: unknown): string | undefined {
+  const text = isRecord(error) && typeof error.message === "string" ? error.message : undefined;
+  if (!text) return undefined;
+  try {
+    const body: unknown = JSON.parse(text);
+    if (isRecord(body)) {
+      const inner = isRecord(body.error) ? body.error.message : body.message;
+      if (typeof inner === "string" && inner) return inner;
+    }
+  } catch {
+    // plain text
+  }
+  return text;
 }
 
 /**
@@ -74,6 +93,10 @@ export function readCodexCallEvent(info: CodexCallInfo, event: unknown): CodexCa
   if (!isRecord(event)) return info;
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
     return { ...info, threadId: event.thread_id };
+  }
+  if (event.type === "turn.failed") {
+    const failure = codexFailureMessage(event.error);
+    return failure ? { ...info, failure } : info;
   }
   if (event.type !== "turn.completed" || !isRecord(event.usage)) return info;
   const add = (a: number | undefined, b: number | undefined) =>

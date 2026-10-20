@@ -110,17 +110,35 @@ export class WorkerRunner {
   /** Runs until `signal` aborts. Transient Router errors back off and retry; a 409 on the
    *  session means another process took over, so the session is reopened. */
   async run(signal: AbortSignal): Promise<void> {
-    await this.connect();
+    await this.connectWhenReachable(signal);
     while (!signal.aborted) {
       try {
         await this.pollOnce();
       } catch (error) {
         this.deps.logger?.warn({ err: error, layer: "worker-runtime" }, "poll cycle failed");
         if (error instanceof RouterApiError && error.body?.error === "stale_session") {
-          await this.connect();
+          await this.connectWhenReachable(signal);
         } else {
           await this.sleep(ERROR_BACKOFF_MS);
         }
+      }
+    }
+  }
+
+  /** `connect`, retried while Router cannot be reached or answers 5xx (it may still be starting
+   *  or restarting). A 4xx answer, such as a revoked token, still ends the run. */
+  private async connectWhenReachable(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      try {
+        await this.connect();
+        return;
+      } catch (error) {
+        if (error instanceof RouterApiError && error.status < 500) throw error;
+        this.deps.logger?.warn(
+          { err: error, layer: "worker-runtime", routerUrl: this.deps.config.routerUrl },
+          `Router is not reachable; retrying in ${ERROR_BACKOFF_MS / 1000}s`,
+        );
+        await this.sleep(ERROR_BACKOFF_MS);
       }
     }
   }

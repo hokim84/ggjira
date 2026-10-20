@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import type Database from "better-sqlite3";
 import { JiraApiError, StatusNotReachableError, TransitionNotFoundError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
@@ -9,13 +11,8 @@ import {
   readPlanTaskMetadata,
 } from "../pm/metadata.js";
 import { PlanApplyError, renderParentPlan, renderTaskDescription } from "../pm/plan-render.js";
-import type { ReadinessGap } from "../issue/readiness.js";
-import { computeApprovalId } from "./approval.js";
-import {
-  listPendingReadinessNotices,
-  markReadinessNotice,
-  type ReadinessHoldRow,
-} from "./db/readiness-holds.js";
+import { computeApprovalId, computeDelegationApprovalIds } from "./approval.js";
+import { COMMENT_TEXT } from "./comment-text.js";
 import {
   listAttentionItems,
   normalizeCause,
@@ -23,19 +20,20 @@ import {
   resolveAttentionItem,
 } from "./db/attention.js";
 import {
+  type ReportStepRow,
+  type ReportStepStatus,
   getReportStep,
   isReportStepBlocked,
   isReportStepSettled,
   listBlockedReportSteps,
   listJobIdsWithReportWork,
   listJobReportSteps,
-  type ReportStepRow,
-  type ReportStepStatus,
   updateReportStep,
 } from "./db/report-steps.js";
 import type {
   CommentParams,
   CreateSubtaskParams,
+  FailureLogParams,
   LabelParams,
   ParentPlanParams,
   PlanCommentParams,
@@ -45,6 +43,7 @@ import type {
   SupersedeParams,
   TransitionParams,
 } from "./report-journal.js";
+import { parseTaskApprovalId } from "./report-journal.js";
 
 /**
  * Executes the report journal (src/router/report-journal.ts) against Jira
@@ -160,12 +159,30 @@ async function addCommentOnce(
   return { status: "applied" };
 }
 
+/** A local file, not Jira: rewriting it is harmless, so a replay just writes it again. A log that
+ *  cannot be written does not hold up the comment; the step says why it was skipped. */
+function writeFailureLog(params: FailureLogParams): StepOutcome {
+  try {
+    mkdirSync(path.dirname(params.path), { recursive: true });
+    writeFileSync(params.path, params.body, "utf-8");
+    return { status: "applied" };
+  } catch (error) {
+    return { status: "skipped", reason: `cannot write ${params.path}: ${errorMessage(error)}` };
+  }
+}
+
 async function runTransition(
   jira: JiraGateway,
   step: ReportStepRow,
   params: TransitionParams,
 ): Promise<StepOutcome> {
-  const issue = await jira.getIssue(step.issueKey);
+  if (Object.hasOwn(params, "optInLabel")) {
+    return {
+      status: "skipped",
+      reason: "obsolete label authorization; reconcile manually before retrying",
+    };
+  }
+  const issue = await jira.getIssue(params.issueKey ?? step.issueKey);
   if (issue.statusName === params.to) return { status: "applied" };
   if (!params.from.includes(issue.statusName)) {
     return {
@@ -173,12 +190,38 @@ async function runTransition(
       reason: `${issue.key} is in "${issue.statusName}", not ${params.from.map((s) => `"${s}"`).join(" or ")}; a human moved it`,
     };
   }
-  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus, params.optInLabel);
-  if (approvalId !== params.approvalId) {
+  if (!(await approvalStillStands(jira, issue, params))) {
     return { status: "skipped", reason: `${issue.key} was re-approved since this job was created` };
   }
   await write(() => jira.transitionIssueToStatus(issue.key, params.to));
   return { status: "applied" };
+}
+
+/** Re-derives the approval a transition was journaled under, by the rule it was journaled with
+ *  (ADR 0044's rules for implementations; the status entry for a plan). */
+async function approvalStillStands(
+  jira: JiraGateway,
+  issue: JiraIssue,
+  params: TransitionParams,
+): Promise<boolean> {
+  const rule = params.approvalRule;
+  if (rule?.kind === "plan-approval") {
+    const parent = rule.issueKey === issue.key ? issue : await jira.getIssue(rule.issueKey);
+    const { planApprovalId } = await computeDelegationApprovalIds(jira, parent, rule);
+    return planApprovalId !== null && planApprovalOf(params.approvalId) === planApprovalId;
+  }
+  if (rule?.kind === "plan-task") {
+    const run = parseTaskApprovalId(params.approvalId);
+    if (!run) return false;
+    return (await computeApprovalId(jira, issue, rule.inProgressStatus)) === run.entryId;
+  }
+  const approvalId = await computeApprovalId(jira, issue, params.approvalStatus);
+  return approvalId === params.approvalId;
+}
+
+/** The plan approval inside a task run's approval id, or the id itself for the plan's own. */
+function planApprovalOf(approvalId: string): string {
+  return parseTaskApprovalId(approvalId)?.planApprovalId ?? approvalId;
 }
 
 /** Finds a subtask created by `step` (its marker is in the description). */
@@ -290,11 +333,12 @@ async function runSupersede(
   if (params.startedStatuses.includes(issue.statusName)) {
     return { status: "skipped", reason: `${issue.key} already started ("${issue.statusName}")` };
   }
+  // A step journaled before ADR 0048 carries no comment of its own.
   await addCommentOnce(
     jira,
     issue.key,
     markerFor(step),
-    "Superseded by a replan of the parent issue.",
+    params.comment ?? COMMENT_TEXT.en.plan.superseded,
   );
   if (!issue.labels.includes(params.label)) {
     await write(() => jira.addLabel(issue.key, params.label));
@@ -354,17 +398,22 @@ async function runStep(
     }
     case "supersede":
       return runSupersede(jira, step, step.params as unknown as SupersedeParams);
+    case "failure-log":
+      return writeFailureLog(step.params as unknown as FailureLogParams);
     case "plan-comment": {
       const params = step.params as unknown as PlanCommentParams;
       const created = [...ctx.createdKeys.values()];
+      // A step journaled before ADR 0048 carries no language: it was written in English.
+      const text = (COMMENT_TEXT[params.language] ?? COMMENT_TEXT.en).plan;
       const body = [
-        "Plan applied.",
+        text.applied,
         "",
-        "Summary:",
+        text.summary,
         params.summary,
         ...(created.length > 0
-          ? ["", "Created subtasks:", ...created.map((key) => `- ${key}`)]
+          ? ["", text.createdSubtasks, ...created.map((key) => `- ${key}`)]
           : []),
+        ...(params.next?.length ? ["", ...params.next] : []),
         "",
         params.signature,
       ].join("\n");
@@ -506,68 +555,4 @@ async function runReportJournal(
       else report.skipped.push({ stepId: step.id, reason: outcome.reason });
     }
   }
-}
-
-const READINESS_SECTION: Record<ReadinessGap, string> = {
-  acceptance: "Acceptance Criteria",
-  verification: "Verification",
-};
-
-/** The one comment a readiness hold posts: what is missing → impact → what to do → where to read
- *  more. No logs, no request text — the issue itself already shows that. */
-export function renderReadinessHoldNotice(hold: Pick<ReadinessHoldRow, "missing">): string {
-  const names = hold.missing.map((gap) => READINESS_SECTION[gap]);
-  return [
-    `GGJIRA has not started this implementation request: its description has no ${names.join(" and no ")} section.`,
-    "",
-    "Impact: no worker will pick it up while the section is missing. Nothing has been changed in the repository.",
-    "",
-    "To start it: add the following h2 section(s) to the description, with at least one list item each. Router picks the request up on its next pass; there is no need to move the issue.",
-    ...names.map((name) => `- ${name}`),
-    "",
-    'Details: docs/runbook.md, "구현 요청 준비 보류" (ADR 0034).',
-  ].join("\n");
-}
-
-export interface ReadinessNoticeReport {
-  posted: string[];
-  failed: Array<{ holdId: string; reason: string }>;
-  deferred: Array<{ holdId: string; reason: string }>;
-}
-
-/**
- * Posts the one Jira comment each new readiness hold owes (ADR 0034). The comment carries a
- * `[GGJIRA:HOLD:<id>]` marker, and `addCommentOnce` reads the comments before writing, so a retry
- * after an uncertain write or a Router restart never posts twice. Same error classes as the
- * journal: a definitive rejection is `failed` (the hold still stands, only the notice is lost),
- * anything else stays `pending` for the next pass.
- */
-export async function processReadinessNotices(
-  deps: ReportProcessorDeps,
-): Promise<ReadinessNoticeReport> {
-  const report: ReadinessNoticeReport = { posted: [], failed: [], deferred: [] };
-  for (const hold of listPendingReadinessNotices(deps.db)) {
-    try {
-      await addCommentOnce(
-        deps.jira,
-        hold.issueKey,
-        `[GGJIRA:HOLD:${hold.id}]`,
-        renderReadinessHoldNotice(hold),
-      );
-      markReadinessNotice(deps.db, hold.id, "posted", null);
-      report.posted.push(hold.id);
-    } catch (error) {
-      const message = errorMessage(error);
-      if (isDefinitiveRejection(error) || (error instanceof WriteError && error.definitive)) {
-        markReadinessNotice(deps.db, hold.id, "failed", message);
-        report.failed.push({ holdId: hold.id, reason: message });
-        continue;
-      }
-      markReadinessNotice(deps.db, hold.id, "pending", message);
-      report.deferred.push({ holdId: hold.id, reason: message });
-      // Jira is unreachable or rate limiting; the rest would most likely fail the same way.
-      break;
-    }
-  }
-  return report;
 }

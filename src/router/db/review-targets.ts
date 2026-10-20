@@ -377,3 +377,15 @@ function queueState(
 export function countWaitingReviews(db: Database.Database): number {
   return listReviewQueue(db).length;
 }
+
+/**
+ * Whether a human accepted the issue's current result: confirmed it on the review screen, or
+ * merged the reviewed pull request (ADR 0044 counts that as a dependency done; reaching the review
+ * status alone does not).
+ */
+export function isLatestReviewConfirmed(db: Database.Database, issueKey: string): boolean {
+  const current = listReviewTargets(db, issueKey)[0];
+  if (!current || current.supersededBy !== null || current.kind !== "implementation") return false;
+  if (mergedWithTarget(db, current.id)) return true;
+  return latestJudgment(db, current.id)?.action === judgmentRecordAction("confirm");
+}

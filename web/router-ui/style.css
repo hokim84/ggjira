@@ -754,3 +754,8 @@ textarea {
 .review-card details {
   margin: 8px 0;
 }
+
+.prompt-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

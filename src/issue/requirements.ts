@@ -1,15 +1,17 @@
-import type { JiraIssue } from "../jira/types.js";
-import { getItems, getScalar, parseSections } from "./description.js";
-import { normalizeCapabilities } from "./capability.js";
-
+/**
+ * What an approval approves, beyond the issue's title and description: the executable unit's
+ * contract from the plan a human approved (ADR 0047, built in src/pm/contract.ts). A planning
+ * request has none yet — completing the request is the plan's job.
+ */
 export interface IssueRequirements {
   objective: string;
   acceptanceCriteria: string[];
+  /** Jira issue keys (or text naming them) that must be done first. */
   dependencies: string[];
   constraints: string[];
   requiredCapabilities: string[];
   suggestedExecutionStrategy: string | null;
-  /** The scope contract (ADR 0034). Read the same way for human-written and PM-created issues. */
+  /** The scope contract (ADR 0034). */
   verification: string[];
   inScope: string[];
   outOfScope: string[];
@@ -17,21 +19,4 @@ export interface IssueRequirements {
   affectedAreas: string[];
   /** Globs the implementation may touch; enforced by the worker only when non-empty. */
   allowedPaths: string[];
-}
-
-export function readIssueRequirements(issue: JiraIssue): IssueRequirements {
-  const sections = parseSections(issue.description ?? "");
-  return {
-    objective: getScalar(sections, "GGJIRA Plan", "Objective") ?? issue.summary,
-    acceptanceCriteria: getItems(sections, "Acceptance Criteria"),
-    dependencies: getItems(sections, "Dependencies"),
-    constraints: getItems(sections, "Constraints"),
-    requiredCapabilities: normalizeCapabilities(getItems(sections, "Required Capabilities")),
-    suggestedExecutionStrategy: getScalar(sections, "GGJIRA Plan", "Suggested Execution Strategy"),
-    verification: getItems(sections, "Verification"),
-    inScope: getItems(sections, "In Scope"),
-    outOfScope: getItems(sections, "Out of Scope"),
-    affectedAreas: getItems(sections, "Affected Areas"),
-    allowedPaths: getItems(sections, "Allowed Paths"),
-  };
 }

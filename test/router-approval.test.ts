@@ -4,8 +4,8 @@ import { FakeJiraGateway } from "../src/jira/fake.js";
 import type { PlanTaskMetadata } from "../src/pm/metadata.js";
 import {
   computeApprovalId,
+  computeDelegationApprovalIds,
   computeInputHash,
-  computeLegacyInputHash,
   inputHashMatches,
 } from "../src/router/approval.js";
 
@@ -61,62 +61,59 @@ describe("computeApprovalId", () => {
   });
 });
 
-describe("computeApprovalId in label mode (ADR 0037)", () => {
-  const TODO = "To Do";
-  const LABEL = "ai-enabled";
+describe("computeDelegationApprovalIds (ADR 0044)", () => {
+  const STATUSES = {
+    requestStatus: "AI 계획 요청",
+    planReviewStatus: "계획 검토 대기",
+    inProgressStatus: "작업 중",
+  };
 
-  async function seeded(labels: string[] = []): Promise<FakeJiraGateway> {
+  function seeded(): FakeJiraGateway {
     const jira = new FakeJiraGateway();
-    jira.seedIssue({ key: "KAN-1", statusName: "Backlog", labels }, [
-      { id: "1", name: "Request", toStatusName: TODO },
-      { id: "2", name: "Park", toStatusName: "Backlog" },
-    ]);
+    jira.seedIssue(
+      { key: "KAN-1", statusName: "할 일" },
+      ["할 일", ...Object.values(STATUSES)].map((status) => ({
+        id: status,
+        name: status,
+        toStatusName: status,
+      })),
+    );
     return jira;
   }
 
-  const approvalOf = async (jira: FakeJiraGateway) =>
-    computeApprovalId(jira, await jira.getIssue("KAN-1"), TODO, LABEL);
+  const idsOf = async (jira: FakeJiraGateway) =>
+    computeDelegationApprovalIds(jira, await jira.getIssue("KAN-1"), STATUSES);
 
-  it("is the label being added when that came after the move to To Do", async () => {
-    const jira = await seeded();
-    await jira.transitionIssueToStatus("KAN-1", TODO);
-    await jira.addLabel("KAN-1", LABEL);
+  it("approves nothing for an issue a person moved to in progress", async () => {
+    const jira = seeded();
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
+    expect(await idsOf(jira)).toEqual({ requestApprovalId: "created:KAN-1", planApprovalId: null });
+  });
+
+  it("is the move from plan review to in progress after the latest request", async () => {
+    const jira = seeded();
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.planReviewStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
     const changelog = await jira.getIssueChangelog("KAN-1");
-    expect(await approvalOf(jira)).toBe(changelog[1]?.id);
+    expect(await idsOf(jira)).toEqual({
+      requestApprovalId: changelog[0]?.id,
+      planApprovalId: changelog[2]?.id,
+    });
   });
 
-  it("is the move to To Do when the label was already there", async () => {
-    const jira = await seeded();
-    await jira.addLabel("KAN-1", LABEL);
-    await jira.transitionIssueToStatus("KAN-1", TODO);
+  it("forgets an approval once the issue is requested again", async () => {
+    const jira = seeded();
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.planReviewStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
     const changelog = await jira.getIssueChangelog("KAN-1");
-    expect(await approvalOf(jira)).toBe(changelog[1]?.id);
-  });
-
-  it("changes when the label is removed and added again", async () => {
-    const jira = await seeded();
-    await jira.transitionIssueToStatus("KAN-1", TODO);
-    await jira.addLabel("KAN-1", LABEL);
-    const first = await approvalOf(jira);
-    await jira.removeLabel("KAN-1", LABEL);
-    await jira.addLabel("KAN-1", LABEL);
-    expect(await approvalOf(jira)).not.toBe(first);
-  });
-
-  it("ignores edits to other labels, and matches the label case-insensitively", async () => {
-    const jira = await seeded();
-    await jira.addLabel("KAN-1", "AI-Enabled");
-    await jira.transitionIssueToStatus("KAN-1", TODO);
-    const approval = await approvalOf(jira);
-    await jira.addLabel("KAN-1", "frontend");
-    await jira.removeLabel("KAN-1", "frontend");
-    expect(await approvalOf(jira)).toBe(approval);
-  });
-
-  it("falls back to the creation sentinel for an issue created in To Do with the label", async () => {
-    const jira = new FakeJiraGateway();
-    jira.seedIssue({ key: "KAN-1", statusName: TODO, labels: [LABEL] });
-    expect(await approvalOf(jira)).toBe("created:KAN-1");
+    expect(await idsOf(jira)).toEqual({
+      requestApprovalId: changelog[3]?.id,
+      planApprovalId: null,
+    });
   });
 });
 
@@ -216,28 +213,13 @@ describe("computeInputHash (v2, ADR 0035)", () => {
   });
 });
 
-describe("computeLegacyInputHash (v1) and inputHashMatches", () => {
-  it("keeps the v1 rules: a title or free-text edit is not a change", () => {
-    expect(computeLegacyInputHash(requirements(), planTask)).toBe(
-      computeLegacyInputHash(requirements({ suggestedExecutionStrategy: "Other" }), planTask),
-    );
-    expect(computeLegacyInputHash(requirements(), planTask).startsWith("v2:")).toBe(false);
-  });
-
-  it("compares a v2 job hash with the v2 hash and a v1 job hash with the v1 hash", () => {
-    const approval = {
-      inputHash: hash(),
-      legacyInputHash: computeLegacyInputHash(requirements(), planTask),
-    };
-    expect(inputHashMatches(hash(), approval)).toBe(true);
-    expect(inputHashMatches(hash({ summary: "x" }), approval)).toBe(false);
-    expect(inputHashMatches(approval.legacyInputHash, approval)).toBe(true);
-    expect(inputHashMatches("0".repeat(64), approval)).toBe(false);
-    expect(inputHashMatches(null, approval)).toBe(true);
-  });
-
-  it("never lets a v1 job match through a v2 approval that has no legacy hash", () => {
-    const legacy = computeLegacyInputHash(requirements(), planTask);
-    expect(inputHashMatches(legacy, { inputHash: hash() })).toBe(false);
+describe("inputHashMatches", () => {
+  it("matches only the hash the approval's inputs have now (ADR 0047)", () => {
+    const current = hash();
+    expect(inputHashMatches(hash(), current)).toBe(true);
+    expect(inputHashMatches(hash({ summary: "x" }), current)).toBe(false);
+    // A job stamped by the v1 rules before ADR 0035 needs a new approval.
+    expect(inputHashMatches("0".repeat(64), current)).toBe(false);
+    expect(inputHashMatches(null, current)).toBe(true);
   });
 });

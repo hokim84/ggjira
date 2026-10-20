@@ -4,8 +4,8 @@ Jira를 인간과 AI가 함께 쓰는 작업 인터페이스로 삼는 경량 �
 configVersion 5는 **Router 한 대**와 **Worker 여러 대**로 구성된다.
 
 ```text
-Jira ──Webhook──▶ Router ──▶ SQLite          사람: 이슈를 "AI 작업 요청"으로 옮긴다 (= 실행 승인)
-                   ▲                         Router: 승인 확인 → job 생성 → 워커 배정 → Jira에 보고
+Jira ──Webhook──▶ Router ──▶ SQLite          사람: 이슈를 "AI 계획 요청"으로 옮긴다 (= 위임)
+                   ▲                         Router: 계획 → 사람의 승인 확인 → 구현 → Jira에 보고
                    │ HTTPS long polling      Worker: 받은 job을 Claude Code / Codex CLI로 실행
           ┌────────┴────────┐
       Worker A          Worker B
@@ -17,8 +17,9 @@ Jira ──Webhook──▶ Router ──▶ SQLite          사람: 이슈를 "
 - **Worker**(`ggjira worker run`)는 Router에만 연결한다. 로컬 저장소와 AI CLI 로그인은 워커가 갖는다.
   Router는 `repositoryId`와 `providerId`만 보내고, 실제 경로·명령은 워커 설정이 정한다.
 - **Jira Assignee는 결과에 책임지는 사람**이다. AI 실행 중에도 바꾸지 않는다.
-- 계획(PM)은 선택 기능이다. workspace에 `planningStatus`를 설정하면, 그 상태의 이슈는 워커가 계획을
-  세우고 Router가 부모 이슈에 계획을 기록하고 하위 이슈를 만든다.
+- **모든 위임은 계획부터 시작한다**(ADR 0044, 0047). 워커가 계획을 세우면 Router가 부모 이슈에 계획을
+  기록하고 하위 이슈를 만든다. 사람이 계획을 "계획 검토 대기"에서 "작업 중"으로 옮겨야 실행된다.
+  실행은 승인된 계획의 완료 조건·검증 방법·범위를 지킨다. 이슈 설명의 특정 절 이름은 읽지 않는다.
 
 구조와 동작은 [`docs/architecture.md`](./docs/architecture.md), 운영·장애 대응은
 [`docs/runbook.md`](./docs/runbook.md), 설계 판단은 [`docs/decisions/`](./docs/decisions/)
@@ -29,7 +30,7 @@ Jira ──Webhook──▶ Router ──▶ SQLite          사람: 이슈를 "
 - Node.js 24 (`.nvmrc`), git
 - Router 서버: Docker Engine + Compose, 이 서버를 가리키는 도메인(HTTPS, Caddy가 인증서 발급)
 - Jira Cloud: Router용 계정 1개와 API token. 필요한 권한은 Browse, Transition Issues, Add Comments,
-  Edit Issues, Create Issues(계획 사용 시)다. 관리자 웹훅을 만들 수 있어야 한다.
+  Edit Issues, Create Issues(계획이 하위 이슈를 만들 때)다. 관리자 웹훅을 만들 수 있어야 한다.
 - 각 Worker 머신: 로그인된 [Claude Code CLI](https://claude.com/claude-code) 또는
   [Codex CLI](https://github.com/openai/codex)와 작업할 저장소 clone. Codex provider는 실제
   CLI로 아직 검증하지 않았다(ADR 0010).
@@ -46,14 +47,15 @@ nvm use && npm install        # 워커 머신은 npm run build 후 `node dist/cl
 
 | 설정 키 | 예 | 의미 |
 |---|---|---|
-| `requestStatus` | AI 작업 요청 | 사람이 이 상태로 옮기면 구현 실행 승인 |
-| `inProgressStatus` | 작업 중 | Router가 실행 시작 시 옮김. 실패하면 여기 머문다(`ggjira-failed` 라벨) |
-| `reviewStatus` | AI 작업 완료 | 성공 시 Router가 옮김. Done 처리는 사람이 한다 |
-| `planningStatus` (선택) | AI 계획 요청 | 이 상태면 계획 job이 된다 |
-| `needsDecisionStatus` (선택) | 결정 필요 | 계획이 사람의 결정을 요청할 때. 없으면 `reviewStatus` |
+| `requestStatus` | AI 계획 요청 | 사람이 이 상태로 옮기면 AI에 위임. 항상 계획부터 한다 |
+| `planReviewStatus` | 계획 검토 대기 | 계획이 끝나면 Router가 옮김. 사람이 계획을 검토한다 |
+| `inProgressStatus` | 작업 중 | 사람과 AI가 함께 쓰는 상태. 계획 검토 대기에서 여기로 옮기면 그 계획을 승인 |
+| `reviewStatus` | 결과 검토 | 구현이 끝나면 Router가 옮김 |
+| `doneStatus` (선택) | 완료 | 워커가 연 PR이 머지되면 Router가 옮김. 의존성은 여기에 와야 풀린다 |
 
-요청 → 작업 중 → 완료로 가는 전이가 있어야 한다. 이슈 설명에 `h2. Required Capabilities` 절(예:
-`* programming`)을 두면 그 capability를 가진 워커만 배정된다.
+요청 → 계획 검토 대기 → 작업 중 → 결과 검토(→ 완료)로 가는 전이가 있어야 한다. 필요한 capability는
+계획이 정한다(`requiredCapabilities`). 예전 `planningStatus`·`needsDecisionStatus`·`mode` 설정은 오류로
+거절한다(runbook §34).
 
 ## 2. Router 띄우기
 

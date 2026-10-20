@@ -16,20 +16,6 @@ describe("FakeJiraGateway", () => {
     expect(issue.labels).toEqual(["ggjira-agent"]);
   });
 
-  it("findable by labels JQL after createIssue seeds them", async () => {
-    const jira = new FakeJiraGateway();
-    await jira.createIssue({
-      projectKey: "KAN",
-      issueTypeName: "Task",
-      summary: "[AGENT] pm-01",
-      labels: ["ggjira-agent"],
-    });
-
-    const found = await jira.searchIssues('project = "KAN" AND labels = "ggjira-agent"');
-
-    expect(found).toHaveLength(1);
-  });
-
   it("seedProject / listProjects / getProject round-trip", async () => {
     const jira = new FakeJiraGateway();
     jira.seedProject({

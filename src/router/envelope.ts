@@ -15,7 +15,6 @@ import type { RouterConfig } from "./config.js";
 import type { AttemptRow } from "./db/attempts.js";
 import { getApproval } from "./db/approvals.js";
 import type { JobRow } from "./db/jobs.js";
-import { storedApprovalHashes } from "./issue-check.js";
 
 export class EnvelopeUnavailableError extends Error {
   constructor(
@@ -103,7 +102,7 @@ export function buildJobEnvelope(
   // worker would run an edit nobody approved. Reconcile cancels such a job on its next pass.
   if (
     approval.approvalId !== job.approvalId ||
-    !inputHashMatches(job.inputHash, storedApprovalHashes(approval))
+    !inputHashMatches(job.inputHash, approval.inputHash)
   ) {
     throw new EnvelopeUnavailableError(job.id, "its issue changed since the job was approved");
   }

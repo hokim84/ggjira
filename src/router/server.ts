@@ -5,11 +5,8 @@ import type { z } from "zod";
 import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
-  AdminIssueOptInRequestSchema,
   AdminReviewJudgmentRequestSchema,
   AdminJiraProjectRequestSchema,
-  AdminLabelMigrationApplyRequestSchema,
-  AdminLabelMigrationPlanRequestSchema,
   AdminWorkflowCheckRequestSchema,
   AdminSecretRequestSchema,
   type ApiErrorResponse,
@@ -41,6 +38,7 @@ import {
 } from "./github.js";
 import { recordGithubDelivery } from "./db/pull-requests.js";
 import { registerWebUi } from "./web-ui.js";
+import { getPromptCatalog } from "./prompt-catalog.js";
 import { WorkerApiError, type WorkerService } from "./worker-service.js";
 
 const SIGNATURE_HEADER = "x-hub-signature";
@@ -330,6 +328,10 @@ function registerAdminRoutes(
           return reply.code(201).send(service.createPairingCode(body.workerId));
         });
       }
+      scope.get("/prompts", async (_request, reply) =>
+        reply.header("cache-control", "no-store").send(getPromptCatalog()),
+      );
+
       if (!admin) return;
 
       type IdParams = { Params: { id: string } };
@@ -401,24 +403,12 @@ function registerAdminRoutes(
       );
 
       scope.get("/reports", async () => ({ batches: admin.listBlockedReports() }));
-      scope.get("/holds/readiness", async () => ({ holds: admin.listReadinessHolds() }));
       scope.post<IdParams>("/reports/:id/retry", async (request) =>
         admin.retryReportBatch(request.params.id, actorOf(request)),
       );
 
-      scope.post("/migrations/label/plan", async (request) => {
-        const body = parseBody(AdminLabelMigrationPlanRequestSchema, request.body);
-        return admin.planLabelMigration(body.workspaceId, body.target);
-      });
-      scope.post("/migrations/label/apply", async (request) =>
-        admin.applyLabelMigration(
-          parseBody(AdminLabelMigrationApplyRequestSchema, request.body),
-          actorOf(request),
-        ),
-      );
-
-      scope.get<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
-        admin.issueOptIn(request.params.key),
+      scope.get<{ Params: { key: string } }>("/issues/:key", async (request) =>
+        admin.issueView(request.params.key),
       );
       scope.get<{ Params: { key: string } }>("/issues/:key/reviews", async (request) =>
         admin.issueReviews(request.params.key),
@@ -465,13 +455,6 @@ function registerAdminRoutes(
             ...(request.query.kind ? { kind: request.query.kind } : {}),
           }),
       );
-      scope.put<{ Params: { key: string } }>("/issues/:key/opt-in", async (request) =>
-        admin.setIssueOptIn(
-          request.params.key,
-          parseBody(AdminIssueOptInRequestSchema, request.body).enabled,
-          actorOf(request),
-        ),
-      );
       scope.get("/config", async () => admin.readConfig());
       scope.put("/config", async (request) =>
         admin.updateConfig((request.body as ParsedBody | undefined)?.parsed, actorOf(request)),
@@ -484,12 +467,9 @@ function registerAdminRoutes(
         const body = parseBody(AdminWorkflowCheckRequestSchema, request.body);
         return admin.checkWorkflow(body.projectKey, {
           requestStatus: body.workflow.requestStatus,
+          planReviewStatus: body.workflow.planReviewStatus,
           inProgressStatus: body.workflow.inProgressStatus,
           reviewStatus: body.workflow.reviewStatus,
-          ...(body.workflow.planningStatus ? { planningStatus: body.workflow.planningStatus } : {}),
-          ...(body.workflow.needsDecisionStatus
-            ? { needsDecisionStatus: body.workflow.needsDecisionStatus }
-            : {}),
           ...(body.workflow.doneStatus ? { doneStatus: body.workflow.doneStatus } : {}),
         });
       });

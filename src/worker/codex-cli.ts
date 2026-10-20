@@ -10,7 +10,7 @@ import type {
   WorkerResult,
   WorkerRunHooks,
 } from "./provider.js";
-import { killProcessTree, runProcessWithTimeout } from "./spawn.js";
+import { killProcessTree, resolveCommand, runProcessWithTimeout } from "./spawn.js";
 import { type CodexCallInfo, readCodexCallEvent } from "./call-usage.js";
 import { parseCodexRateLimits } from "./usage.js";
 
@@ -59,12 +59,11 @@ function buildPrompt(request: WorkerRequest): string {
   return parts.join("\n");
 }
 
-const DEFAULT_MODEL = "gpt-5-codex";
 const USAGE_READ_TIMEOUT_MS = 20_000;
 
 export class CodexCliProvider implements WorkerProvider {
   private readonly command: string;
-  private readonly model: string;
+  private readonly model: string | undefined;
   private readonly sandbox: CodexSandboxMode;
   private readonly killGraceMs: number | undefined;
 
@@ -73,7 +72,8 @@ export class CodexCliProvider implements WorkerProvider {
     options: CodexCliProviderOptions = {},
   ) {
     this.command = options.command ?? "codex";
-    this.model = options.model ?? DEFAULT_MODEL;
+    // Without a model, Codex uses the one its own config chooses for the logged-in account.
+    this.model = options.model;
     this.sandbox = options.sandbox ?? "workspace-write";
     this.killGraceMs = options.killGraceMs;
   }
@@ -96,8 +96,7 @@ export class CodexCliProvider implements WorkerProvider {
       request.cwd,
       "--sandbox",
       sandbox,
-      "-m",
-      this.model,
+      ...(this.model ? ["-m", this.model] : []),
       "--output-last-message",
       lastMessagePath,
       buildPrompt(request),
@@ -158,8 +157,14 @@ export class CodexCliProvider implements WorkerProvider {
         return {
           exitReason: "nonzero",
           isError: true,
+          // Router codes the failure by its first line (src/router/failure-codes.ts).
           summary:
-            lastMessage || `Worker exited with code ${result.code}. ${result.stderrTail}`.trim(),
+            lastMessage ||
+            (call.failure
+              ? `Worker exited with code ${result.code}: ${call.failure}
+${result.stderrTail}`
+              : `Worker exited with code ${result.code}. ${result.stderrTail}`
+            ).trim(),
           durationMs: result.durationMs,
           exitCode: result.code,
           ...callFields(),
@@ -188,7 +193,8 @@ export class CodexCliProvider implements WorkerProvider {
   readUsage(): Promise<UsageReading> {
     return new Promise((resolve) => {
       let settled = false;
-      const child = spawn(this.command, ["app-server"], {
+      const resolved = resolveCommand(this.command, ["app-server"]);
+      const child = spawn(resolved.command, resolved.args, {
         cwd: tmpdir(),
         detached: process.platform !== "win32",
         windowsHide: true,

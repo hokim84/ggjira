@@ -163,6 +163,7 @@ function judge(db: Database.Database, config: RouterConfig, input: JudgeInput): 
           headSha: target.headSha,
           actor: input.actor,
           note,
+          language: config.reporting.language,
         }),
         now: input.now,
       });

@@ -93,8 +93,7 @@ export function executionRecord(
   if ("error" in call) {
     return {
       ...base,
-      model: provider.model,
-      modelSource: "configured",
+      ...(provider.model ? { model: provider.model, modelSource: "configured" as const } : {}),
       exitReason: "error",
       durationMs: call.durationMs,
     };
@@ -102,8 +101,11 @@ export function executionRecord(
   const { result } = call;
   return {
     ...base,
-    model: result.model ?? provider.model,
-    modelSource: result.model ? "reported" : "configured",
+    ...(result.model
+      ? { model: result.model, modelSource: "reported" as const }
+      : provider.model
+        ? { model: provider.model, modelSource: "configured" as const }
+        : {}),
     ...(result.sessionId ? { callId: result.sessionId } : {}),
     exitReason: result.exitReason,
     durationMs: Math.max(0, Math.round(result.durationMs)),
@@ -548,7 +550,7 @@ async function pushJobBranch(
         job.summary,
         ...(job.changes.length ? ["", "Changes:", ...job.changes.map((c) => `- ${c}`)] : []),
         "",
-        `Opened by GGJIRA for ${job.issueKey}. Merging it moves the Jira issue to done.`,
+        `Opened by GGJIRA for ${job.issueKey}. When GGJIRA Router can read this repository, it notes the merge on the Jira issue and, if a done status is configured, moves the issue there.`,
         `<!-- ggjira issue=${job.issueKey} job=${job.jobId} attempt=${job.attemptId} -->`,
       ].join("\n"),
     });

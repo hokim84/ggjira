@@ -1,7 +1,8 @@
 import type { JiraGateway } from "../jira/gateway.js";
+import { githubRepoSlug } from "../worker/worktree.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
+import type { FetchLike } from "./github.js";
 import { checkWorkflowHops } from "./workflow-check.js";
-import { hasOptIn, isLabelMode, optInLabelOf } from "./workflow-mode.js";
 
 /**
  * `ggjira router check`: confirms the Router config matches the real Jira before `serve`
@@ -24,14 +25,9 @@ function configuredStatuses(workspace: WorkspaceConfig): Array<[label: string, s
   const { workflow } = workspace;
   return [
     ["requestStatus", workflow.requestStatus],
+    ["planReviewStatus", workflow.planReviewStatus],
     ["inProgressStatus", workflow.inProgressStatus],
     ["reviewStatus", workflow.reviewStatus],
-    ...(workflow.planningStatus
-      ? [["planningStatus", workflow.planningStatus] as [string, string]]
-      : []),
-    ...(workflow.needsDecisionStatus
-      ? [["needsDecisionStatus", workflow.needsDecisionStatus] as [string, string]]
-      : []),
     ...(workflow.doneStatus ? [["doneStatus", workflow.doneStatus] as [string, string]] : []),
   ];
 }
@@ -94,43 +90,35 @@ async function checkProject(
     });
   }
 
-  // A `label`-mode workspace plans too (any request without a contract, ADR 0037).
-  const labelMode = isLabelMode(workspace);
-  if (workspace.workflow.planningStatus || labelMode) {
-    const subtaskType = config.planning.subtaskIssueType;
-    const found = issueTypes.find((type) => type.name.normalize("NFC") === subtaskType);
-    items.push(
-      found?.subtask
-        ? { level: "ok", message: `${where}: subtask issue type "${subtaskType}" exists` }
-        : {
-            level: "fail",
-            message: `${where}: planning.subtaskIssueType "${subtaskType}" is not a subtask type of this project`,
-          },
-    );
-    // The REST API does not expose a workflow's initial status, so this stays a manual check. In
-    // `label` mode a new subtask carries no opt-in label, so its initial status does not matter.
-    if (!labelMode)
-      items.push({
-        level: "warn",
-        message: `${where}: confirm by hand that a new "${subtaskType}" starts in a status other than "${workspace.workflow.requestStatus}" — otherwise every PM subtask would be dispatched before a human approves it`,
-      });
-  }
+  const subtaskType = config.planning.subtaskIssueType;
+  const found = issueTypes.find((type) => type.name.normalize("NFC") === subtaskType);
+  items.push(
+    found?.subtask
+      ? { level: "ok", message: `${where}: subtask issue type "${subtaskType}" exists` }
+      : {
+          level: "fail",
+          message: `${where}: planning.subtaskIssueType "${subtaskType}" is not a subtask type of this project`,
+        },
+  );
+  // The REST API does not expose a workflow's initial status; check it manually.
+  items.push({
+    level: "warn",
+    message: `${where}: confirm by hand that a new "${subtaskType}" can move to "${workspace.workflow.inProgressStatus}" — Router moves the tasks of an approved plan there (ADR 0044)`,
+  });
 }
 
 /** What each status's issue must be able to reach next for Router's own transitions. */
 function expectedNextStatuses(workspace: WorkspaceConfig, current: string): string[] {
   const { workflow } = workspace;
-  if (current === workflow.requestStatus || current === workflow.planningStatus) {
-    return [workflow.inProgressStatus];
-  }
-  if (current === workflow.inProgressStatus) {
-    return [
-      workflow.reviewStatus,
-      ...(workflow.needsDecisionStatus ? [workflow.needsDecisionStatus] : []),
-    ];
-  }
-  if (current === workflow.reviewStatus && workflow.doneStatus) return [workflow.doneStatus];
-  return [];
+  const next = new Map<string, string[]>([
+    [workflow.requestStatus, [workflow.planReviewStatus]],
+    [workflow.planReviewStatus, [workflow.inProgressStatus]],
+    [workflow.inProgressStatus, [workflow.reviewStatus]],
+    ...(workflow.doneStatus
+      ? [[workflow.reviewStatus, [workflow.doneStatus]] as [string, string[]]]
+      : []),
+  ]);
+  return next.get(current) ?? [];
 }
 
 async function checkSampleIssue(
@@ -153,17 +141,6 @@ async function checkSampleIssue(
       message: `issue ${issueKey}: project ${issue.projectKey ?? "?"} is not in any workspace`,
     });
     return;
-  }
-  const optIn = optInLabelOf(workspace);
-  if (optIn) {
-    items.push(
-      hasOptIn(issue, workspace)
-        ? { level: "ok", message: `issue ${issueKey} carries the opt-in label "${optIn}"` }
-        : {
-            level: "warn",
-            message: `issue ${issueKey} has no opt-in label "${optIn}"; Router will not pick it up`,
-          },
-    );
   }
   const transitions = await jira.getTransitions(issueKey);
   const reachable = transitions.map((t) => t.toStatusName.normalize("NFC"));
@@ -190,10 +167,86 @@ async function checkSampleIssue(
   }
 }
 
+/**
+ * The GitHub repositories Router follows pull requests in: those the config clones from GitHub,
+ * and those workers already opened pull requests in (Router learns a repository from the first).
+ */
+export function githubRepositoriesToCheck(
+  config: RouterConfig,
+  pullRequestRepos: readonly string[],
+): string[] {
+  const slugs = config.repositories
+    .map((repository) => (repository.cloneUrl ? githubRepoSlug(repository.cloneUrl) : undefined))
+    .filter((slug): slug is string => Boolean(slug));
+  return [...new Set([...slugs, ...pullRequestRepos].map((slug) => slug.toLowerCase()))].sort();
+}
+
+/**
+ * Whether Router can read each repository's pull requests the way the poll does (ADR 0027, 0032):
+ * GitHub answers 404 for a private repository it won't show, so a merge would go unnoticed.
+ */
+export async function checkGithubRepositories(input: {
+  repos: readonly string[];
+  token?: string | undefined;
+  fetch?: FetchLike;
+}): Promise<CheckItem[]> {
+  const fetchImpl = input.fetch ?? ((url, init) => fetch(url, init));
+  const items: CheckItem[] = [];
+  for (const repo of input.repos) {
+    let status: number;
+    try {
+      const response = await fetchImpl(
+        `https://api.github.com/repos/${repo}/pulls?state=all&per_page=1`,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/vnd.github+json",
+            "user-agent": "ggjira-router",
+            "x-github-api-version": "2022-11-28",
+            ...(input.token ? { authorization: `Bearer ${input.token}` } : {}),
+          },
+        },
+      );
+      status = response.status;
+    } catch (error) {
+      items.push({
+        level: "warn",
+        message: `GitHub ${repo}: cannot reach GitHub (${errorText(error)})`,
+      });
+      continue;
+    }
+    if (status === 200) {
+      items.push({
+        level: "ok",
+        message: `GitHub ${repo}: pull requests are readable${input.token ? " with GITHUB_TOKEN" : " without a token"}`,
+      });
+    } else if (status === 404) {
+      items.push({
+        level: "fail",
+        message: input.token
+          ? `GitHub ${repo}: GITHUB_TOKEN cannot see this repository (give it Pull requests: read); merges are not noticed`
+          : `GitHub ${repo}: not visible without a token; a private repository needs GITHUB_TOKEN, or merges are not noticed`,
+      });
+    } else if (status === 401) {
+      items.push({ level: "fail", message: `GitHub ${repo}: GITHUB_TOKEN is invalid or expired` });
+    } else {
+      items.push({
+        level: "warn",
+        message: `GitHub ${repo}: GitHub answered ${status}${status === 403 || status === 429 ? " (rate limited or forbidden)" : ""}`,
+      });
+    }
+  }
+  return items;
+}
+
 export async function runRouterCheck(
   jira: JiraGateway,
   config: RouterConfig,
-  opts: { issueKey?: string } = {},
+  opts: {
+    issueKey?: string;
+    /** GitHub repositories to check (`githubRepositoriesToCheck`) and the token Router polls with. */
+    github?: { repos: readonly string[]; token?: string | undefined; fetch?: FetchLike };
+  } = {},
 ): Promise<CheckItem[]> {
   const items: CheckItem[] = [];
   try {
@@ -231,6 +284,7 @@ export async function runRouterCheck(
     });
   }
 
+  if (opts.github) items.push(...(await checkGithubRepositories(opts.github)));
   if (opts.issueKey) await checkSampleIssue(jira, config, opts.issueKey, items);
   return items;
 }

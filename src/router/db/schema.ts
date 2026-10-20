@@ -481,3 +481,58 @@ export const EXECUTION_RECORD_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS idx_execution_records_issue ON execution_records (issue_key)",
   "CREATE INDEX IF NOT EXISTS idx_execution_records_parent ON execution_records (parent_issue_key)",
 ];
+
+/**
+ * Migration 14 (ADR 0044, `delegation` mode). `plan_reviews` keeps one row per applied planning
+ * result: the plan a human reviews, pinned to the request (changelog entry) it answered and the
+ * plan version Router stamped on Jira. `plan_deployments` records each human approval of such a
+ * plan — the move from the plan-review status to the shared in-progress status, identified by its
+ * changelog entry — before anything runs under it; `UNIQUE (issue_key, approval_id)` makes a
+ * replayed webhook, a restart or a re-scan record it once. Tasks of a deployed plan inherit its
+ * approval and are never planned again.
+ */
+export const PLAN_DELEGATION_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS plan_reviews (
+    id TEXT PRIMARY KEY,
+    issue_key TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs (id),
+    attempt_id TEXT NOT NULL,
+    request_approval_id TEXT NOT NULL,
+    plan_version TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('planned', 'needs_decision', 'not_applied')),
+    task_ids TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    closed_reason TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_plan_reviews_issue ON plan_reviews (issue_key, created_at)",
+  `CREATE TABLE IF NOT EXISTS plan_deployments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_key TEXT NOT NULL,
+    plan_review_id TEXT NOT NULL REFERENCES plan_reviews (id),
+    plan_version TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    task_ids TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('waiting_plan_apply', 'active', 'completed', 'revoked')),
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (issue_key, approval_id)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_plan_deployments_state ON plan_deployments (state)",
+];
+
+/**
+ * Migration 15 (ADR 0047). An implementation's contract is the approved plan, so Router no longer
+ * holds a request for missing description sections: holds still open are closed, along with the
+ * attention items they raised. The `readiness_holds` table stays as history.
+ */
+export const READINESS_HOLD_CLOSE_STATEMENTS: readonly string[] = [
+  `UPDATE readiness_holds SET resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+   WHERE resolved_at IS NULL`,
+  `UPDATE attention_items SET status = 'resolved',
+     resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+     resolution = 'readiness holds were removed (ADR 0047)'
+   WHERE status = 'open' AND kind = 'readiness_hold'`,
+];

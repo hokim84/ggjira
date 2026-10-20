@@ -9,8 +9,10 @@ const ATTENTION_KINDS = {
   decision_needed: "결정 필요",
   scope_deviation: "범위 이탈",
   review_required: "개별 검토 필요",
-  readiness_hold: "계약 보완 필요",
   report_blocked: "Jira 반영 막힘",
+  plan_approval_refused: "계획 승인 아님",
+  unassigned: "담당자 없음",
+  pull_request_unchecked: "PR 확인 실패",
 };
 
 const JOB_STATE_LABELS = {

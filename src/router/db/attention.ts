@@ -12,8 +12,10 @@ export type AttentionKind =
   | "decision_needed"
   | "scope_deviation"
   | "review_required"
-  | "readiness_hold"
-  | "report_blocked";
+  | "report_blocked"
+  | "plan_approval_refused"
+  | "unassigned"
+  | "pull_request_unchecked";
 
 export type AttentionSeverity = "immediate" | "standard";
 
@@ -171,6 +173,24 @@ export function resolveAttention(
        WHERE issue_key = ? AND status = 'open' AND kind IN (${kinds})${approvalClause}`,
     )
     .run(...params).changes;
+}
+
+/** Resolves the open item of one incident, if there is one. */
+export function resolveAttentionIncident(
+  db: Database.Database,
+  input: { issueKey: string; kind: AttentionKind; cause: string; resolution: string; now: string },
+): boolean {
+  return (
+    db
+      .prepare(
+        "UPDATE attention_items SET status = 'resolved', resolved_at = ?, resolution = ? WHERE incident_key = ? AND status = 'open'",
+      )
+      .run(
+        input.now,
+        input.resolution,
+        attentionIncidentKey(input.issueKey, input.kind, input.cause),
+      ).changes > 0
+  );
 }
 
 export function resolveAttentionItem(

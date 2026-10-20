@@ -79,6 +79,10 @@ Router의 Jira 쓰기는 `report_steps` 저널을 `router serve`의 reports 루�
   확인 후 배치를 재시도하면 단계가 마커를 먼저 찾으므로, 이미 생성된 이슈는 다시 만들지 않는다.
 - **실패한 이슈** — `inProgressStatus`에 `ggjira-failed` 라벨과 실패 댓글이 남는다. 다시 돌리려면
   요청 상태로 옮긴다. 이전 job은 닫히고 새 job이 만들어진다.
+- **실패 댓글이 짧다(ADR 0048)** — 댓글에는 실패 코드, 한 줄 원인, 다음 행동만 있다(코드는 §35). 실패
+  이유·요약·stderr·보존된 변경 위치는 댓글의 `자세한 내용:` 경로에 있다. 기본은 Router 머신의
+  `data/failure-logs/<이슈>-<attemptId>.log`이다. 파일이 없으면 `router reports list`에서 그 배치의
+  `failure-log` 단계가 skipped인 이유(쓰기 권한 등)를 본다.
 - **계획이 적용되지 않음** — 적용할 수 없는 계획(작업 수 초과, taskId 중복, 의존성 순환·미해결)은
   실패 댓글로 보고한다. 하위 이슈가 실행되지 않으면 `ggjira.plan-task`의 `planVersion`이 부모
   `ggjira.plan`의 `version`과 같은지 본다. 재계획 뒤의 옛 작업은 승인되지 않는다.
@@ -220,6 +224,22 @@ npm run dev -- worker start      # 이후: 바로 실행
   `ggjira`라는 단어는 넣지 않는다. 설치하려면 `npm run build && npm link`.
 - **`LLM CLI를 찾지 못했습니다`**: `claude` 또는 `codex`를 설치하고 로그인한 뒤 다시 실행한다. 코드는 LLM을
   고른 뒤에야 쓰므로 같은 코드를 다시 쓸 수 있다(10분 안).
+- **실행 실패 `Failed to spawn worker: spawn codex ENOENT`(Windows)**: npm으로 설치한 `codex`는
+  `codex.cmd` 셰임이라 셸 없는 `spawn`이 찾지 못한다. 워커는 PATH·PATHEXT로 찾고 npm 셰임이면 그 Node
+  스크립트를 직접 실행한다(`src/worker/spawn.ts` `resolveCommand`). 이 메시지가 계속 나오면 `where codex`로
+  워커를 띄운 터미널의 PATH에 있는지 보고, 없으면 워커 설정 `providers[].command`에 실행 파일 경로를 적는다.
+  워커를 재시작한 뒤 이슈를 요청 상태 밖으로 옮겼다가 다시 요청 상태로 옮긴다(실패한 승인으로는 다시
+  실행하지 않는다).
+- **Codex 실행 실패 `The '<model>' model is not supported when using Codex with a ChatGPT account`**: 워커
+  설정 `providers[].model`에 계정이 쓸 수 없는 모델이 적혀 있다. 지우면 Codex 설정(`~/.codex/config.toml`의
+  `model`)을 따른다. 예전 버전은 Codex에도 Claude 기본값 `sonnet`을 넘겼다. 원인은 워커 로그
+  `data\worker-logs\<jobId>-<attemptId>.jsonl`의 `turn.failed`에 있고, 이제 실패 요약 첫 줄에도 올라와 댓글에
+  "the AI CLI rejected the model"로 나온다(ADR 0048). 실패 로그의 `rmcp ... /mcp` 오류는 Codex 설정의 다른
+  MCP 서버가 꺼져 있다는 경고일 뿐이다.
+- **워커 로그에 `Router is not reachable; retrying in 5s`**: 워커가 시작할 때나 Router가 다시 시작되는 동안
+  Router에 연결하지 못했다. 워커는 끝나지 않고 연결될 때까지 5초마다 다시 시도한다(예전에는 `fetch failed`로
+  바로 끝났다). 계속되면 Router가 떠 있는지(`run-router.bat` 창, `http://127.0.0.1:8787/ui/`)와 워커 설정의
+  `routerUrl`을 확인한다. Router가 4xx로 거절하면(예: 토큰 폐기) 재시도하지 않고 끝난다.
 - **`페어링 코드가 맞지 않거나 만료됐습니다`**: 웹 UI에서 새 코드를 받아 입력한다(같은 질문을 다시 한다).
 - **`터미널에서 실행하면 설정을 차례로 묻습니다`**: 서비스나 CI처럼 물을 수 없는 곳이다.
   `--router`, `--pairing-code`, `--provider claude-code|codex`를 주고, 저장소는 `cloneUrl`로 받는다.
@@ -325,6 +345,8 @@ v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 �
 적용되며, 저장하면 곧바로 열린 PR을 다시 확인한다(ADR 0032).
 
 진단:
+- `router check`의 `GitHub <owner>/<repo>` 줄이 PR을 읽을 수 있는지 미리 알려 준다. 대상은 config 저장소의 GitHub
+  `cloneUrl`과 이미 기록된 PR의 저장소다. 확인에 실패한 PR은 확인 필요 항목 `pull_request_unchecked`로도 뜬다.
 - 먼저 설정 > GitHub 영역의 **추적 중인 PR** 목록을 본다. "지금 확인"으로 바로 다시 확인할 수 있다.
   - "확인 실패 — private repository needs GITHUB_TOKEN": 비공개 저장소인데 토큰이 없다. 토큰을 넣는다.
   - "token cannot see this repository": 토큰에 그 저장소의 Pull requests 읽기 권한이 없다.
@@ -414,44 +436,35 @@ sqlite3 data/router.sqlite3 "SELECT j.issue_key, j.kind, j.state, j.attempt_coun
   `jev.timeoutMs`를 늘린다.
 - 한 job은 최대 3번까지만 시도한다. 다시 평가하려면 그 job의 `job_assessments` 행을 지운다.
 
-## 24. 구현 요청 준비 보류 (ADR 0034)
+## 24. 실행 계약은 승인된 계획이다 (ADR 0047)
 
-구현 요청(요청 상태의 이슈)은 설명에 `h2. Acceptance Criteria`와 `h2. Verification` 절이 있고 각각
-목록 항목이 한 줄 이상 있어야 시작한다. 계획 요청은 이 조건 없이 시작한다.
+구현이 따르는 완료 조건·검증·범위·허용 경로·capability·의존성은 사람이 승인한 계획에서 온다. Router는 이슈
+설명의 `h2. Acceptance Criteria` 같은 절을 읽지 않는다. 설명에 렌더링된 계획 블록과 하위 이슈 설명은 사람이 읽는
+용도다. 거기를 고쳐도 계약은 바뀌지 않고, 입력이 바뀐 것으로만 본다(§25).
 
-증상: 이슈가 요청 상태에 머물고 job이 생기지 않는다. 댓글에 "GGJIRA has not started this implementation
-request"가 한 번 달린다. Router 로그의 reconcile `held`에 `not ready to implement: missing …`가 보인다.
+증상: 계획 job이 "Plan has no definition of done: …"로 실패한다(`ggjira-failed`, 요청 상태 유지).
+실행 단위(하위 작업, 없으면 부모)에 완료 조건이나 검증이 비어 있어 Router가 계획을 적용하지 않은 것이다. 이 계획은
+승인할 수 없다. 설명에 기대 결과와 확인 방법을 적어 다시 `AI 계획 요청`으로 옮긴다.
 
-확인:
+계약 확인: 구현 job이 받는 계약은 이슈의 승인 snapshot(`approvals.input_snapshot`의 `requirements`)이고,
+승인된 계획의 해당 단위와 같다. 계획 원문은 계획 결과(`results.payload`의 `plan`)에 있다.
 
 ```
-curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://<router>/api/v1/admin/holds/readiness
+sqlite3 data/router.sqlite3 "SELECT json_extract(input_snapshot, '$.requirements') FROM approvals
+  WHERE issue_key = 'KAN-1';"
+sqlite3 data/router.sqlite3 "SELECT id, plan_version, outcome, task_ids FROM plan_reviews
+  WHERE issue_key = 'KAN-1' ORDER BY created_at DESC;"
 ```
 
-`noticeStatus`가 `pending`이면 안내 댓글을 아직 못 쓴 것(Jira 응답 없음·429, 다음 패스에서 재시도)이고,
-`failed`면 Jira가 명확히 거부한 것이다(`noticeError`). `failed`여도 보류는 그대로 유효하다. 댓글만 빠졌다.
-
-보완(기존 티켓 포함):
-
-1. 설명에 아래 절을 추가한다. 위키 마크업 목록(`* 항목`)으로 쓴다.
-   ```
-   h2. Acceptance Criteria
-   * 저장 버튼 문구가 "저장"으로 보인다
-   h2. Verification
-   * npm run test -- settings
-   * 설정 화면을 열어 버튼 문구를 확인한다
-   ```
-   필요하면 `In Scope`, `Out of Scope`, `Affected Areas`(참고용), `Allowed Paths`(glob, 적으면 워커가
-   그 밖의 변경을 막는다, ADR 0036)도 같은 방식으로 쓴다.
-2. 이슈를 옮길 필요는 없다. 다음 조회(웹훅 또는 보완 조회)에서 보류가 풀리고 job이 생긴다. 설명을 고쳤지만
-   여전히 빠진 절이 있으면 새 안내 댓글이 한 번 더 달린다.
+예전 "구현 요청 준비 보류" 안내 댓글(`[GGJIRA:HOLD:<id>]`)은 더 이상 달리지 않는다. migration 15가 열려 있던
+보류와 그 주의 항목을 닫았다. Jira에 남은 예전 댓글은 지우지 않아도 된다.
 
 대표 사례 수동 검토(프롬프트 품질은 자동 테스트가 입증하지 않는다):
 
-- 문구 변경 요청을 계획 상태로 보낸다. 하위 이슈 없이 부모 설명의 계획 블록에 Acceptance Criteria와
+- 문구 변경 요청을 계획 요청으로 보낸다. 하위 이슈 없이 부모 설명의 계획 블록에 Acceptance Criteria와
   Verification이 채워지는지 본다.
-- API와 UI 변경이 섞인 요청을 계획 상태로 보낸다. 독립 결과별로 하위 이슈가 나뉘거나 결정 요청이 오는지,
-  각 하위 이슈에 계약 절이 모두 있는지 본다.
+- API와 UI 변경이 섞인 요청을 계획 요청으로 보낸다. 독립 결과별로 하위 이슈가 나뉘거나 결정 요청이 오는지,
+  각 하위 이슈에 계약이 모두 있는지 본다.
 
 ## 25. 입력 해시 v2와 재승인 (ADR 0035)
 
@@ -460,12 +473,12 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://<router>/api/v1/admin/ho
 - 큐·임대 중인 job은 취소되고, 실행 중인 job은 다음 heartbeat에서 멈춤 지시를 받는다. commit·validate·push
   직전 권한 확인(`authorize`)도 거부된다.
 - 같은 승인으로는 다시 실행하지 않는다. reconcile `held`에 `the request was edited after it was approved`가
-  보인다. 고친 내용을 실행하려면 이슈를 요청 상태 밖으로 옮겼다가 다시 요청 상태로 옮긴다.
+  보인다. 같은 계획으로 다시 실행하려면 `계획 검토 대기 → 작업 중`으로 다시 옮기고, 바뀐 요청을 반영하려면
+  `AI 계획 요청`으로 옮겨 다시 계획한다.
 - 댓글·라벨 추가, 줄 끝 공백이나 줄바꿈 형식만 바뀐 편집은 변경이 아니다.
 
-업그레이드 전환: migration이나 수동 작업이 필요 없다. 업그레이드 전에 만든 job(해시에 `v2:` 접두가 없음)은
-닫힐 때까지 이전 규칙으로 비교한다. 관리자 `jobs retry`만 그 job을 새 해시로 다시 찍고, audit의
-`job.retried`에 `inputHash.from/to`를 남긴다.
+v1 해시(`v2:` 접두가 없음)로 찍힌 job은 입력이 바뀐 것으로 보고 취소·보류한다(ADR 0047). 관리자 `jobs retry`는
+job을 새 해시로 다시 찍고, audit의 `job.retried`에 `inputHash.from/to`를 남긴다.
 
 ```
 sqlite3 data/router.sqlite3 "SELECT id, issue_key, state, substr(input_hash,1,3) AS v FROM jobs
@@ -475,8 +488,8 @@ sqlite3 data/router.sqlite3 "SELECT * FROM admin_holds WHERE actor = 'router:inp
 
 ## 26. 구현 결정 요청과 범위 이탈 (ADR 0036)
 
-증상: 구현 이슈가 `needsDecisionStatus`(없으면 검토 상태)로 옮겨지고 "GGJIRA stopped this implementation
-before commit and push" 댓글이 달린다. PR은 열리지 않고 브랜치도 push되지 않는다.
+증상: 구현 이슈가 작업 중에 머물고 "GGJIRA stopped this implementation before commit and push" 댓글이
+달린다. PR은 열리지 않고 브랜치도 push되지 않는다.
 
 댓글의 원인 줄로 종류를 구별한다.
 
@@ -493,12 +506,13 @@ before commit and push" 댓글이 달린다. PR은 열리지 않고 브랜치도
 - 정리: 댓글의 `cleanup` 줄을 따른다(`git worktree remove --force <path> && git branch -D <branch>`).
   또는 기간이 지난 뒤 `ggjira worker worktrees prune`.
 
-재개(재승인):
+재개(다시 계획):
 
-1. 결정을 이슈 설명의 계약에 반영한다. 예: 범위를 넓히면 `In Scope`와 `Allowed Paths`에 추가하고,
-   하지 않기로 하면 `Out of Scope`에 적는다. 필요하면 Acceptance Criteria·Verification도 고친다.
-2. 이슈를 요청 상태로 옮긴다. 새 승인 id와 새 입력 해시로 새 job·attempt가 만들어진다. 이전 attempt의 늦은
-   결과는 적용되지 않는다. 댓글만 달고 옮기지 않으면 아무 일도 일어나지 않는다. 댓글은 승인 입력이 아니다.
+1. 결정을 이슈 설명에 적는다. 예: 범위를 넓히기로 했으면 무엇을 어디까지 바꿔도 되는지, 하지 않기로 했으면
+   무엇을 빼는지 쓴다. 계약은 승인된 계획에서 오므로(§24) 설명만 고쳐서는 실행 범위가 바뀌지 않는다.
+2. 이슈를 `AI 계획 요청`으로 옮긴다. 새 계획을 검토하고 `계획 검토 대기 → 작업 중`으로 승인하면 새 승인 id로
+   새 job·attempt가 만들어진다. 이전 attempt의 늦은 결과는 적용되지 않는다. 댓글만 달고 옮기지 않으면 아무 일도
+   일어나지 않는다. 댓글은 승인 입력이 아니다.
 
 실패로 보고되는 경우(커밋 없음, patch 보존, `ggjira-failed` 라벨):
 
@@ -517,82 +531,12 @@ Router와 워커는 `protocolVersion`이 같아야 한다. 다르면 426 `protoc
    Router가 받아야 한다. 업그레이드 뒤에는 이전 형식 결과를 다시 보낼 수 없다.
 3. 워커를 멈추고, Router를 업그레이드·재시작한 뒤, 워커를 업그레이드·시작한다.
 4. 업그레이드 뒤 워커 로그에 `spooled result does not match this protocol version`이 보이면 2단계에서
-   빠진 결과다. 파일은 spool에 그대로 있다. 내용을 확인한 뒤 해당 이슈를 다시 요청 상태로 옮긴다.
+   빠진 결과다. 파일은 spool에 그대로 있다. 내용을 확인한 뒤 해당 이슈를 다시 승인하거나 다시 계획한다.
 
-## 27. label 모드: opt-in 라벨과 일반 상태 흐름 (ADR 0037)
+## 27. 라벨 기반 AI 참여 제거 (ADR 0046)
 
-label 모드 workspace에서는 AI 전용 상태 없이 일반 상태 흐름을 쓴다. 담당자가 있는 이슈가 할 일
-(`requestStatus`)에 있고 `optInLabel`이 붙어 있으면 Router가 맡는다. 설정 예:
-
-```json
-"workflow": {
-  "mode": "label",
-  "optInLabel": "ai-enabled",
-  "requestStatus": "해야 할 일",
-  "inProgressStatus": "진행 중",
-  "reviewStatus": "검토",
-  "doneStatus": "완료"
-}
-```
-
-`planningStatus`·`needsDecisionStatus`는 쓰지 않는다(있으면 설정 오류). opt-in 라벨은 대소문자를 구분하지
-않으며, `reporting.failureLabel`·`ggjira-superseded` 같은 GGJIRA 라벨과 같을 수 없다.
-
-### 동작
-
-- 시작: Acceptance Criteria·Verification이 있으면 구현, 없으면 PM 계획이 먼저 돈다. PM이 결과 하나로
-  보면 상위 이슈 설명에 계약을 채우고 검토 상태로 옮긴다. 계약을 확인한 뒤 할 일로 옮기면 구현이
-  시작된다. 여러 결과로 나누면 하위 이슈가 생기는데, 라벨은 붙지 않는다. 실행할 하위 이슈에 사람이
-  라벨을 붙인다. 하위 작업이 있는 상위 이슈를 다시 할 일로 옮기면 재계획한다.
-- 결정 요청·범위 이탈: 이슈는 진행 상태에 남고 댓글로 안내된다. 결정을 설명에 반영하고 할 일로 옮기면
-  새 승인으로 다시 시작된다.
-- 실패: 진행 상태에 남고 `ggjira-failed` 라벨이 붙는다. 같은 승인으로는 다시 돌지 않는다.
-- 라벨 제거: 대기 중이면 취소, 실행 중이면 중단을 요청한다(최대 5초 안에 확인). 이슈 상태는 그대로다.
-  다시 붙이면 새 승인이다.
-- 재작업: 검토 → 할 일로 옮기면 새 job이다.
-- 승인 뒤 요청 수정(제목·설명·계약): 대기 중이면 취소하고, 실행 중이면 중단을 요청한다. 늦게 온 결과는
-  반영하지 않는다. 같은 승인으로는 다시 돌지 않으며 로그 `held`에 "edited after it was approved"가 남는다.
-  고친 내용으로 실행하려면 할 일로 다시 옮기거나 라벨을 뗐다 다시 붙인다(새 승인, 새 입력 해시).
-
-### 이슈별 AI 참여 켜고 끄기 (ADR 0039)
-
-웹 UI 이슈 화면 또는 `ggjira router issue show KEY` / `ggjira router issue opt-in KEY on|off`. opt-in 라벨만
-바꾸고 다른 라벨은 그대로 둔다. 응답은 Jira를 다시 읽어 확인한 결과다.
-
-- `blocked:` 줄(웹 UI의 Router 항목)이 시작되지 않는 이유다. `not_requested`는 상태를, `no_assignee`는
-  담당자를, `readiness_hold`는 빠진 절을, `approval_held`·`inputs_changed`는 새 승인(라벨을 껐다 켜기)을 요구한다.
-- `409 not_label_mode`: legacy workspace다. 상태로 요청한다.
-- `502 unconfirmed`: 쓰기 결과를 확인하지 못했다. Jira에서 이슈의 라벨을 직접 보고 다시 조회한다.
-- `502 jira_forbidden`: Router의 Jira 계정에 그 이슈 편집 권한이 없다.
-- 누가 언제 바꿨는지: `audit_log`의 `issue.opt_in.*`(성공·변경 없음·실패 모두). actor는 호출자가 선언한
-  이름이고 인증은 공유 admin token이다.
-
-시작되지 않을 때: `ggjira router check --issue KEY`가 opt-in 라벨 유무와 전이 가능 여부를 보여 준다. Router
-로그 `pass:"reconcile"`의 `held`/`skipped`에 이유가 있다(담당자 없음, 하위 이슈의 계약 누락 등).
-
-### legacy → label 전환
-
-1. 기준선: `ggjira router backup`과 설정·비밀 파일 사본을 저장소 밖에 둔다. Git 태그만으로는 DB와 Jira가
-   복구되지 않는다.
-2. 제안(Jira를 바꾸지 않음):
-   `ggjira router migrate-labels plan --workspace <id> --label ai-enabled --to-do "<할 일>" --review "<검토>" --out plan.json`
-   - `add-label-and-request`: 요청·계획 요청 이슈. 라벨을 붙이고 할 일로 옮긴다.
-   - `move-to-review`: AI 작업 완료 이슈. 검토로 옮긴다.
-   - `manual`: 결정 대기, 진행 중, 계약이 이미 있는 계획 요청(label 모드에서는 구현으로 바뀜). 사람이 정한다.
-   - `blocked`: 아직 실행될 수 있는 job이 있다. 끝나기를 기다리거나 `jobs cancel`.
-3. `plan.json`을 검토하고 옮길 항목에만 `"approved": true`를 쓴다.
-4. 적용(workspace가 아직 legacy일 때): `ggjira router migrate-labels apply plan.json`. 이슈마다 결과를 출력하고
-   `audit_log`에 남긴다(`migration.label.*`). 계획 이후 바뀐 이슈는 건너뛰고, 실패한 이슈가 있어도 나머지는
-   계속한다. legacy는 라벨을 보지 않으므로 이 단계에서는 아무것도 시작되지 않는다. 실패한 항목은 원인을
-   고친 뒤 같은 파일로 다시 apply한다. 이미 옮긴 항목은 `skipped`로 나온다.
-5. 설정 전환: 웹 UI 설정에서 AI 참여 방식을 label로 바꾸고 opt-in 라벨과 일반 상태를 지정해 저장한다.
-   아직 실행될 수 있는 job(대기·임대·실행·중단 요청·복구 필요)이 그 workspace에 있으면
-   409 `workspace_busy`로 거절된다. 실패·시간 초과 job은 막지 않는다.
-6. 관찰: `ggjira router status`와 Router 로그로 새 job과 댓글이 한 번씩만 생기는지 확인한다.
-7. 되돌리기: 설정을 legacy로 되돌린다(같은 `workspace_busy` 규칙). 옮긴 이슈는 `audit_log`의 `migration.label.applied`
-   기록을 보고 골라서 되돌린다. 일괄 되돌리기는 없다.
-
-AI 전용 상태를 Jira 워크플로에서 지우는 것은 전환 조건이 아니다. 충분히 관찰한 뒤 따로 한다.
+라벨 참여 모드, opt-in 토글/API/CLI, label 이관 명령은 제거됐다. 상태 기반 위임은 §34를 따른다.
+기존 label 설정은 유효하지 않으며 자동으로 다른 설정으로 바꾸지 않는다. §34의 "이전 설정에서 전환"을 따른다.
 
 ## 28. Jira 웹훅 진단 (ADR 0038)
 
@@ -621,6 +565,8 @@ Router는 서명이 맞는 웹훅의 이벤트 종류·이슈 키·프로젝트�
 | `review_required` | 고위험·미검증·커밋 없음 등 개별 검토 | 결과를 직접 확인 | 검토 커밋과 같은 PR 머지, 새 결과, 새 승인 |
 | `readiness_hold` | 계약 절이 빠져 시작 안 함 | 설명에 Acceptance Criteria·Verification 추가 | 계약이 채워짐 |
 | `report_blocked` | Jira 반영이 막힘 | 원인(워크플로·권한)을 고치고 `router reports retry` | 재시도가 반영됨 |
+| `unassigned` | 담당자 없는 이슈를 위임해 시작 안 함(댓글 1회) | 이슈에 담당자를 지정 | 다음 패스에서 job이 생김 |
+| `pull_request_unchecked` | Router가 GitHub에서 PR을 확인하지 못함. 머지해도 Jira에 반영되지 않음 | 증거의 오류대로 `GITHUB_TOKEN`을 넣거나 권한을 고침(§21 진단) | 다음 확인 성공, 또는 PR 종료 |
 
 - 해소는 기록일 뿐이다. 해소됐다고 실행이 시작되지 않는다. 실행은 Jira의 새 요청(승인)만 시작한다.
 - `--all`이나 `--resolved`로 해소 이력을 본다. "recurred after"는 해소된 같은 사건의 재발이다.
@@ -663,7 +609,7 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
   그동안의 검토 대상·주의 항목·사용량 기록은 남지만 갱신되지 않는다. PR 머지 → 완료는 ADR 0027 동작으로 돌아간다.
 - DB 백업을 복원하는 것은 마지막 수단이다. 백업 이후의 job·결과·보고 저널이 사라지므로, 복원 전에 그 사이 Jira
   댓글·전이와 push된 브랜치를 `audit_log`와 Jira에서 대조해 둔다.
-- label 모드 전환 자체의 되돌리기는 §27 "legacy → label 전환" 7단계를 따른다.
+- 라벨 방식으로 되돌리는 기능은 제거됐다. 버전 복구 시 Jira·DB·이후 실행 결과를 함께 대조한다(§27).
 
 ## 32. 검토 대기와 판단 (ADR 0043)
 
@@ -672,8 +618,7 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 
 - 판단: `ggjira router reviews judge <targetId> confirm|hold|rework [--note "사유"]`. 보류·재작업 요청은 사유가
   필요하고 Jira에 댓글 하나가 달린다. 확인은 Router에만 남고 `review_required` 주의 항목을 해소한다.
-- 판단은 아무것도 실행하지 않는다. 재작업 요청 뒤에도 이슈를 다시 요청 상태로 옮기거나(legacy) 라벨을 뗐다
-  붙여야(label) 새 실행이 시작된다. 확인했다고 완료로 가지 않는다.
+- 판단은 아무것도 실행하지 않는다. 재작업 요청 뒤에도 상태 기반으로 다시 요청해야 새 실행이 시작된다. 확인했다고 완료로 가지 않는다.
 - 판단자 이름은 웹 UI에 적은 이름 또는 CLI의 OS 사용자 이름이다(`admin:<이름>`, `admin-token`). 공유 token 뒤의
   자기 신고다.
 - 409 `stale_review_target`: 그 사이 같은 이슈의 새 결과가 나왔거나(`currentTargetId`가 새 대상), 이슈가 다시
@@ -700,3 +645,123 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 - `run-all.bat`의 포트는 Router 설정의 `http.port`(없으면 8787)에서 읽는다. 두 번 실행하면 워커가 하나 더 뜬다.
 - 실제 Jira·LLM CLI를 쓰는 실행이다. 시험만 하려면 `GGJIRA_ROUTER_CONFIG`·`GGJIRA_WORKER_CONFIG`를 없는 경로로
   두고 띄우면 셋업 모드와 워커 첫 실행 질문까지만 간다.
+
+## 34. 상태로 위임하고 계획부터 (ADR 0044, 0047)
+
+라벨은 아무것도 시작하거나 멈추지 않는다. 사람이 보드에서 이슈를 옮겨 위임하고, 승인하고, 철회한다.
+워크플로는 하나다. 설정 예:
+
+```json
+"workflow": {
+  "requestStatus": "AI 계획 요청",
+  "planReviewStatus": "계획 검토 대기",
+  "inProgressStatus": "작업 중",
+  "reviewStatus": "결과 검토",
+  "doneStatus": "완료"
+}
+```
+
+상태는 서로 달라야 한다. `doneStatus`만 선택이다. 예전 `mode`·`planningStatus`·`needsDecisionStatus`·
+`optInLabel`은 `Unrecognized key` 오류로 거절한다.
+`AI 계획 요청`·`계획 검토 대기`는 Jira 워크플로에 새로 만든다. 보드에서는 각 상태를 다른 컬럼에 매핑해 서로 다른
+단계가 한 컬럼에 숨지 않게 한다. `ggjira router check`와 웹 UI 설정의 "Router가 하는 전이"는 다음 전이를 확인한다.
+
+- 요청 → 계획 검토
+- 계획 검토 → 작업 중(사람이 하는 승인)
+- 작업 중 → 결과 검토
+- 결과 검토 → 완료
+
+새 하위 작업이 작업 중으로 갈 수 있는지는 사람이 직접 확인한다(경고로 나온다).
+
+### 흐름
+
+1. **위임**: 담당자가 있는 이슈를 `AI 계획 요청`으로 옮긴다. 설명 형식과 상관없이 계획 job 하나가 생긴다.
+   담당자가 없으면 시작하지 않고 "has no assignee" 댓글을 한 번 달고 확인 필요 항목 `unassigned`를 남긴다.
+   담당자를 지정하면 다음 패스(최대 1분)에서 시작한다.
+   계획하는 동안 이슈는 요청 상태에 있고 "GGJIRA started planning" 댓글이 달린다.
+2. **계획 검토**: 계획이 끝나면 `계획 검토 대기`로 옮겨지고 "Plan applied." 댓글이 달린다. 하위 작업으로 나눈
+   계획이면 하위 이슈도 이때 생기지만, 승인 전에는 아무것도 실행되지 않는다. 결정이 필요한 계획도 여기에 온다.
+   결정 요청 댓글에 `Decision: <id>`로 답하고 `AI 계획 요청`으로 다시 옮긴다.
+3. **승인**: 계획을 읽고 `계획 검토 대기 → 작업 중`으로 옮긴다. 승인 댓글("Plan … approved")이 달린다.
+   - 하위 작업이 없는 계획: 이슈 자신이 구현된다.
+   - 하위 작업이 있는 계획: Router가 하위 작업을 작업 중으로 옮긴다. 각각 구현되고, 의존성은 앞 작업이 `완료`이거나
+     검토 화면에서 확인됐을 때 풀린다(결과 검토 도착만으로는 안 풀린다). 모두 완료되면 부모가 `결과 검토`로 간다.
+4. **결과 검토·완료**: ADR 0040~0043·0027 그대로다(검토 화면, PR 머지 → 완료).
+
+실행은 승인된 계획의 계약을 따른다(§24). 설명을 고쳐 범위를 바꾸려면 다시 계획한다.
+
+할 일 → 작업 중처럼 사람이 자기 이슈를 옮기는 것은 AI와 무관하다. 계획 없이 작업 중에 있는 이슈는 가져가지 않는다.
+사람이 만든 하위 이슈(`ggjira.plan-task` 없음)도 가져가지 않는다.
+
+### 철회·재시도·범위 변경
+
+- **철회**: 부모를 작업 중 밖으로(할 일 등) 옮긴다. 승인(배포)이 철회되고, 대기 중인 job은 취소되며, 실행 중인 job은
+  몇 초 안에 중단 요청을 받는다. 늦게 온 결과는 반영하지 않는다. 다시 작업 중으로 옮기는 것만으로는 승인이 아니다.
+  승인은 계획 검토 → 작업 중 이동뿐이다. 하위 작업 하나만 멈추려면 그 하위 작업을 작업 중 밖으로 옮기거나
+  `jobs cancel`을 쓴다.
+- **같은 계획으로 다시**: 실패한 이슈는 작업 중에 `ggjira-failed` 라벨과 함께 남는다. 라벨을 떼도 다시 돌지 않는다.
+  - 부모: `계획 검토 대기 → 작업 중`으로 다시 옮긴다(새 승인).
+  - 하위 작업: 작업 중 밖으로 옮겼다가 되돌리거나 `ggjira router jobs retry <jobId>`를 쓴다.
+- **범위 변경**: 설명을 고쳐 `AI 계획 요청`으로 옮긴다. 새 계획이 이전 계획과 그 승인을 대신한다.
+
+### 시작되지 않을 때
+
+- 웹 UI 이슈 화면 또는 `ggjira router issue show KEY`의 `stage`가 위임 단계와 다음 이동을 알려 준다.
+  `plan`은 최신 계획(버전·outcome·하위 작업), `approval`은 승인 기록과 상태다.
+  - `waiting_plan_apply`: 계획이 Jira에 다 반영되기를 기다린다. `ggjira router reports list`로 막힌 단계를 본다.
+  - `revoked`: 승인이 철회됐다. 이유가 함께 나온다.
+- "did not take the move … as approval" 댓글과 `계획 승인 아님` 주의 항목: 그 이동은 승인이 아니다.
+  - 결정 대기 계획: 결정에 답하고 요청 상태로 옮긴다.
+  - 이전 요청의 계획: 새 계획이 나올 때까지 기다리거나 다시 요청한다.
+  - Jira의 계획 버전이 다름: 다시 요청한다.
+- 이슈 화면은 읽기 전용이다. `GET /api/v1/admin/issues/:key`로 조회하며 라벨 변경 토글과 opt-in 엔드포인트는 없다.
+
+### 이전 설정(legacy·label)에서 전환
+
+이전 버전의 `requestStatus`(구현 요청)·`planningStatus`·`needsDecisionStatus`·`mode`·`optInLabel` 설정은 이
+버전에서 읽히지 않는다. Router가 설정 오류로 시작하지 않으므로, 업그레이드 전에 이전 버전에서 정리한다. 이관 도구는
+없다(ADR 0047).
+
+1. 기준선: `ggjira router backup`과 설정·비밀 파일 사본을 저장소 밖에 둔다.
+2. 배정 정지: `ggjira router status`로 leased/running job이 없을 때까지 기다리거나 `ggjira router jobs cancel`.
+   각 워커에서 `ggjira worker results retry`로 spool을 비운다. `ggjira router reports list`가 비어 있게 한다.
+3. Jira 워크플로에 `AI 계획 요청`·`계획 검토 대기` 상태와 §34 위쪽의 전이를 추가한다. 새 요청 상태는 새로 만든
+   상태를 쓴다. 이전 요청·계획 요청 상태를 그대로 쓰면, 업그레이드 뒤 첫 조회에서 그 상태에 있던 이슈가 모두 계획
+   요청이 된다.
+4. 이전 요청·계획 요청 상태에 남은 이슈는 업그레이드 뒤 아무도 가져가지 않는다. 맡길 이슈는 업그레이드 뒤 사람이
+   `AI 계획 요청`으로 옮긴다. 일괄로 옮기지 않는다. 작업 중·검토 중인 이슈는 그대로 둔다. 예전 구현 실행에는 승인된
+   계획이 없으므로, 작업 중에 있어도 다시 실행되지 않는다.
+5. 설정 파일의 workflow를 §34 위쪽 예처럼 바꾼다. `mode`·`planningStatus`·`needsDecisionStatus`·`optInLabel`을
+   지우고 `planReviewStatus`를 넣는다.
+6. 새 버전으로 업그레이드하고 Router를 시작한다. `ggjira router check --issue <KEY>`로 상태와 전이를 확인한다.
+7. 되돌리기: 이전 버전, 이전 설정, 1단계의 백업을 함께 복원한다. 이 버전이 남긴 계획·승인 기록(migration 14·15)은
+   이전 버전이 읽지 않는다.
+
+## 35. 실패 코드 (ADR 0048)
+
+실패 댓글의 첫 줄은 `실행 실패 [GGJ-xxx]: <원인>`이다. 문구는 `src/router/failure-codes.ts`의 표에 있다.
+언어는 Router 설정 `reporting.language`(`ko` 기본, `en`)로 정하고, 실패 댓글뿐 아니라 Router가 다는 모든
+댓글에 적용된다(문장은 `src/router/comment-text.ts`). 결정 답은 언어와 상관없이 `Decision: <선택지 id>`로 단다. 워커가 보고한 실패는 실패 이유의 첫 줄을
+표의 규칙과 위에서부터 맞춰 코드를 정한다. 시간 초과·계획 문제는 Router가 직접 코드를 붙인다. 원문은 댓글의
+`자세한 내용:` 로그 파일에 있다.
+
+| 코드 | 뜻 | 할 일 |
+|---|---|---|
+| `GGJ-101` | 워커가 AI CLI를 실행하지 못함(설치 안 됨, PATH 없음) | 워커 터미널에서 `where codex`/`where claude`, 필요하면 `providers[].command`에 경로 |
+| `GGJ-102` | 실행 중 워커 재시작 | 워커가 계속 떠 있는지 확인하고 다시 요청 |
+| `GGJ-103` | 워커에 job의 저장소·provider가 없음 | 워커 설정의 `repositories`/`providers`와 Router 설정의 id를 맞춤 |
+| `GGJ-104` | git worktree 준비 실패 | 워커의 저장소 경로·`git worktree list`·디스크 공간 확인 |
+| `GGJ-105` | 시간 초과 | 범위를 줄이거나 `execution.timeoutMs`를 늘림 |
+| `GGJ-201` | AI CLI가 모델을 거부 | 워커 `providers[].model`을 지우거나 계정이 쓸 수 있는 모델로(§18) |
+| `GGJ-202` | AI 계정 사용량 한도 | 한도가 초기화된 뒤 다시 요청 |
+| `GGJ-203` | AI CLI 로그인 안 됨·거부 | 워커 머신에서 `codex login`/`claude` 로그인 |
+| `GGJ-204` | AI CLI가 오류를 내고 끝남(원인 문구 포함) | 문구대로 고침. 원문은 로그 파일 |
+| `GGJ-205` | AI CLI가 종료 코드만 남기고 끝남 | 로그 파일과 워커 로그 `data/worker-logs/<jobId>-<attemptId>.jsonl` 확인 |
+| `GGJ-301` | 워커 검증 명령(`validateCommand`) 실패 | 로그 파일의 명령 출력 확인 |
+| `GGJ-302` | 완료 조건 검증 실패 | 계획의 완료 조건이나 구현을 고쳐 다시 요청 |
+| `GGJ-303` | AI가 검증 근거 없이 완료 보고 | 다시 요청. 반복되면 계획의 Verification을 구체적으로 |
+| `GGJ-401` | 계획을 적용할 수 없음(작업 수 초과, 완료 조건 없음 등) | 원인 문구대로 요청을 고쳐 다시 계획 |
+| `GGJ-402` | 계획 결과에 계획 없음 | 다시 계획 요청 |
+| `GGJ-403` | 결정 필요라고 했지만 결정 내용 없음 | 다시 요청 |
+| `GGJ-501` | 연결이 끊긴 실행의 결과가 늦게 도착해 반영 안 함 | 다시 실행하려면 요청 상태로 옮김 |
+| `GGJ-999` | 분류되지 않은 오류(첫 줄을 그대로 보임) | 로그 파일 확인. 자주 나오면 표에 규칙 추가 |

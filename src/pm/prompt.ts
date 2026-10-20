@@ -62,7 +62,7 @@ export function buildPlanningPrompt(ctx: PlanningPromptInput): string {
     "Produce a plan as JSON matching the given schema. If existing subtasks are still valid, list their keys in keepTaskKeys instead of recreating them; anything not listed there will be treated as superseded.",
     "Each executable task must list canonical requiredCapabilities. Do not select or assign a worker; Router routes tasks by capability and Jira assignees stay unchanged.",
     "Every task needs a unique taskId, and intra-plan dependencies must reference those taskIds.",
-    "An implementation request without acceptance criteria and verification is not started, so never leave either empty on an executable unit.",
+    "The plan is the contract each run is held to: Router refuses a plan whose executable unit has no acceptance criteria or no verification, so never leave either empty on an executable unit.",
   );
 
   return parts.join("\n");

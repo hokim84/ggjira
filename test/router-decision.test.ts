@@ -1,21 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { isRouteDispatch } from "../src/contracts/route.js";
 import type { IssueRequirements } from "../src/issue/requirements.js";
 import type { JiraIssue } from "../src/jira/types.js";
 import type { PlanTaskMetadata } from "../src/pm/metadata.js";
-import { RuleDecisionProvider, type RouteContext } from "../src/router/decision.js";
 import type { WorkspaceConfig } from "../src/router/config.js";
-import { isRouteDispatch } from "../src/contracts/route.js";
-import { resolveJobKind } from "../src/router/workflow-mode.js";
+import { type RouteContext, RuleDecisionProvider } from "../src/router/decision.js";
 
 const workspace: WorkspaceConfig = {
   id: "ws1",
   repositoryId: "repo1",
   projectKeys: ["KAN"],
   workflow: {
-    requestStatus: "AI 작업 요청",
+    requestStatus: "AI 계획 요청",
+    planReviewStatus: "계획 검토 대기",
     inProgressStatus: "작업 중",
-    reviewStatus: "AI 작업 완료",
-    planningStatus: "AI 계획 요청",
+    reviewStatus: "결과 검토",
   },
 };
 
@@ -25,7 +24,7 @@ function issue(overrides: Partial<JiraIssue> = {}): JiraIssue {
     id: "10001",
     summary: "Do the thing",
     description: null,
-    statusName: "AI 작업 요청",
+    statusName: "작업 중",
     labels: [],
     assigneeAccountId: "user-1",
     issueTypeName: "Task",
@@ -52,28 +51,17 @@ function requirements(overrides: Partial<IssueRequirements> = {}): IssueRequirem
   };
 }
 
-/** The kind is what the scheduler would resolve for the context's issue unless given. */
+/** An approved implementation unless a test says otherwise. */
 function context(overrides: Partial<RouteContext> = {}): RouteContext {
-  const base = {
+  return {
     issue: issue(),
+    kind: "implementation",
     requirements: requirements(),
     planTask: null,
     workspace,
     unresolvedDependencies: [],
     executionAgentOptionId: null,
     ...overrides,
-  };
-  return {
-    ...base,
-    kind:
-      overrides.kind ??
-      resolveJobKind({
-        workspace: base.workspace,
-        issue: base.issue,
-        requirements: base.requirements,
-        planTask: base.planTask,
-        parentPlanHasTasks: false,
-      }),
   };
 }
 
@@ -140,7 +128,7 @@ describe("RuleDecisionProvider", () => {
     expect(isRouteDispatch(result) && result.pinnedWorkerId).toBe("worker-a");
   });
 
-  it("dispatches implementation for an issue in requestStatus", () => {
+  it("dispatches an approved implementation", () => {
     const provider = new RuleDecisionProvider();
     const result = provider.decide(context());
     expect(result).toMatchObject({
@@ -150,49 +138,15 @@ describe("RuleDecisionProvider", () => {
     });
   });
 
-  it("dispatches planning for an issue in planningStatus", () => {
-    const provider = new RuleDecisionProvider();
-    const result = provider.decide(context({ issue: issue({ statusName: "AI 계획 요청" }) }));
-    expect(result.target).toBe("planning");
-  });
-
-  it("holds an implementation request without acceptance criteria or verification (ADR 0034)", () => {
-    const provider = new RuleDecisionProvider();
-    const result = provider.decide(
-      context({ requirements: requirements({ acceptanceCriteria: [], verification: [] }) }),
-    );
-    expect(result).toEqual({
-      target: "human",
-      code: "not_ready",
-      missing: ["acceptance", "verification"],
-      reason: expect.stringContaining("missing acceptance and verification"),
-    });
-  });
-
-  it("names only the missing part of the contract", () => {
-    const provider = new RuleDecisionProvider();
-    const result = provider.decide(context({ requirements: requirements({ verification: [] }) }));
-    expect(result).toMatchObject({ target: "human", code: "not_ready", missing: ["verification"] });
-  });
-
-  it("dispatches a planning request even when its contract is incomplete", () => {
+  it("dispatches a planning request, which carries no contract yet", () => {
     const provider = new RuleDecisionProvider();
     const result = provider.decide(
       context({
+        kind: "planning",
         issue: issue({ statusName: "AI 계획 요청" }),
         requirements: requirements({ acceptanceCriteria: [], verification: [] }),
       }),
     );
     expect(result.target).toBe("planning");
-  });
-
-  it("checks readiness after capabilities, so an unknown capability is reported first", () => {
-    const provider = new RuleDecisionProvider();
-    const result = provider.decide(
-      context({
-        requirements: requirements({ requiredCapabilities: ["telepathy"], verification: [] }),
-      }),
-    );
-    expect(result).toMatchObject({ target: "human", reason: expect.stringContaining("unknown") });
   });
 });

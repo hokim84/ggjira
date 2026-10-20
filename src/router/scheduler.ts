@@ -13,11 +13,6 @@ import {
   transitionAttemptState,
 } from "./db/attempts.js";
 import { getApprovalHoldActor, INPUTS_CHANGED_HOLD_ACTOR, recordAdminHold } from "./db/holds.js";
-import {
-  recordReadinessHold,
-  resolveReadinessHolds,
-  resolveUnseenReadinessHolds,
-} from "./db/readiness-holds.js";
 import { markWorkerAssigned } from "./db/workers.js";
 import {
   createJob,
@@ -26,6 +21,7 @@ import {
   getActiveJobs,
   getOpenJobs,
   getQueuedJobs,
+  hasSucceededJobForApproval,
   transitionJobState,
 } from "./db/jobs.js";
 import { findWorkspaceCandidates } from "./candidates.js";
@@ -33,14 +29,18 @@ import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
 import { inputHashMatches } from "./approval.js";
-import { reRequestHint } from "./workflow-mode.js";
-import { recordAttention, resolveAttention } from "./db/attention.js";
+import { isDependencyResolved, reRequestHint } from "./workflow-mode.js";
+import { reconcileDelegatedPlans } from "./delegation.js";
+import { isLatestReviewConfirmed } from "./db/review-targets.js";
+import { listAttentionItems, recordAttention, resolveAttention } from "./db/attention.js";
 import { SETTLED_BY_NEW_APPROVAL } from "./attention.js";
+import { COMMENT_TEXT } from "./comment-text.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 import {
   checkJobAgainstJira,
   collectPlanningContext,
   type IssueApproval,
+  NotDelegatedError,
   readIssueApproval,
   storeApproval,
 } from "./issue-check.js";
@@ -103,25 +103,19 @@ function extractDependencyKeys(dependencies: readonly string[]): string[] {
     .filter((key): key is string => Boolean(key));
 }
 
-/** A dependency is unresolved while it still sits in an active/pending status for its own
- *  workflow — confirmed with the user: since v5 workflow has no `completionStatus`, "reached
- *  `reviewStatus` or beyond" is treated as done. */
-function isDependencyUnresolved(statusName: string, workspace: WorkspaceConfig): boolean {
-  const { requestStatus, planningStatus, inProgressStatus } = workspace.workflow;
-  return (
-    statusName === requestStatus || statusName === planningStatus || statusName === inProgressStatus
-  );
-}
-
+/** A dependency is unresolved until it is done, or a human confirmed its result (ADR 0044,
+ *  src/router/workflow-mode.ts `isDependencyResolved`). */
 async function resolveUnresolvedDependencies(
   jira: JiraGateway,
+  db: Database.Database,
   workspace: WorkspaceConfig,
   dependencyKeys: readonly string[],
 ): Promise<string[]> {
   const unresolved: string[] = [];
   for (const key of dependencyKeys) {
     const dependency = await jira.getIssue(key);
-    if (isDependencyUnresolved(dependency.statusName, workspace)) unresolved.push(key);
+    const confirmed = isLatestReviewConfirmed(db, key);
+    if (!isDependencyResolved(workspace, dependency.statusName, confirmed)) unresolved.push(key);
   }
   return unresolved;
 }
@@ -194,11 +188,12 @@ async function reconcileIssue(
 ): Promise<void> {
   let approval: IssueApproval;
   try {
-    approval = await readIssueApproval(deps.jira, issue, workspace);
+    approval = await readIssueApproval(deps.jira, deps.db, issue, workspace);
   } catch (error) {
-    if (error instanceof PlanMetadataError) {
+    if (error instanceof PlanMetadataError || error instanceof NotDelegatedError) {
       report.skipped.push({ issueKey: issue.key, reason: error.message });
-      // Corrupted or superseded plan metadata withdraws the approval an open job relied on.
+      // Corrupted or superseded plan metadata withdraws the approval an open job relied on, and so
+      // does a plan that was withdrawn or replaced (ADR 0044).
       const openJob = getOpenJobForIssue(deps.db, issue.key);
       if (openJob && VERIFIED_JOB_STATES.has(openJob.state)) {
         cancelStaleJob(deps.db, openJob, deps.now(), report);
@@ -212,6 +207,7 @@ async function reconcileIssue(
   const dependencyKeys = extractDependencyKeys(requirements.dependencies);
   const unresolvedDependencies = await resolveUnresolvedDependencies(
     deps.jira,
+    deps.db,
     workspace,
     dependencyKeys,
   );
@@ -227,7 +223,8 @@ async function reconcileIssue(
   const existingJob = getOpenJobForIssue(deps.db, issue.key);
   if (existingJob) {
     const inputsChanged =
-      existingJob.approvalId === approvalId && !inputHashMatches(existingJob.inputHash, approval);
+      existingJob.approvalId === approvalId &&
+      !inputHashMatches(existingJob.inputHash, approval.inputHash);
     const approvalCurrent =
       existingJob.approvalId === approvalId && !inputsChanged && issue.assigneeAccountId !== null;
     if (approvalCurrent && existingJob.state !== "waiting") {
@@ -254,8 +251,18 @@ async function reconcileIssue(
       target: "human",
       reason:
         holdActor === INPUTS_CHANGED_HOLD_ACTOR
-          ? `the request was edited after it was approved; ${reRequestHint(workspace)} to run the edited request`
-          : `cancelled by an admin for this approval; ${reRequestHint(workspace)} to re-run`,
+          ? `the request was edited after it was approved; ${reRequestHint(workspace, kind)} to run the edited request`
+          : `cancelled by an admin for this approval; ${reRequestHint(workspace, kind)} to re-run`,
+    });
+    return;
+  }
+
+  // ADR 0044: one request, one run. A request still showing after its run finished (its report
+  // move not applied yet, or skipped) is not a new one.
+  if (hasSucceededJobForApproval(deps.db, issue.key, approvalId)) {
+    report.skipped.push({
+      issueKey: issue.key,
+      reason: `${issue.key} already ran under approval ${approvalId}`,
     });
     return;
   }
@@ -270,39 +277,6 @@ async function reconcileIssue(
     executionAgentOptionId: issue.executionAgentOptionId ?? null,
   };
   const decision = deps.decisionProvider.decide(context);
-
-  if (decision.target === "human" && decision.code === "not_ready") {
-    // ADR 0034: hold it, and queue one Jira notice per distinct (approval, inputs, gaps). The
-    // daemon's report pass posts it; re-polling the same request only bumps the hold's counter.
-    recordReadinessHold(deps.db, {
-      issueKey: issue.key,
-      approvalId,
-      inputHash,
-      missing: decision.missing ?? [],
-      now,
-    });
-    // M4-09: every pass that still finds it held is one more occurrence, never another comment.
-    recordAttention(deps.db, {
-      issueKey: issue.key,
-      approvalId,
-      kind: "readiness_hold",
-      cause: [...(decision.missing ?? [])].sort().join(","),
-      severity: "immediate",
-      reason: "the implementation request lacks contract sections and was not started",
-      evidence: { missing: [...(decision.missing ?? [])].sort() },
-      now,
-    });
-    report.held.push({ issueKey: issue.key, target: "human", reason: decision.reason });
-    return;
-  }
-  // Any other outcome means the contract gap (if there was one) is no longer what holds it.
-  resolveReadinessHolds(deps.db, issue.key, now);
-  resolveAttention(deps.db, {
-    issueKey: issue.key,
-    kinds: ["readiness_hold"],
-    resolution: "the request no longer lacks contract sections",
-    now,
-  });
 
   if (isRouteDispatch(decision)) {
     const job = createJob(deps.db, {
@@ -341,7 +315,63 @@ async function reconcileIssue(
     return;
   }
 
+  if (decision.target === "human" && !issue.assigneeAccountId) {
+    await holdUnassigned(deps, issue, approvalId, decision.reason, report);
+    return;
+  }
   report.held.push({ issueKey: issue.key, target: decision.target, reason: decision.reason });
+}
+
+/**
+ * A request nobody is responsible for does not run (rule 1 of `RuleDecisionProvider`). Without a
+ * word on the issue it would only sit in the request status, so the human is told once per
+ * request, on the issue, and an attention item stays open until the issue runs. A comment that
+ * fails is tried again on the next pass.
+ */
+async function holdUnassigned(
+  deps: SchedulerDeps,
+  issue: JiraIssue,
+  approvalId: string,
+  reason: string,
+  report: SchedulerReport,
+): Promise<void> {
+  const told = listAttentionItems(deps.db, {
+    status: "open",
+    issueKey: issue.key,
+    kind: "unassigned",
+  }).some((item) => item.approvalId === approvalId);
+  if (!told) {
+    const marker = `[GGJIRA:UNASSIGNED:${approvalId}]`;
+    const text = COMMENT_TEXT[deps.config.reporting.language].unassigned;
+    try {
+      const comments = await deps.jira.getComments(issue.key);
+      if (!comments.some((comment) => comment.body.includes(marker))) {
+        await deps.jira.addComment(
+          issue.key,
+          [marker, text.title, text.impact, text.next(issue.statusName)].join("\n"),
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      report.held.push({
+        issueKey: issue.key,
+        target: "human",
+        reason: `${reason}; telling it on the issue failed (${message}), tried again next pass`,
+      });
+      return;
+    }
+    recordAttention(deps.db, {
+      issueKey: issue.key,
+      approvalId,
+      kind: "unassigned",
+      cause: "no human assignee",
+      severity: "immediate",
+      reason: "the issue was handed to GGJIRA without an assignee; nothing runs until it has one",
+      evidence: { statusName: issue.statusName },
+      now: deps.now(),
+    });
+  }
+  report.held.push({ issueKey: issue.key, target: "human", reason });
 }
 
 /** M4-09: a fresh approval of the issue settles what earlier runs left for a human. Bookkeeping
@@ -357,6 +387,12 @@ function settleOnNewApproval(
     kinds: SETTLED_BY_NEW_APPROVAL,
     resolution: `approved again (${approvalId})`,
     exceptApprovalId: approvalId,
+    now,
+  });
+  resolveAttention(db, {
+    issueKey,
+    kinds: ["unassigned"],
+    resolution: `assigned; the request runs (${approvalId})`,
     now,
   });
 }
@@ -481,7 +517,7 @@ const VERIFIED_JOB_STATES = new Set(["waiting", "queued", "leased", "running"]);
 async function verifyJob(deps: SchedulerDeps, job: JobRow, report: SchedulerReport): Promise<void> {
   let check: Awaited<ReturnType<typeof checkJobAgainstJira>>;
   try {
-    check = await checkJobAgainstJira(deps.jira, deps.config, job);
+    check = await checkJobAgainstJira(deps.jira, deps.config, job, deps.db);
   } catch (error) {
     report.skipped.push({
       issueKey: job.issueKey,
@@ -566,11 +602,17 @@ export async function reconcileCandidates(
       processedIssueKeys.add(issue.key);
       await reconcileIssue(deps, workspace, issue, genId, routerAccountId, report);
     }
+    // ADR 0044: approved plans and their tasks come from Router's own records, never from the
+    // shared in-progress status.
+    await reconcileDelegatedPlans(deps, workspace, report, async (issue) => {
+      if (processedIssueKeys.has(issue.key)) return;
+      report.candidatesSeen += 1;
+      processedIssueKeys.add(issue.key);
+      await reconcileIssue(deps, workspace, issue, genId, routerAccountId, report);
+    });
   }
 
   await reverifyUnseenOpenJobs(deps, processedIssueKeys, report);
-  // A held issue that left the request statuses (or was deleted) owes no notice any more.
-  resolveUnseenReadinessHolds(deps.db, processedIssueKeys, deps.now());
   assignQueuedJobs(deps, availableWorkers, report);
   return report;
 }

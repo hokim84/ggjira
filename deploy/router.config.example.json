@@ -8,9 +8,10 @@
       "repositoryId": "main-repo",
       "projectKeys": ["PROJ"],
       "workflow": {
-        "requestStatus": "AI 작업 요청",
+        "requestStatus": "AI 계획 요청",
+        "planReviewStatus": "계획 검토 대기",
         "inProgressStatus": "작업 중",
-        "reviewStatus": "AI 작업 완료"
+        "reviewStatus": "결과 검토"
       }
     }
   ],

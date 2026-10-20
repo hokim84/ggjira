@@ -9,11 +9,7 @@ import type { RouterConfig } from "./config.js";
 import { listUnprocessedEvents, markEventProcessed } from "./db/events.js";
 import { RuleDecisionProvider } from "./decision.js";
 import { expireLeases, type LeaseExpiryReport } from "./leases.js";
-import {
-  processReadinessNotices,
-  processReportJournal,
-  type ReportPassReport,
-} from "./report-processor.js";
+import { processReportJournal, type ReportPassReport } from "./report-processor.js";
 import {
   reconcileCandidates,
   type SchedulerDeps,
@@ -141,7 +137,7 @@ export class RouterDaemon {
       now: this.now,
       reconcileNow: () => this.reconcileNow(),
       applyConfig: (config) => this.applyConfig(config),
-      github: { webhook: Boolean(deps.github?.webhookSecret) },
+      github: { webhook: Boolean(deps.github?.webhookSecret), token: () => this.githubToken },
       secrets: {
         ...(deps.secretsPath ? { secretsPath: deps.secretsPath } : {}),
         slots: {
@@ -342,22 +338,6 @@ export class RouterDaemon {
           deferred: report.deferred.length,
         },
         "report journal pass",
-      );
-    }
-    const notices = await processReadinessNotices({
-      db: this.deps.db,
-      jira: this.deps.jira,
-      now: this.now,
-    });
-    if (notices.posted.length || notices.failed.length) {
-      this.deps.logger?.info(
-        {
-          layer: "router",
-          posted: notices.posted,
-          failed: notices.failed,
-          deferred: notices.deferred.length,
-        },
-        "readiness notice pass",
       );
     }
     return report;

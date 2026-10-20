@@ -1,12 +1,16 @@
-import { renderSections } from "../../src/issue/description.js";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { RouterConfig, WorkerPolicyConfig, WorkspaceConfig } from "../../src/router/config.js";
 
 /** Shared v5 Router test fixtures (scheduler, worker API, leases, runner end-to-end). */
 
-export const REQUEST_STATUS = "AI 작업 요청";
-export const PLANNING_STATUS = "AI 계획 요청";
+/** The workspace workflow (ADR 0044, ADR 0047): delegated by status, always planned first. */
+export const TODO_STATUS = "할 일";
+export const REQUEST_STATUS = "AI 계획 요청";
+export const PLAN_REVIEW_STATUS = "계획 검토 대기";
 export const IN_PROGRESS_STATUS = "작업 중";
-export const REVIEW_STATUS = "AI 작업 완료";
+export const REVIEW_STATUS = "결과 검토";
+export const DONE_STATUS = "완료";
 
 export const testWorkspace: WorkspaceConfig = {
   id: "ws1",
@@ -14,57 +18,42 @@ export const testWorkspace: WorkspaceConfig = {
   projectKeys: ["KAN"],
   workflow: {
     requestStatus: REQUEST_STATUS,
-    planningStatus: PLANNING_STATUS,
+    planReviewStatus: PLAN_REVIEW_STATUS,
     inProgressStatus: IN_PROGRESS_STATUS,
     reviewStatus: REVIEW_STATUS,
-  },
-};
-
-/** A `label`-mode workspace (ADR 0037) on the ordinary four-status workflow. */
-export const TODO_STATUS = "To Do";
-export const LABEL_IN_PROGRESS_STATUS = "In Progress";
-export const LABEL_REVIEW_STATUS = "Review";
-export const DONE_STATUS = "Done";
-export const OPT_IN_LABEL = "ai-enabled";
-
-export const labelWorkspace: WorkspaceConfig = {
-  id: "ws1",
-  repositoryId: "repo1",
-  projectKeys: ["KAN"],
-  workflow: {
-    mode: "label",
-    optInLabel: OPT_IN_LABEL,
-    requestStatus: TODO_STATUS,
-    inProgressStatus: LABEL_IN_PROGRESS_STATUS,
-    reviewStatus: LABEL_REVIEW_STATUS,
     doneStatus: DONE_STATUS,
   },
 };
 
-/** Every move between the four statuses, for seeding issues in a `label`-mode workspace. */
-export const LABEL_TRANSITIONS = [
+/** Every move between the workflow's statuses, for seeding issues a test moves around. */
+export const WORKFLOW_TRANSITIONS = [
   TODO_STATUS,
-  LABEL_IN_PROGRESS_STATUS,
-  LABEL_REVIEW_STATUS,
+  REQUEST_STATUS,
+  PLAN_REVIEW_STATUS,
+  IN_PROGRESS_STATUS,
+  REVIEW_STATUS,
   DONE_STATUS,
 ].map((status) => ({ id: `t-${status}`, name: `To ${status}`, toStatusName: status }));
 
-/** A description whose scope contract is complete (ADR 0034) unless `acceptance`/`verification`
- *  is passed as `[]`, so implementation requests built from it dispatch by default. */
-export function issueDescription(
-  opts: {
-    dependencies?: string[];
-    capabilities?: string[];
-    acceptance?: string[];
-    verification?: string[];
-  } = {},
-): string {
-  return renderSections([
-    { heading: "Acceptance Criteria", items: opts.acceptance ?? ["The change works"] },
-    { heading: "Verification", items: opts.verification ?? ["npm run test"] },
-    { heading: "Dependencies", items: opts.dependencies ?? [] },
-    { heading: "Required Capabilities", items: opts.capabilities ?? ["programming"] },
-  ]);
+/** An issue description as a person might write it. Router never parses it (ADR 0047); it only
+ *  goes into the input hash and to the worker as text. */
+export function issueDescription(text = "Make the change described in the summary."): string {
+  return text;
+}
+
+/** A plan that keeps the work in the issue itself, with its contract filled in (ADR 0047): what
+ *  `RouterHarness.seedApprovedIssue` approves unless a test passes its own. */
+export function singlePlan(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    needsDecision: false,
+    summary: "One outcome; contract filled in",
+    acceptanceCriteria: ["The change works"],
+    verification: ["npm run test"],
+    requiredCapabilities: ["programming"],
+    tasks: [],
+    keepTaskKeys: [],
+    ...overrides,
+  };
 }
 
 export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): RouterConfig {
@@ -74,7 +63,8 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
     repositories: [{ id: "repo1" }],
     workspaces: [testWorkspace],
     workers: [],
-    db: { path: "data/router.sqlite3" },
+    // Never the repository's data/: Router writes failure logs next to its database (ADR 0048).
+    db: { path: path.join(tmpdir(), "ggjira-test-router", "router.sqlite3") },
     http: { host: "127.0.0.1", port: 8787 },
     reconciliation: {
       startupFullSyncOnBoot: true,
@@ -83,7 +73,7 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
     },
     execution: { timeoutMs: 60_000 },
     planning: { subtaskIssueType: "Sub-task", maxTasksPerPlan: 10 },
-    reporting: { failureLabel: "ggjira-failed" },
+    reporting: { failureLabel: "ggjira-failed", language: "ko" },
     github: { pollIntervalMs: 300_000 },
     scheduling: { usage: { deprioritizeAtPercent: 90, skipExhausted: true } },
     jev: { enabled: true, model: "jev-latest", timeoutMs: 5_000 },

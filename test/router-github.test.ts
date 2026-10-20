@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
+import { listAttentionItems } from "../src/router/db/attention.js";
 import { listAudit } from "../src/router/db/audit.js";
 import { getPullRequest } from "../src/router/db/pull-requests.js";
 import { listReviewRecords, listReviewTargets } from "../src/router/db/review-targets.js";
@@ -13,8 +14,6 @@ import {
 import { processReportJournal } from "../src/router/report-processor.js";
 import {
   IN_PROGRESS_STATUS,
-  issueDescription,
-  REQUEST_STATUS,
   REVIEW_STATUS,
   testWorkspace,
   workerPolicy,
@@ -92,21 +91,7 @@ describe("GitHub pull request → Jira done", () => {
     pullRequest: typeof PR | undefined = PR,
     git: Record<string, unknown> | null = GIT,
   ) {
-    router.jira.seedIssue(
-      {
-        key: "KAN-1",
-        summary: "Work",
-        statusName: REQUEST_STATUS,
-        projectKey: "KAN",
-        assigneeAccountId: "user-1",
-        description: issueDescription(),
-      },
-      TRANSITIONS,
-    );
-    router.jira.seedChangelogEntry("KAN-1", {
-      id: "KAN-1-approved",
-      items: [{ field: "status", fromString: "To Do", toString: REQUEST_STATUS }],
-    });
+    await router.seedApprovedIssue("KAN-1", { summary: "Work" });
     await router.reconcile();
     const envelope = (await router.next(worker, "req-1")).json() as JobEnvelope;
     const lease = { attemptId: envelope.attemptId, leaseToken: envelope.leaseToken };
@@ -174,7 +159,7 @@ describe("GitHub pull request → Jira done", () => {
     expect(pass.blocked).toEqual([]);
     expect(await status("KAN-1")).toBe(DONE);
     const comments = router.jira.comments.filter((c) => c.key === "KAN-1").map((c) => c.body);
-    expect(comments.at(-1)).toContain("Pull request #12 was merged by reviewer");
+    expect(comments.at(-1)).toContain("PR #12이 머지됐습니다(머지: reviewer)");
     expect(listAudit(router.db, "KAN-1").map((entry) => entry.action)).toContain(
       "pull_request.merged",
     );
@@ -219,24 +204,16 @@ describe("GitHub pull request → Jira done", () => {
 
     expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
-    expect(comment).toContain("GGJIRA did not move the issue");
-    expect(comment).toContain(`is not the reviewed commit ${HEAD.slice(0, 12)}`);
+    expect(comment).toContain("GGJIRA는 이슈를 옮기지 않았습니다");
+    expect(comment).toContain(`검토한 커밋 ${HEAD.slice(0, 12)}와 다릅니다`);
     expect(listReviewRecords(router.db, "KAN-1")[0]).toMatchObject({ outcome: "stale" });
   });
 
   it("does not move to done for a pull request from a superseded run (T16)", async () => {
     await finishWithPullRequest();
     const [first] = listReviewTargets(router.db, "KAN-1");
-    // A rework runs and reports again before the old pull request is merged.
-    router.jira.seedIssue(
-      { ...(await router.jira.getIssue("KAN-1")), statusName: REQUEST_STATUS },
-      TRANSITIONS,
-    );
-    router.jira.seedChangelogEntry("KAN-1", {
-      id: "KAN-1-reworked",
-      created: "2026-02-01T00:00:00.000Z",
-      items: [{ field: "status", fromString: REVIEW_STATUS, toString: REQUEST_STATUS }],
-    });
+    // A rework (the plan approved again) runs and reports before the old pull request is merged.
+    await router.reapprove("KAN-1");
     await router.reconcile();
     const envelope = (await router.next(worker, "req-2")).json() as JobEnvelope;
     const lease = { attemptId: envelope.attemptId, leaseToken: envelope.leaseToken };
@@ -268,7 +245,7 @@ describe("GitHub pull request → Jira done", () => {
       outcome: "stale",
     });
     const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
-    expect(comment).toContain("a newer result exists");
+    expect(comment).toContain("이 이슈에 더 새로운 결과가 있습니다");
     expect(await status("KAN-1")).not.toBe(DONE);
   });
 
@@ -278,7 +255,7 @@ describe("GitHub pull request → Jira done", () => {
     await process();
     expect(await status("KAN-1")).toBe(DONE);
     const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
-    expect(comment).toContain("Head commit not compared");
+    expect(comment).toContain("head 커밋을 비교하지 못했습니다");
     expect(listReviewRecords(router.db, "KAN-1")[0]).toMatchObject({ outcome: "unverified" });
   });
 
@@ -288,7 +265,7 @@ describe("GitHub pull request → Jira done", () => {
     await process();
     expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     const comments = router.jira.comments.filter((c) => c.key === "KAN-1").map((c) => c.body);
-    expect(comments.at(-1)).toContain("closed without merging");
+    expect(comments.at(-1)).toContain("머지되지 않고 닫혔습니다");
   });
 
   it("leaves an issue a human already moved out of review", async () => {
@@ -378,6 +355,19 @@ describe("GitHub pull request → Jira done", () => {
     expect(row?.state).toBe("open");
     expect(row?.lastCheckedAt).toBe(router.clock.now());
     expect(row?.lastError).toMatch(/404.*needs GITHUB_TOKEN/);
+    // Not only on the settings screen: a merge would go unnoticed, so a human is told.
+    const unchecked = () =>
+      listAttentionItems(router.db, { issueKey: "KAN-1", kind: "pull_request_unchecked" });
+    expect(unchecked()).toMatchObject([
+      { status: "open", severity: "immediate", evidence: { error: expect.stringMatching(/404/) } },
+    ]);
+    await pollPullRequests({
+      db: router.db,
+      config: router.config,
+      now: router.clock.now,
+      fetch: answer(404, { message: "Not Found" }),
+    });
+    expect(unchecked()).toMatchObject([{ status: "open", occurrences: 2 }]);
 
     await pollPullRequests({
       db: router.db,
@@ -389,6 +379,7 @@ describe("GitHub pull request → Jira done", () => {
     row = getPullRequest(router.db, "acme/app", 12);
     expect(row?.lastError).toBeNull();
     expect(row?.state).toBe("open");
+    expect(unchecked()).toMatchObject([{ status: "resolved", resolution: "GitHub answered" }]);
   });
 });
 

@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
-import { runRouterCheck } from "../src/router/check.js";
+import {
+  checkGithubRepositories,
+  githubRepositoriesToCheck,
+  runRouterCheck,
+} from "../src/router/check.js";
 import {
   buildRouterConfig,
+  DONE_STATUS,
   IN_PROGRESS_STATUS,
-  PLANNING_STATUS,
+  PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
   REVIEW_STATUS,
+  TODO_STATUS,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
@@ -25,7 +31,14 @@ function jiraWithProject(statuses: string[]): FakeJiraGateway {
   return jira;
 }
 
-const ALL_STATUSES = ["To Do", REQUEST_STATUS, PLANNING_STATUS, IN_PROGRESS_STATUS, REVIEW_STATUS];
+const ALL_STATUSES = [
+  TODO_STATUS,
+  REQUEST_STATUS,
+  PLAN_REVIEW_STATUS,
+  IN_PROGRESS_STATUS,
+  REVIEW_STATUS,
+  DONE_STATUS,
+];
 
 describe("router check", () => {
   const config = buildRouterConfig({ workers: [workerPolicy()] });
@@ -54,14 +67,14 @@ describe("router check", () => {
   it("checks the transitions Router needs on a sample issue", async () => {
     const jira = jiraWithProject(ALL_STATUSES);
     jira.seedIssue({ key: "KAN-1", statusName: REQUEST_STATUS, projectKey: "KAN" }, [
-      { id: "1", name: "Start", toStatusName: IN_PROGRESS_STATUS },
+      { id: "1", name: "Planned", toStatusName: PLAN_REVIEW_STATUS },
     ]);
     jira.seedIssue({ key: "KAN-2", statusName: IN_PROGRESS_STATUS, projectKey: "KAN" }, []);
 
     const ok = await runRouterCheck(jira, config, { issueKey: "KAN-1" });
     expect(ok).toContainEqual({
       level: "ok",
-      message: expect.stringContaining(`→ "${IN_PROGRESS_STATUS}"`),
+      message: expect.stringContaining(`→ "${PLAN_REVIEW_STATUS}"`),
     });
 
     const missing = await runRouterCheck(jira, config, { issueKey: "KAN-2" });
@@ -82,5 +95,70 @@ describe("router check", () => {
     expect(items).toEqual([
       { level: "fail", message: "Jira authentication failed: 401 Unauthorized" },
     ]);
+  });
+});
+
+describe("router check: GitHub", () => {
+  it("lists the repositories Router follows pull requests in", () => {
+    const config = buildRouterConfig({ workers: [workerPolicy()] });
+    const withClone = {
+      ...config,
+      repositories: [
+        { id: "a", cloneUrl: "https://github.com/Acme/App.git" },
+        { id: "b", cloneUrl: "https://gitlab.com/acme/other.git" },
+      ],
+    };
+    expect(githubRepositoriesToCheck(withClone, ["acme/app", "Acme/Tools"])).toEqual([
+      "acme/app",
+      "acme/tools",
+    ]);
+  });
+
+  it("says what to do when GitHub will not show the pull requests", async () => {
+    const requests: string[] = [];
+    const answers: Record<string, number> = { "acme/public": 200, "acme/private": 404 };
+    const fetch = async (url: string, init: RequestInit) => {
+      requests.push(`${url} ${(init.headers as Record<string, string>).authorization ?? "-"}`);
+      const repo = url.split("/repos/")[1]?.split("/pulls")[0] ?? "";
+      return new Response("[]", { status: answers[repo] ?? 500 });
+    };
+
+    const anonymous = await checkGithubRepositories({
+      repos: ["acme/public", "acme/private"],
+      fetch,
+    });
+    expect(anonymous).toEqual([
+      { level: "ok", message: "GitHub acme/public: pull requests are readable without a token" },
+      {
+        level: "fail",
+        message: expect.stringContaining(
+          "acme/private: not visible without a token; a private repository needs GITHUB_TOKEN",
+        ),
+      },
+    ]);
+    expect(requests[0]).toBe(
+      "https://api.github.com/repos/acme/public/pulls?state=all&per_page=1 -",
+    );
+
+    const withToken = await checkGithubRepositories({ repos: ["acme/private"], token: "t", fetch });
+    expect(withToken[0]?.message).toMatch(/GITHUB_TOKEN cannot see this repository/);
+    answers["acme/private"] = 401;
+    const expired = await checkGithubRepositories({ repos: ["acme/private"], token: "t", fetch });
+    expect(expired[0]).toEqual({
+      level: "fail",
+      message: "GitHub acme/private: GITHUB_TOKEN is invalid or expired",
+    });
+  });
+
+  it("runs as part of router check", async () => {
+    const jira = jiraWithProject(ALL_STATUSES);
+    const config = buildRouterConfig({ workers: [workerPolicy()] });
+    const items = await runRouterCheck(jira, config, {
+      github: { repos: ["acme/app"], fetch: async () => new Response("[]", { status: 404 }) },
+    });
+    expect(items.at(-1)).toMatchObject({
+      level: "fail",
+      message: expect.stringContaining("GitHub acme/app:"),
+    });
   });
 });

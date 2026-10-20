@@ -13,13 +13,13 @@ export function createProviderFromConfig(
   if (provider.type === "codex") {
     return new CodexCliProvider(logger, {
       command: provider.command,
-      model: provider.model,
+      ...(provider.model ? { model: provider.model } : {}),
       sandbox: provider.codex.sandbox,
     });
   }
   return new ClaudeCodeCliProvider(logger, {
     command: provider.command,
-    model: provider.model,
+    ...(provider.model ? { model: provider.model } : {}),
     effort: provider.claudeCode.effort,
     permissionMode: provider.claudeCode.permissionMode,
     allowedTools: provider.claudeCode.allowedTools,

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IssueRequirements } from "./requirements.js";
 
-/** Every v2 hash starts with this; a stored hash without it was computed by the v1 rules. */
+/** Every v2 hash starts with this. */
 export const INPUT_HASH_V2_PREFIX = "v2:";
 
 /**
@@ -94,8 +94,4 @@ export function computeExecutionInputHash(input: ExecutionInput): string {
     .update(JSON.stringify(canonicalExecutionInput(input)))
     .digest("hex");
   return `${INPUT_HASH_V2_PREFIX}${digest}`;
-}
-
-export function isLegacyInputHash(hash: string): boolean {
-  return !hash.startsWith(INPUT_HASH_V2_PREFIX);
 }

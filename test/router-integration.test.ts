@@ -20,24 +20,34 @@ import {
   buildRouterConfig,
   IN_PROGRESS_STATUS,
   issueDescription,
+  PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
   REVIEW_STATUS,
+  singlePlan,
+  WORKFLOW_TRANSITIONS,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
 const ADMIN_TOKEN = "admin-token-at-least-16-chars";
 
-/** Records which worker ran which issue, like a provider CLI that always succeeds. */
+/** Records which worker ran which issue, like a provider CLI that always succeeds: a planning
+ *  run (read-only) answers with a plan, an implementation with its report. */
 class RecordingProvider {
   constructor(
     private readonly workerId: string,
-    private readonly log: Array<{ workerId: string; prompt: string }>,
+    private readonly log: Array<{ workerId: string; prompt: string; planning: boolean }>,
   ) {}
 
   async run(request: WorkerRequest): Promise<WorkerResult> {
-    this.log.push({ workerId: this.workerId, prompt: request.prompt });
+    const planning = request.readOnly === true;
+    this.log.push({ workerId: this.workerId, prompt: request.prompt, planning });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    return fakeSuccessResult({ summary: `done by ${this.workerId}` });
+    return planning
+      ? fakeSuccessResult({
+          summary: `planned by ${this.workerId}`,
+          structuredOutput: singlePlan(),
+        })
+      : fakeSuccessResult({ summary: `done by ${this.workerId}` });
   }
 }
 
@@ -69,10 +79,7 @@ describe("Router with two workers over HTTP", () => {
           assigneeAccountId: "user-1",
           description: issueDescription(),
         },
-        [
-          { id: "start", name: "Start", toStatusName: IN_PROGRESS_STATUS },
-          { id: "done", name: "Done", toStatusName: REVIEW_STATUS },
-        ],
+        WORKFLOW_TRANSITIONS,
       );
     }
     daemon = new RouterDaemon({
@@ -106,7 +113,7 @@ describe("Router with two workers over HTTP", () => {
 
   async function startWorker(
     workerId: string,
-    log: Array<{ workerId: string; prompt: string }>,
+    log: Array<{ workerId: string; prompt: string; planning: boolean }>,
   ): Promise<void> {
     const admin = new AdminClient({ routerUrl, adminToken: ADMIN_TOKEN, actor: "test" });
     const { pairingCode } = await admin.post<{ pairingCode: string }>("/pairing-codes", {
@@ -146,10 +153,25 @@ describe("Router with two workers over HTTP", () => {
     runs.push(runner.run(controller.signal));
   }
 
-  it("dispatches every approved issue once and reports each to the review status", async () => {
-    const log: Array<{ workerId: string; prompt: string }> = [];
+  it("plans every request, runs each approved plan once and reports it to the review status", async () => {
+    const log: Array<{ workerId: string; prompt: string; planning: boolean }> = [];
     await startWorker("worker-a", log);
     await startWorker("worker-b", log);
+
+    await vi.waitFor(
+      async () => {
+        for (const key of ["KAN-1", "KAN-2", "KAN-3"]) {
+          expect((await jira.getIssue(key)).statusName).toBe(PLAN_REVIEW_STATUS);
+        }
+      },
+      { timeout: 20_000, interval: 100 },
+    );
+    expect(log.every((entry) => entry.planning)).toBe(true);
+    // A human approves each plan on the board; Router finds the moves on its next pass.
+    for (const key of ["KAN-1", "KAN-2", "KAN-3"]) {
+      await jira.transitionIssueToStatus(key, IN_PROGRESS_STATUS);
+    }
+    await daemon.reconcileNow();
 
     await vi.waitFor(
       async () => {
@@ -161,15 +183,17 @@ describe("Router with two workers over HTTP", () => {
     );
 
     const jobs = listJobs(db, { limit: 10 }).jobs;
-    expect(jobs.map((job) => job.state)).toEqual(["succeeded", "succeeded", "succeeded"]);
+    expect(jobs.map((job) => job.state)).toEqual(Array(6).fill("succeeded"));
     expect(jobs.every((job) => job.attemptCount === 1)).toBe(true);
-    // Each issue ran exactly once, across both workers.
-    expect(log).toHaveLength(3);
+    // Each issue was planned once and ran once, across both workers.
+    expect(log).toHaveLength(6);
     for (const key of ["KAN-1", "KAN-2", "KAN-3"]) {
-      expect(log.filter((entry) => entry.prompt.includes(key))).toHaveLength(1);
+      const runs = log.filter((entry) => entry.prompt.includes(key));
+      expect(runs.map((entry) => entry.planning)).toEqual([true, false]);
       expect(getOpenJobForIssue(db, key)).toBeUndefined();
       const comments = await jira.getComments(key);
       expect(comments.some((comment) => comment.body.includes("done by worker-"))).toBe(true);
     }
-  });
+    // Two rounds of real HTTP polling (plan, then implementation) take longer than the default.
+  }, 30_000);
 });

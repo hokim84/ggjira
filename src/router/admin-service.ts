@@ -5,8 +5,7 @@ import type { AdminAddWorkerRequest, ProviderUsage } from "../contracts/api.js";
 import type { JobState } from "../contracts/job-state.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import { isWorkerDispatchable } from "./availability.js";
-import { type CheckItem, runRouterCheck } from "./check.js";
-import type { RouterConfig, RouterConfigError, WorkspaceConfig } from "./config.js";
+import { type CheckItem, githubRepositoriesToCheck, runRouterCheck } from "./check.js";
 import {
   type ConfigIssue,
   canonicalJson,
@@ -16,85 +15,79 @@ import {
   validateRouterConfig,
   writeRouterConfig,
 } from "./config-store.js";
-import { listRecentPullRequests, type PullRequestRow } from "./db/pull-requests.js";
-import {
-  applyLabelMigration,
-  LabelMigrationError,
-  type LabelMigrationPlan,
-  type LabelMigrationResult,
-  type LabelMigrationTarget,
-  planLabelMigration,
-} from "./label-migration.js";
-import type { PullRequestPollReport } from "./github.js";
-import {
-  IssueOptInError,
-  type IssueOptInErrorCode,
-  type IssueOptInView,
-  readIssueOptIn,
-  type SetOptInResult,
-  setIssueOptIn,
-} from "./issue-opt-in.js";
-import { SecretValueSchema } from "./secrets.js";
+import type { RouterConfig, RouterConfigError, WorkspaceConfig } from "./config.js";
 import {
   type AttemptRow,
   getActiveAttemptForWorker,
   listAttemptsForJob,
   transitionAttemptState,
 } from "./db/attempts.js";
-import { type AuditEntry, appendAudit, listAudit } from "./db/audit.js";
-import { oldestUnprocessedEventAt } from "./db/events.js";
-import { recordAdminHold } from "./db/holds.js";
-import { listOpenReadinessHolds, type ReadinessHoldRow } from "./db/readiness-holds.js";
-import {
-  type ExecutionRecordRow,
-  type ExecutionTotals,
-  listExecutionRecords,
-  totalExecutions,
-} from "./db/execution-records.js";
 import {
   type AttentionItemRow,
   type AttentionKind,
   countOpenAttention,
   listAttentionItems,
 } from "./db/attention.js";
+import { type AuditEntry, appendAudit, listAudit } from "./db/audit.js";
+import { oldestUnprocessedEventAt } from "./db/events.js";
 import {
-  countWaitingReviews,
-  listReviewQueue,
-  listReviewRecords,
-  listReviewTargets,
+  type ExecutionRecordRow,
+  type ExecutionTotals,
+  listExecutionRecords,
+  totalExecutions,
+} from "./db/execution-records.js";
+import { recordAdminHold } from "./db/holds.js";
+import {
+  type JobPage,
+  type JobRow,
+  countJobsByState,
+  getJob,
+  getOpenJobs,
+  listJobs,
+  oldestQueuedJobSince,
+  transitionJobState,
+} from "./db/jobs.js";
+import { createPairingCode } from "./db/pairing.js";
+import { listProviderUsage } from "./db/provider-usage.js";
+import {
+  type PullRequestRow,
+  listPullRequestRepos,
+  listRecentPullRequests,
+} from "./db/pull-requests.js";
+import {
+  type ReportStepRow,
+  listBlockedReportSteps,
+  listJobReportSteps,
+} from "./db/report-steps.js";
+import {
   REVIEW_QUEUE_STATES,
   type ReviewQueueItem,
   type ReviewQueueState,
   type ReviewRecordRow,
   type ReviewTargetRow,
+  countWaitingReviews,
+  listReviewQueue,
+  listReviewRecords,
+  listReviewTargets,
 } from "./db/review-targets.js";
-import { JudgmentError, judgeReviewTarget } from "./review-judgment.js";
-import { createPairingCode } from "./db/pairing.js";
-import {
-  countJobsByState,
-  getJob,
-  getOpenJobs,
-  type JobPage,
-  type JobRow,
-  listJobs,
-  oldestQueuedJobSince,
-  transitionJobState,
-} from "./db/jobs.js";
-import {
-  listBlockedReportSteps,
-  listJobReportSteps,
-  type ReportStepRow,
-} from "./db/report-steps.js";
-import { listProviderUsage } from "./db/provider-usage.js";
-import { type UsagePressure, usagePressure } from "./usage-routing.js";
 import { getWorker, listWorkers, revokeWorker, setWorkerEnabled } from "./db/workers.js";
-import { resolveRecoveryJob, retryJob, retryReportBatch } from "./recovery.js";
-import { cancelStaleJob, type SchedulerReport } from "./scheduler.js";
+import type { PullRequestPollReport } from "./github.js";
 import {
-  checkWorkflowHops,
-  inspectProjectWorkflow,
+  type IssueView,
+  IssueViewError,
+  type IssueViewErrorCode,
+  readIssueView,
+} from "./issue-view.js";
+import { resolveRecoveryJob, retryJob, retryReportBatch } from "./recovery.js";
+import { JudgmentError, judgeReviewTarget } from "./review-judgment.js";
+import { type SchedulerReport, cancelStaleJob } from "./scheduler.js";
+import { SecretValueSchema } from "./secrets.js";
+import { type UsagePressure, usagePressure } from "./usage-routing.js";
+import {
   type ProjectWorkflowInfo,
   type WorkflowHopResult,
+  checkWorkflowHops,
+  inspectProjectWorkflow,
 } from "./workflow-check.js";
 
 /**
@@ -238,7 +231,7 @@ export interface AdminServiceDeps {
    *  services swapped). Without it only this service's own view changes. */
   applyConfig?: (config: RouterConfig) => Promise<void>;
   /** Whether the GitHub webhook secret is set (it only changes on restart). */
-  github?: { webhook: boolean };
+  github?: { webhook: boolean; token?: () => string | undefined };
   /** Secrets the web UI can replace, written to `secretsPath` (ADR 0031, 0032). A slot left out
    *  shows as unset and not editable. */
   secrets?: { secretsPath?: string; slots: Partial<Record<SecretSlotId, SecretSlot>> };
@@ -262,13 +255,16 @@ const MAX_PAGE_SIZE = 200;
 /** The workflow fields that decide which issues are approved work (see
  *  `assertApprovalRulesUnchangedUnderLiveJobs`). */
 function approvalRules(workspace: WorkspaceConfig) {
-  const { mode, optInLabel, requestStatus, planningStatus, inProgressStatus } = workspace.workflow;
+  // ADR 0044: the plan-review status is where approvals come from, and a run's own moves to
+  // review/done are re-checked against it.
+  const { requestStatus, planReviewStatus, inProgressStatus, reviewStatus, doneStatus } =
+    workspace.workflow;
   return {
-    mode: mode ?? "legacy",
-    optInLabel: optInLabel ?? null,
     requestStatus,
-    planningStatus: planningStatus ?? null,
+    planReviewStatus,
     inProgressStatus,
+    reviewStatus,
+    doneStatus: doneStatus ?? null,
   };
 }
 
@@ -276,15 +272,13 @@ function elapsedMs(since: string | null, now: string): number | null {
   return since ? Math.max(0, Date.parse(now) - Date.parse(since)) : null;
 }
 
-const OPT_IN_ERROR_STATUS: Record<IssueOptInErrorCode, AdminError["status"]> = {
+const ISSUE_VIEW_ERROR_STATUS: Record<IssueViewErrorCode, AdminError["status"]> = {
   invalid_issue_key: 400,
   unknown_project: 404,
   unknown_issue: 404,
-  not_label_mode: 409,
   jira_forbidden: 502,
   jira_rate_limited: 502,
   jira_error: 502,
-  unconfirmed: 502,
 };
 
 function toAdminError(error: unknown): AdminError {
@@ -294,8 +288,8 @@ function toAdminError(error: unknown): AdminError {
       error.code === "unknown_review_target" ? 404 : error.code === "invalid_judgment" ? 400 : 409;
     return new AdminError(status, error.code, error.message, undefined, error.currentTargetId);
   }
-  if (error instanceof IssueOptInError) {
-    return new AdminError(OPT_IN_ERROR_STATUS[error.code], error.code, error.message);
+  if (error instanceof IssueViewError) {
+    return new AdminError(ISSUE_VIEW_ERROR_STATUS[error.code], error.code, error.message);
   }
   return new AdminError(502, "jira_error", error instanceof Error ? error.message : String(error));
 }
@@ -515,11 +509,6 @@ export class AdminService {
     return [...batches.values()];
   }
 
-  /** Implementation requests Router is holding for an incomplete scope contract (ADR 0034). */
-  listReadinessHolds(): ReadinessHoldRow[] {
-    return listOpenReadinessHolds(this.db);
-  }
-
   retryReportBatch(batchId: string, actor: string): { requeued: number } {
     return { requeued: retryReportBatch(this.db, { batchId, actor, now: this.now() }) };
   }
@@ -615,8 +604,7 @@ export class AdminService {
   }
 
   /**
-   * ADR 0037: a workspace's approval rules (mode, opt-in label, the statuses that request and run
-   * work) cannot change under a job that may still run — the job was approved under the old rules
+   * A workspace's approval rules (the statuses that request, approve and run work) cannot change under a job that may still run — the job was approved under the old rules
    * and would be revoked, or kept, by the new ones. Drain or cancel those jobs first. Failed and
    * timed-out jobs run nothing; the next pass closes them under the new rules.
    */
@@ -726,62 +714,6 @@ export class AdminService {
     return { ...this.readConfig(), appliedWithout };
   }
 
-  // --- legacy → label migration (ADR 0037) ------------------------------------------------
-
-  /** Read-only proposal; a human reviews it and marks entries `approved`. */
-  async planLabelMigration(
-    workspaceId: string,
-    target: LabelMigrationTarget,
-  ): Promise<LabelMigrationPlan> {
-    const workspace = this.requireWorkspace(workspaceId);
-    try {
-      return await planLabelMigration({
-        db: this.db,
-        jira: this.deps.jira,
-        workspace,
-        target,
-        now: this.now(),
-      });
-    } catch (error) {
-      if (error instanceof LabelMigrationError) {
-        throw new AdminError(409, "not_migratable", error.message);
-      }
-      throw new AdminError(502, "jira_error", (error as Error).message);
-    }
-  }
-
-  /** Applies a reviewed plan's approved entries; every issue's outcome goes to the audit log. */
-  async applyLabelMigration(
-    plan: LabelMigrationPlan,
-    actor: string,
-  ): Promise<{ results: LabelMigrationResult[] }> {
-    const workspace = this.requireWorkspace(plan.workspaceId);
-    try {
-      const results = await applyLabelMigration({
-        db: this.db,
-        jira: this.deps.jira,
-        workspace,
-        plan,
-        onResult: (result) => {
-          if (result.outcome === "skipped" && result.detail === "not approved") return;
-          appendAudit(this.db, {
-            at: this.now(),
-            actor,
-            action: `migration.label.${result.outcome}`,
-            subject: result.issueKey,
-            detail: { workspaceId: workspace.id, action: result.action, detail: result.detail },
-          });
-        },
-      });
-      return { results };
-    } catch (error) {
-      if (error instanceof LabelMigrationError) {
-        throw new AdminError(409, "not_migratable", error.message);
-      }
-      throw error;
-    }
-  }
-
   // --- review targets (M4-11, ADR 0040) ------------------------------------------------------
 
   /** Every result pinned for review on the issue (newest first) and the human acts Router saw
@@ -854,58 +786,19 @@ export class AdminService {
     }
   }
 
-  // --- AI participation per issue (M4-03, ADR 0039) ----------------------------------------
+  // --- Read-only issue status ----------------------------------------------------------
 
-  /** The issue's opt-in label, status and what keeps Router from starting it (read-only). */
-  async issueOptIn(issueKey: string): Promise<IssueOptInView> {
+  /** The issue's status and what keeps Router from starting it (read-only). */
+  async issueView(issueKey: string): Promise<IssueView> {
     try {
-      return await readIssueOptIn(this.optInDeps(), issueKey);
+      return await readIssueView(this.issueViewDeps(), issueKey);
     } catch (error) {
       throw toAdminError(error);
     }
   }
 
-  /**
-   * Adds or removes the workspace's opt-in label on one issue, leaving its other labels alone.
-   * Every attempt is audited — refused ones too — with the authentication behind it: the shared
-   * admin token, whose actor name the caller declares, never the issue assignee's own identity.
-   */
-  async setIssueOptIn(issueKey: string, enabled: boolean, actor: string): Promise<SetOptInResult> {
-    const audit = (outcome: string, detail: Record<string, unknown>) =>
-      appendAudit(this.db, {
-        at: this.now(),
-        actor,
-        action: `issue.opt_in.${outcome}`,
-        subject: issueKey,
-        detail: { requested: enabled ? "on" : "off", authentication: "admin-token", ...detail },
-      });
-    try {
-      const { before, ...result } = await setIssueOptIn(this.optInDeps(), issueKey, enabled);
-      const { view } = result;
-      audit(result.outcome === "unchanged" ? "unchanged" : enabled ? "added" : "removed", {
-        workspaceId: view.workspaceId,
-        label: view.optInLabel,
-        labelsBefore: before,
-        labelsAfter: view.labels,
-        ...(result.confirmedAfterError ? { confirmedAfterError: true } : {}),
-        ...(view.openJob ? { openJob: view.openJob } : {}),
-      });
-      return result;
-    } catch (error) {
-      const adminError = toAdminError(error);
-      audit("failed", { error: adminError.code, message: adminError.message });
-      throw adminError;
-    }
-  }
-
-  private optInDeps() {
+  private issueViewDeps() {
     return { db: this.db, jira: this.deps.jira, config: this.config };
-  }
-
-  private requireWorkspace(workspaceId: string): WorkspaceConfig {
-    const workspace = this.config.workspaces.find((entry) => entry.id === workspaceId);
-    if (!workspace) throw new AdminError(404, "unknown_workspace", `no workspace "${workspaceId}"`);
-    return workspace;
   }
 
   /** Statuses and subtask issue types of a Jira project, for the web UI pickers (read-only). */
@@ -949,7 +842,14 @@ export class AdminService {
     } catch (error) {
       return { items: [{ level: "fail", message: (error as Error).message }] };
     }
-    const items = await runRouterCheck(this.deps.jira, config, issueKey ? { issueKey } : {});
+    const github = {
+      repos: githubRepositoriesToCheck(config, listPullRequestRepos(this.deps.db)),
+      token: this.deps.github?.token?.(),
+    };
+    const items = await runRouterCheck(this.deps.jira, config, {
+      github,
+      ...(issueKey ? { issueKey } : {}),
+    });
     if (config.jira.baseUrl !== this.startedWith.jira.baseUrl) {
       items.unshift({
         level: "warn",

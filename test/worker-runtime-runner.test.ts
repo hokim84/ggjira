@@ -17,7 +17,13 @@ import { type FetchLike, RouterClient } from "../src/worker-runtime/client.js";
 import type { WorkerConfig } from "../src/worker-runtime/config.js";
 import { WorkerRunner } from "../src/worker-runtime/runner.js";
 import { ResultSpool } from "../src/worker-runtime/spool.js";
-import { issueDescription, PLANNING_STATUS, workerPolicy } from "./helpers/router-fixtures.js";
+import {
+  issueDescription,
+  REQUEST_STATUS,
+  TODO_STATUS,
+  WORKFLOW_TRANSITIONS,
+  workerPolicy,
+} from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 
 /** Reports plan usage both ways a real provider does: on demand and during a run. */
@@ -88,6 +94,13 @@ describe("WorkerRunner against a live Router", () => {
     rmSync(workDir, { recursive: true, force: true });
   });
 
+  /** The newest stored result: the run under test, not the plan an approved issue was seeded with. */
+  function latestResult(): { payload: string } {
+    return router.db.prepare("SELECT payload FROM results ORDER BY rowid DESC LIMIT 1").get() as {
+      payload: string;
+    };
+  }
+
   function workerConfig(): WorkerConfig {
     return {
       configVersion: 5,
@@ -113,7 +126,7 @@ describe("WorkerRunner against a live Router", () => {
 
   async function makeRunner(
     provider: WorkerProvider,
-    opts: { fetch?: FetchLike; token?: string } = {},
+    opts: { fetch?: FetchLike; token?: string; sleep?: (ms: number) => Promise<void> } = {},
   ): Promise<{ runner: WorkerRunner; spool: ResultSpool; token: string }> {
     let token = opts.token;
     if (!token) {
@@ -139,6 +152,7 @@ describe("WorkerRunner against a live Router", () => {
       worktreesRoot: path.join(workDir, "worktrees"),
       heartbeatIntervalMs: 20,
       leaseLossMs: 300,
+      ...(opts.sleep ? { sleep: opts.sleep } : {}),
     });
     return { runner, spool, token };
   }
@@ -245,12 +259,50 @@ describe("WorkerRunner against a live Router", () => {
     const polling = runner.pollOnce();
     await provider.started;
     const jobId = getOpenJobForIssue(router.db, "KAN-1")?.id ?? "";
-    await router.jira.transitionIssue("KAN-1", "Revoke");
+    await router.jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
     await router.reconcile();
     await polling;
 
     expect(provider.aborted).toBe(true);
     expect(getJob(router.db, jobId)?.state).toBe("cancelled");
+  });
+
+  it("keeps trying to connect while Router is unreachable, then connects", async () => {
+    let refusals = 2;
+    const controller = new AbortController();
+    const startingFetch: FetchLike = async (input, init) => {
+      if (!input.endsWith("/workers/session")) return fetch(input, init);
+      if (refusals > 0) {
+        refusals -= 1;
+        throw new TypeError("fetch failed");
+      }
+      // Connected: end the run before it starts polling.
+      controller.abort();
+      return fetch(input, init);
+    };
+    const waits: number[] = [];
+    const { runner } = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()), {
+      fetch: startingFetch,
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    });
+
+    await runner.run(controller.signal);
+
+    expect(refusals).toBe(0);
+    expect(waits).toEqual([5_000, 5_000]);
+    expect(router.db.prepare("SELECT COUNT(*) AS n FROM worker_sessions").get()).toEqual({ n: 1 });
+  });
+
+  it("stops when Router refuses the worker's credential instead of retrying", async () => {
+    const { runner } = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()), {
+      token: "not-a-real-token",
+      sleep: async () => {
+        throw new Error("must not retry a 4xx");
+      },
+    });
+    await expect(runner.run(new AbortController().signal)).rejects.toMatchObject({ status: 401 });
   });
 
   it("aborts on its own after losing contact with Router for the lease-loss window", async () => {
@@ -270,7 +322,7 @@ describe("WorkerRunner against a live Router", () => {
     await polling;
 
     expect(provider.aborted).toBe(true);
-    const result = router.db.prepare("SELECT payload FROM results").get() as { payload: string };
+    const result = latestResult();
     expect(JSON.parse(result.payload)).toMatchObject({
       status: "cancelled",
       summary: expect.stringContaining("lost contact"),
@@ -278,14 +330,17 @@ describe("WorkerRunner against a live Router", () => {
   });
 
   it("runs a planning envelope read-only and returns the plan as structured data", async () => {
-    router.jira.seedIssue({
-      key: "KAN-7",
-      summary: "Plan it",
-      statusName: PLANNING_STATUS,
-      projectKey: "KAN",
-      assigneeAccountId: "user-1",
-      description: issueDescription(),
-    });
+    router.jira.seedIssue(
+      {
+        key: "KAN-7",
+        summary: "Plan it",
+        statusName: REQUEST_STATUS,
+        projectKey: "KAN",
+        assigneeAccountId: "user-1",
+        description: issueDescription(),
+      },
+      WORKFLOW_TRANSITIONS,
+    );
     await router.reconcile();
     const plan = {
       needsDecision: false,
@@ -295,7 +350,8 @@ describe("WorkerRunner against a live Router", () => {
           taskId: "api",
           title: "Build the API",
           description: "Endpoints",
-          acceptance: [],
+          acceptance: ["GET /items answers 200"],
+          verification: ["npm run test -- api"],
           requiredCapabilities: ["programming"],
         },
       ],
@@ -318,7 +374,7 @@ describe("WorkerRunner against a live Router", () => {
     expect(job.state).toBe("succeeded");
     expect(requests[0]?.readOnly).toBe(true);
     expect(requests[0]?.prompt).toContain("KAN-7");
-    const result = router.db.prepare("SELECT payload FROM results").get() as { payload: string };
+    const result = latestResult();
     expect(JSON.parse(result.payload)).toMatchObject({
       status: "planned",
       plan: { summary: "Two steps", tasks: [{ taskId: "api" }] },
@@ -343,7 +399,7 @@ describe("WorkerRunner against a live Router", () => {
 
     await runner.pollOnce();
 
-    const result = router.db.prepare("SELECT payload FROM results").get() as { payload: string };
+    const result = latestResult();
     expect(JSON.parse(result.payload)).toMatchObject({
       status: "failed",
       failureReason: 'unknown providerId "gpt-9"',

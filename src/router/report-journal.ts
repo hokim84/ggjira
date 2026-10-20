@@ -1,28 +1,32 @@
+import path from "node:path";
 import type { JobResult } from "../contracts/envelope.js";
 import {
   renderDecisionRequest,
   renderImplementationDecisionRequest,
 } from "../pm/decision-render.js";
-import type { Plan } from "../pm/plan.js";
+import { missingContracts } from "../pm/contract.js";
 import {
   PlanApplyError,
   type PlanTask,
+  SUPERSEDED_LABEL,
   planTaskIds,
   renderTaskDescription,
-  SUPERSEDED_LABEL,
   validateTaskGraph,
 } from "../pm/plan-render.js";
+import type { Plan } from "../pm/plan.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
-import type { NewReportStep } from "./db/report-steps.js";
 import type { JobRow } from "./db/jobs.js";
+import type { NewReportStep } from "./db/report-steps.js";
+import {
+  COMMENT_TEXT,
+  type MergeWhy,
+  type MessageLanguage,
+  type PlanRefusal,
+} from "./comment-text.js";
+import { type FailureMatch, failureMessage, matchFailure } from "./failure-codes.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import type { ReviewAssessment } from "./review-gate.js";
-import {
-  approvalStatusFor,
-  decisionTransitionTarget,
-  optInLabelOf,
-  reRequestHint,
-} from "./workflow-mode.js";
+import { approvalStatusFor, decisionTransitionTarget, reRequestHint } from "./workflow-mode.js";
 
 /**
  * Pure translation of "what happened" into the ordered Jira side effects Router owes an issue
@@ -40,15 +44,41 @@ export interface TransitionParams {
   from: string[];
   approvalStatus: string;
   approvalId: string;
-  /** Set for a `label`-mode workspace (ADR 0037): the approval is then re-derived with the opt-in
-   *  label. Steps journaled before it have none and are judged by the status alone. */
-  optInLabel?: string;
+  /** Set for an implementation (ADR 0044), whose approval is not an entry into
+   *  `approvalStatus`. Steps journaled without it keep the rule they were written under. */
+  approvalRule?: ApprovalRule;
+  /** Another issue than the step's own (a plan task moved when its plan is deployed). */
+  issueKey?: string;
 }
+
+/**
+ * How an implementation's transition re-derives the approval it was journaled under:
+ *
+ * - `plan-approval`: the plan's approval — the latest move of `issueKey` (the plan's parent) from
+ *   `planReviewStatus` to `inProgressStatus` after its latest request.
+ * - `plan-task`: a task run — the latest entry of the task into `inProgressStatus`, which is the
+ *   part of the run's approval id after `@` (`taskApprovalId`).
+ */
+export type ApprovalRule =
+  | {
+      kind: "plan-approval";
+      issueKey: string;
+      requestStatus: string;
+      planReviewStatus: string;
+      inProgressStatus: string;
+    }
+  | { kind: "plan-task"; inProgressStatus: string };
 
 export interface CommentParams {
   body: string;
   /** Another issue than the step's own (e.g. a superseded subtask). */
   issueKey?: string;
+}
+
+/** The full text behind a short failure comment, written on the Router machine (ADR 0048). */
+export interface FailureLogParams {
+  path: string;
+  body: string;
 }
 
 export interface LabelParams {
@@ -94,11 +124,17 @@ export interface SupersedeParams {
   label: string;
   /** Statuses that mean work already started; such a subtask is never superseded. */
   startedStatuses: string[];
+  /** The comment on the superseded subtask, in the configured language (ADR 0048). */
+  comment: string;
 }
 
 export interface PlanCommentParams {
   summary: string;
   signature: string;
+  /** What the human does next: review, then approve or re-plan. */
+  next?: string[];
+  /** The language of the comment's own lines, applied when the comment is built (ADR 0048). */
+  language: MessageLanguage;
 }
 
 export type ReportStepSpec =
@@ -112,7 +148,8 @@ export type ReportStepSpec =
   | { kind: "restamp-kept"; params: RestampKeptParams }
   | { kind: "plan-property"; params: PlanPropertyParams }
   | { kind: "supersede"; params: SupersedeParams }
-  | { kind: "plan-comment"; params: PlanCommentParams };
+  | { kind: "plan-comment"; params: PlanCommentParams }
+  | { kind: "failure-log"; params: FailureLogParams };
 
 export type ReportStepKind = ReportStepSpec["kind"];
 
@@ -133,6 +170,57 @@ export function planVersionFor(attemptId: string): string {
   return `plan-${attemptId}`;
 }
 
+/** Where the failure log of one attempt goes: next to Router's database, like the worker's own
+ *  `data/worker-logs`. A relative path resolves against Router's working directory, as the
+ *  database path does. */
+export function failureLogPath(config: RouterConfig, issueKey: string, attemptId: string): string {
+  return path.join(path.dirname(config.db.path), "failure-logs", `${issueKey}-${attemptId}.log`);
+}
+
+/**
+ * Writes the full text to the failure log first, then posts the short comment that points to it:
+ * `<headline>`, the lines after it, and where the details are. The log stays in English with the
+ * code and the comment's message, so it reads the same whatever the comment language.
+ */
+function failureLogSteps(
+  config: RouterConfig,
+  job: JobRow,
+  attemptId: string,
+  coded: { headline: string; failure?: FailureMatch },
+  full: string[],
+  brief: string[],
+): ReportStepSpec[] {
+  const logPath = failureLogPath(config, job.issueKey, attemptId);
+  const text = COMMENT_TEXT[config.reporting.language].failure;
+  return [
+    {
+      kind: "failure-log",
+      params: {
+        path: logPath,
+        body: [
+          ...(coded.failure ? [`code: ${coded.failure.code}`] : []),
+          `issue: ${job.issueKey}`,
+          `approval: ${job.approvalId}`,
+          `comment: ${coded.headline}`,
+          "",
+          ...full,
+          "",
+          signature(job, attemptId),
+          "",
+        ].join("\n"),
+      },
+    },
+    {
+      kind: "comment",
+      params: {
+        body: [coded.headline, ...brief, text.details(logPath), "", signature(job, attemptId)].join(
+          "\n",
+        ),
+      },
+    },
+  ];
+}
+
 function signature(job: JobRow, attemptId: string): string {
   return [`ggjira job: ${job.id}`, `attempt: ${attemptId}`].join("\n");
 }
@@ -144,7 +232,7 @@ function transition(
   to: string,
   from: string[],
 ): ReportStepSpec {
-  const optInLabel = optInLabelOf(workspace);
+  const approvalRule = delegatedApprovalRule(job, workspace);
   return {
     kind: "transition",
     params: {
@@ -152,21 +240,77 @@ function transition(
       from,
       approvalStatus: approvalStatusFor(job.kind, workspace),
       approvalId: job.approvalId,
-      ...(optInLabel ? { optInLabel } : {}),
+      ...(approvalRule ? { approvalRule } : {}),
     },
   };
 }
 
+/** The rule an implementation's approval is re-derived with; `undefined` for a planning job,
+ *  whose approval is the latest entry into `approvalStatus`. */
+function delegatedApprovalRule(job: JobRow, workspace: WorkspaceConfig): ApprovalRule | undefined {
+  if (job.kind !== "implementation") return undefined;
+  if (parseTaskApprovalId(job.approvalId)) {
+    return { kind: "plan-task", inProgressStatus: workspace.workflow.inProgressStatus };
+  }
+  return planApprovalRule(workspace, job.issueKey);
+}
+
+/** The `plan-approval` rule for the plan whose parent is `issueKey`. */
+export function planApprovalRule(workspace: WorkspaceConfig, issueKey: string): ApprovalRule {
+  const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
+  return {
+    kind: "plan-approval",
+    issueKey,
+    requestStatus,
+    planReviewStatus,
+    inProgressStatus,
+  };
+}
+
 /**
- * When a worker is granted execution: move the issue to `inProgressStatus` (§2 "Router가 실행
- * 직전 최신 상태를 재조회하고 진행 상태로 전이한다"), but only out of the status that approved it —
- * a human who already moved it elsewhere wins.
+ * The approval id of one run of a task of a deployed plan: the plan's approval, the task, and the
+ * task's entry into in progress. Moving the task out of in progress and back is a new run of the
+ * same approved task; the approval of the plan itself stays the human's (ADR 0044).
  */
-export function buildStartSteps(job: JobRow, workspace: WorkspaceConfig): NewReportStep[] {
+export function taskApprovalId(planApprovalId: string, taskId: string, entryId: string): string {
+  return `${planApprovalId}#${taskId}@${entryId}`;
+}
+
+export function parseTaskApprovalId(
+  approvalId: string,
+): { planApprovalId: string; taskId: string; entryId: string } | undefined {
+  const match = approvalId.match(/^(.+)#([^#@]+)@([^#@]+)$/);
+  if (!match) return undefined;
+  return {
+    planApprovalId: match[1] as string,
+    taskId: match[2] as string,
+    entryId: match[3] as string,
+  };
+}
+
+/**
+ * When a worker is granted execution (ADR 0044): no status moves. A plan is written while the
+ * issue stays in the request status, and an approved implementation already sits in progress; a
+ * planning run only says on the card that it started.
+ */
+export function buildStartSteps(
+  job: JobRow,
+  workspace: WorkspaceConfig,
+  attemptId: string,
+  language: MessageLanguage,
+): NewReportStep[] {
+  if (job.kind !== "planning") return [];
   return toNewSteps([
-    transition(job, workspace, workspace.workflow.inProgressStatus, [
-      approvalStatusFor(job.kind, workspace),
-    ]),
+    {
+      kind: "comment",
+      params: {
+        body: [
+          COMMENT_TEXT[language].planningStarted(workspace.workflow.requestStatus),
+          "",
+          signature(job, attemptId),
+        ].join("\n"),
+      },
+    },
   ]);
 }
 
@@ -188,43 +332,30 @@ export function buildPullRequestClosedSteps(input: {
   merged: boolean;
   by: string | null;
   /** Why the merge is not taken as acceptance of the reviewed result (M4-11): no move to done. */
-  doneWithheld?: string;
+  doneWithheld?: MergeWhy;
   /** The merge moves the issue, but its head could not be compared with the reviewed commit. */
-  headNotCompared?: string;
+  headNotCompared?: MergeWhy;
   /** The reviewed result was high risk; only GitHub's branch protection enforces its review. */
   highRisk?: boolean;
+  language: MessageLanguage;
 }): NewReportStep[] {
   const { job, workspace } = input;
+  const text = COMMENT_TEXT[input.language].pullRequest;
   const done = input.doneWithheld ? undefined : workspace.workflow.doneStatus;
-  const by = input.by ? ` by ${input.by}` : "";
   const body = input.merged
     ? [
-        `Pull request #${input.number} was merged${by}.`,
+        text.merged(input.number, input.by),
         input.url,
         ...(input.doneWithheld
-          ? [
-              "",
-              `GGJIRA did not move the issue: ${input.doneWithheld}.`,
-              "Check what was merged and move the issue yourself.",
-            ]
+          ? ["", text.withheld(text.why(input.doneWithheld)), text.moveYourself]
           : []),
         ...(input.headNotCompared
-          ? ["", `Head commit not compared: ${input.headNotCompared}.`]
+          ? ["", text.headNotCompared(text.why(input.headNotCompared))]
           : []),
-        ...(input.highRisk
-          ? [
-              "",
-              "This result was flagged high risk. GGJIRA does not block merges; only the repository's branch protection enforces a required review.",
-            ]
-          : []),
-        ...(done ? ["", `Moving the issue to "${done}".`] : []),
+        ...(input.highRisk ? ["", text.highRisk] : []),
+        ...(done ? ["", text.movingToDone(done)] : []),
       ]
-    : [
-        `Pull request #${input.number} was closed without merging${by}.`,
-        input.url,
-        "",
-        "The issue stays where it is. To redo the work, move it back to its request status.",
-      ];
+    : [text.closed(input.number, input.by), input.url, "", text.closedNext];
   return toNewSteps([
     { kind: "comment", params: { body: [...body, "", `ggjira job: ${job.id}`].join("\n") } },
     ...(input.merged && done
@@ -251,30 +382,20 @@ export function buildReviewJudgmentSteps(input: {
   headSha: string | null;
   actor: string;
   note: string;
+  language: MessageLanguage;
 }): NewReportStep[] {
-  const { job, workspace } = input;
-  const subject = input.headSha
-    ? `the result of attempt ${input.attemptId} (commit ${input.headSha.slice(0, 12)})`
-    : `the result of attempt ${input.attemptId} (no commit)`;
-  const who = `${input.actor} (name declared with the shared admin token)`;
-  const body =
-    input.action === "hold"
-      ? [
-          `Review on hold: ${subject}.`,
-          `By ${who}.`,
-          "",
-          `Reason: ${input.note}`,
-          "",
-          "Nothing was approved or moved. The result stays waiting for review.",
-        ]
-      : [
-          `Rework requested: ${subject}.`,
-          `By ${who}.`,
-          "",
-          `Reason: ${input.note}`,
-          "",
-          `GGJIRA does not rerun it by itself. Next: ${reRequestHint(workspace)}.`,
-        ];
+  const { job, workspace, language } = input;
+  const text = COMMENT_TEXT[language].reviewJudgment;
+  const subject = text.subject(input.attemptId, input.headSha);
+  const hold = input.action === "hold";
+  const body = [
+    hold ? text.hold(subject) : text.rework(subject),
+    text.by(input.actor),
+    "",
+    text.reason(input.note),
+    "",
+    hold ? text.holdNothing : text.reworkNext(reRequestHint(workspace, job.kind, language)),
+  ];
   return toNewSteps([
     {
       kind: "comment",
@@ -290,30 +411,46 @@ export function recoveredBatchId(attemptId: string): string {
 /** Tells Jira that a run which lost its lease has been confirmed stopped — by the worker's late
  *  result or by an admin — and that nothing from it was applied. */
 export function buildRecoveredSteps(
+  config: RouterConfig,
   job: JobRow,
   attemptId: string,
   confirmation: { status: string; summary: string } | { admin: string },
 ): NewReportStep[] {
-  const detail =
-    "admin" in confirmation
-      ? `An admin (${confirmation.admin}) confirmed the run is stopped.`
-      : `Its result arrived too late to apply. Worker-reported outcome: ${confirmation.status} — ${confirmation.summary}`;
-  return toNewSteps([
-    {
-      kind: "comment",
-      params: {
-        body: [
-          "AI execution lost contact with GGJIRA Router.",
-          "",
-          detail,
-          "",
-          "Nothing from this run was applied to the issue. To run it again, move the issue back to its request status.",
-          "",
-          signature(job, attemptId),
-        ].join("\n"),
+  const language = config.reporting.language;
+  const text = COMMENT_TEXT[language].failure;
+  if ("admin" in confirmation) {
+    return toNewSteps([
+      {
+        kind: "comment",
+        params: {
+          body: [
+            text.lostContact,
+            text.adminStopped(confirmation.admin),
+            text.nothingApplied,
+            "",
+            signature(job, attemptId),
+          ].join("\n"),
+        },
       },
-    },
-  ]);
+    ]);
+  }
+  const failure: FailureMatch = { code: "GGJ-501", params: { status: confirmation.status } };
+  return toNewSteps(
+    failureLogSteps(
+      config,
+      job,
+      attemptId,
+      { headline: text.lostContact, failure },
+      [
+        "Its result arrived too late to apply.",
+        `Worker-reported outcome: ${confirmation.status}`,
+        "",
+        "Summary:",
+        confirmation.summary || "(no summary)",
+      ],
+      [`[${failure.code}] ${failureMessage(failure, language)}`, text.nothingApplied],
+    ),
+  );
 }
 
 export interface ResultJournalInput {
@@ -330,42 +467,52 @@ export interface ResultJournalInput {
   review?: ReviewAssessment;
 }
 
-/** Moves out of in-progress (or the approving status, if the start move was skipped) to `to`. */
+/** A run never moves the issue on start, so it finishes from where it ran: the request status for
+ *  a plan, in progress for an implementation. */
 function finishTransition(input: ResultJournalInput, to: string): ReportStepSpec {
   return transition(input.job, input.workspace, to, [
-    input.workspace.workflow.inProgressStatus,
     approvalStatusFor(input.job.kind, input.workspace),
   ]);
 }
 
-/** A result that waits for a human decision: moved to the workspace's decision status, or (in
- *  `label` mode, ADR 0037) left In Progress, where the comment says what to do. */
+/** A result that waits for a human decision: a plan waits in plan review; an implementation stays
+ *  in progress, where the comment says what to do. */
 function decisionTransition(input: ResultJournalInput): ReportStepSpec[] {
-  const to = decisionTransitionTarget(input.workspace);
+  const to = decisionTransitionTarget(input.workspace, input.job.kind);
   return to ? [finishTransition(input, to)] : [];
 }
 
-/** How a human asks for the job again: a fresh approval (ADR 0019, ADR 0037). */
-function reRequest(input: ResultJournalInput): string {
-  const status = `move the issue back to "${approvalStatusFor(input.job.kind, input.workspace)}"`;
-  const label = optInLabelOf(input.workspace);
-  return label ? `${status}, or remove and re-add the "${label}" label` : status;
+/** Where a failed run leaves the issue: the status it ran in. */
+function failedRunStatus(input: ResultJournalInput): string {
+  return approvalStatusFor(input.job.kind, input.workspace);
+}
+
+/** The status a human moves the issue to after answering a decision request: always the request
+ *  status, since a changed request is planned again (ADR 0044). */
+function decisionReplyStatus(input: ResultJournalInput): string {
+  return input.workspace.workflow.requestStatus;
 }
 
 /**
- * Change → impact → what the human does → evidence (M4-09). A retry that fails the same way is
- * counted on its attention item instead of posting this again (src/router/worker-service.ts).
+ * What failed and what the human does, with the full text in the failure log (M4-09, ADR 0048).
+ * `failure` is the code Router gives a failure it found itself; a worker-reported reason is coded
+ * by `matchFailure`. A retry that fails the same way is counted on its attention item instead of
+ * posting this again (src/router/worker-service.ts).
  */
 function failureSteps(
   input: ResultJournalInput,
   summary: string,
   reason: string,
+  failure?: FailureMatch,
 ): ReportStepSpec[] {
-  const { workflow } = input.workspace;
-  const lines = [
-    input.finalState === "timed_out" ? "Execution timed out." : "Execution failed.",
-    `Impact: the issue stays in "${workflow.inProgressStatus}" with the "${input.config.reporting.failureLabel}" label, and GGJIRA does not run it again under this approval.`,
-    `Next: fix the cause, then ${reRequest(input)}.`,
+  const timedOut = input.finalState === "timed_out";
+  const language = input.config.reporting.language;
+  const text = COMMENT_TEXT[language].failure;
+  const coded =
+    failure ?? (timedOut ? { code: "GGJ-105" as const, params: {} } : matchFailure(reason));
+  const full = [
+    `Impact: the issue stays in "${failedRunStatus(input)}" with the "${input.config.reporting.failureLabel}" label, and GGJIRA does not run it again under this approval.`,
+    `Next: fix the cause, then ${reRequestHint(input.workspace, input.job.kind)}.`,
     "",
     "Failure Reason:",
     reason,
@@ -373,19 +520,30 @@ function failureSteps(
     "Summary:",
     summary || "(no summary)",
   ];
-  if (input.result.blockingIssue) lines.push("", "Blocking Issue:", input.result.blockingIssue);
+  if (input.result.blockingIssue) full.push("", "Blocking Issue:", input.result.blockingIssue);
   const evidence = input.result.localEvidence;
   if (evidence) {
     // ADR 0036: the run stopped before commit; say where its changes were kept.
-    lines.push("", "Uncommitted changes were kept on the worker:");
-    if (evidence.patchFile) lines.push(`- patch: ${evidence.patchFile}`);
-    if (evidence.worktreePath) lines.push(`- worktree: ${evidence.worktreePath}`);
-    lines.push(`- cleanup: ${evidence.cleanup}`);
+    full.push("", "Uncommitted changes were kept on the worker:");
+    if (evidence.patchFile) full.push(`- patch: ${evidence.patchFile}`);
+    if (evidence.worktreePath) full.push(`- worktree: ${evidence.worktreePath}`);
+    full.push(`- cleanup: ${evidence.cleanup}`);
   }
-  lines.push("", signature(input.job, input.attemptId));
+  const headline = `${timedOut ? text.timedOut : text.failed} [${coded.code}]: ${failureMessage(coded, language)}`;
+  const brief = [
+    text.next(reRequestHint(input.workspace, input.job.kind, language)),
+    ...(evidence ? [text.keptChanges] : []),
+  ];
   // ADR 0021: the issue stays in `inProgressStatus`; the label is what marks it failed.
   return [
-    { kind: "comment", params: { body: lines.join("\n") } },
+    ...failureLogSteps(
+      input.config,
+      input.job,
+      input.attemptId,
+      { headline, failure: coded },
+      full,
+      brief,
+    ),
     { kind: "add-label", params: { label: input.config.reporting.failureLabel } },
   ];
 }
@@ -396,47 +554,42 @@ const short = (sha: string | undefined): string => (sha ? sha.slice(0, 12) : "?"
 function reviewLines(input: ResultJournalInput): string[] {
   const { review, result, workspace } = input;
   if (!review) return [];
+  const text = COMMENT_TEXT[input.config.reporting.language].result;
   const lines: string[] = [];
   if (review.reviewClass === "immediate") {
     lines.push(
-      "Needs your individual review before it is accepted:",
-      ...review.reasons.map((reason) => `- ${reason.detail}`),
+      text.needsReview,
+      ...review.reasons.map((reason) => `- ${text.reason(reason, review)}`),
     );
   } else {
-    lines.push("Ready for the ordinary review queue.");
+    lines.push(text.ordinaryQueue);
   }
   const done = workspace.workflow.doneStatus;
   lines.push(
     result.pullRequest
-      ? `Next: review and merge ${result.pullRequest.url}${done ? `; Router then moves the issue to "${done}"` : ""}.`
-      : `Next: review the result below${done ? ` and move the issue to "${done}" yourself` : ""}; there is no pull request.`,
+      ? text.nextWithPullRequest(result.pullRequest.url, done)
+      : text.nextWithoutPullRequest(done),
   );
   const { commit, risk } = review;
   if (commit.state === "committed") {
-    lines.push("", `Reviewed commit: ${short(commit.headSha)} (base ${short(commit.baseSha)})`);
+    lines.push("", text.reviewedCommit(short(commit.headSha), short(commit.baseSha)));
   } else if (commit.state === "no_commit") {
-    lines.push(
-      "",
-      `No commit: ${commit.location ?? "unknown location"}. Commit-based freshness checks do not apply.`,
-    );
+    lines.push("", text.noCommit(commit.location));
   } else if (commit.state === "unknown") {
-    lines.push("", "Commit: not reported by the worker.");
+    lines.push("", text.commitUnknown);
   }
   if (risk.status === "high") {
-    lines.push(
-      `High-risk check: ${risk.basis}${risk.policyVersion ? ` (rules ${risk.policyVersion})` : ""}`,
-    );
+    lines.push(text.riskHigh(review));
     for (const match of risk.matches) {
       lines.push(
         `- ${match.rule}: ${match.from ? `${match.from} -> ` : ""}${match.path} (${match.change})`,
       );
     }
-    for (const entry of risk.agentRisks)
-      lines.push(`- agent: ${entry.area} — ${entry.description}`);
+    for (const entry of risk.agentRisks) lines.push(text.agentRisk(entry.area, entry.description));
   } else if (risk.status === "not_matched") {
-    lines.push(`High-risk check: no rule matched (rules ${risk.policyVersion}).`);
+    lines.push(text.riskNotMatched(risk.policyVersion));
   } else if (risk.status === "unknown") {
-    lines.push(`High-risk check: unknown — ${risk.basis}.`);
+    lines.push(text.riskUnknown(review));
   }
   return lines;
 }
@@ -447,25 +600,29 @@ function reviewLines(input: ResultJournalInput): string[] {
  */
 function successComment(input: ResultJournalInput): string {
   const { result, job } = input;
-  const lines = ["Implementation completed.", ...reviewLines(input)];
+  const text = COMMENT_TEXT[input.config.reporting.language].result;
+  const lines = [text.completed, ...reviewLines(input)];
   const verification = result.implementation?.verification ?? [];
   if (verification.length > 0) {
     lines.push(
       "",
-      "Acceptance checks:",
-      ...verification.map((entry) => `- ${entry.status}: ${entry.acceptance} — ${entry.evidence}`),
+      text.acceptanceChecks,
+      ...verification.map(
+        (entry) =>
+          `- ${text.verificationStatus(entry.status)}: ${entry.acceptance} — ${entry.evidence}`,
+      ),
     );
   }
-  lines.push("", "Summary:", result.summary || "(no summary)");
-  if (result.changes?.length) lines.push("", "Changes:", ...result.changes.map((c) => `- ${c}`));
+  lines.push("", text.summary, result.summary || text.noSummary);
+  if (result.changes?.length) lines.push("", text.changes, ...result.changes.map((c) => `- ${c}`));
   if (result.validation?.length) {
-    lines.push("", "Validation:", ...result.validation.map((v) => `- ${v}`));
+    lines.push("", text.validation, ...result.validation.map((v) => `- ${v}`));
   }
   if (result.scopeCheck && !result.scopeCheck.checked) {
-    lines.push("", `Path scope: not checked (${result.scopeCheck.reason ?? "no reason given"}).`);
+    lines.push("", text.pathScopeNotChecked(result.scopeCheck.reason));
   }
   if (result.artifacts?.length) {
-    lines.push("", "Artifacts:", ...result.artifacts.map((a) => `- ${a}`));
+    lines.push("", text.artifacts, ...result.artifacts.map((a) => `- ${a}`));
   }
   lines.push(
     "",
@@ -490,6 +647,23 @@ function validatePlan(input: ResultJournalInput, plan: Plan): void {
   validateTaskGraph(plan.tasks, taskIds);
   if (!input.snapshot?.issue.projectKey) {
     throw new PlanApplyError(`Issue ${input.job.issueKey} has no project key in its snapshot`);
+  }
+  // ADR 0044: any issue can be delegated, a subtask too, but Jira cannot nest subtasks. (An epic's
+  // child also has a parent; only the subtask issue type tells the two apart in the snapshot.)
+  const isSubtask =
+    input.snapshot.issue.issueTypeName?.normalize("NFC") === input.config.planning.subtaskIssueType;
+  if (isSubtask && plan.tasks.length > 0) {
+    throw new PlanApplyError(
+      `${input.job.issueKey} is a subtask; its plan has to do the work in the issue itself, without tasks`,
+    );
+  }
+  // ADR 0047: the plan is the contract its runs are held to, so every executable unit has to say
+  // what done means and how to check it before anyone can approve it.
+  if (!plan.needsDecision) {
+    const missing = missingContracts(plan);
+    if (missing.length > 0) {
+      throw new PlanApplyError(`Plan has no definition of done: ${missing.join("; ")}`);
+    }
   }
 }
 
@@ -546,18 +720,43 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
     if (keep.has(subtask.key)) continue;
     steps.push({
       kind: "supersede",
-      params: { issueKey: subtask.key, label: SUPERSEDED_LABEL, startedStatuses: started },
+      params: {
+        issueKey: subtask.key,
+        label: SUPERSEDED_LABEL,
+        startedStatuses: started,
+        comment: COMMENT_TEXT[config.reporting.language].plan.superseded,
+      },
     });
   }
   steps.push(
     {
       kind: "plan-comment",
-      params: { summary: plan.summary, signature: signature(job, input.attemptId) },
+      params: {
+        summary: plan.summary,
+        signature: signature(job, input.attemptId),
+        next: planReviewNext(workspace, plan.tasks.length > 0, config.reporting.language),
+        language: config.reporting.language,
+      },
     },
     { kind: "remove-label", params: { label: config.reporting.failureLabel } },
-    finishTransition(input, workspace.workflow.reviewStatus),
+    finishTransition(input, workspace.workflow.planReviewStatus),
   );
   return steps;
+}
+
+/** ADR 0044: a plan is only a proposal until a human approves it. */
+function planReviewNext(
+  workspace: WorkspaceConfig,
+  hasTasks: boolean,
+  language: MessageLanguage,
+): string[] {
+  const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
+  const text = COMMENT_TEXT[language].plan;
+  return [
+    text.nothingRunsYet(hasTasks),
+    text.toApprove(planReviewStatus, inProgressStatus),
+    text.toChange(requestStatus),
+  ];
 }
 
 /**
@@ -566,19 +765,14 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
  */
 export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
   const { job, result, workspace } = input;
+  const text = COMMENT_TEXT[input.config.reporting.language];
 
   if (input.finalState === "cancelled") {
     return toNewSteps([
       {
         kind: "comment",
         params: {
-          body: [
-            "AI execution stopped.",
-            "",
-            result.summary,
-            "",
-            signature(job, input.attemptId),
-          ].join("\n"),
+          body: [text.stopped, "", result.summary, "", signature(job, input.attemptId)].join("\n"),
         },
       },
     ]);
@@ -603,6 +797,7 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
           input,
           result.summary,
           "The implementation result asked for a decision but carried no decision or deviation.",
+          { code: "GGJ-403", params: {} },
         ),
       );
     }
@@ -611,8 +806,9 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
         kind: "comment",
         params: {
           body: renderImplementationDecisionRequest(result, {
-            requestStatus: approvalStatusFor("implementation", workspace),
+            requestStatus: decisionReplyStatus(input),
             signature: signature(job, input.attemptId),
+            text: text.implementationDecision,
           }),
         },
       },
@@ -627,6 +823,7 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
           input,
           result.summary,
           "The planning result asked for a decision but carried none.",
+          { code: "GGJ-403", params: {} },
         ),
       );
     }
@@ -636,8 +833,9 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
         params: {
           body: renderDecisionRequest(result.plan, {
             planVersion: planVersionFor(input.attemptId),
-            replyStatus: approvalStatusFor("planning", workspace),
+            replyStatus: decisionReplyStatus(input),
             signature: signature(job, input.attemptId),
+            text: text.decision,
           }),
         },
       },
@@ -649,7 +847,10 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
   if (result.status === "planned") {
     if (!result.plan) {
       return toNewSteps(
-        failureSteps(input, result.summary, "The planning result carried no plan."),
+        failureSteps(input, result.summary, "The planning result carried no plan.", {
+          code: "GGJ-402",
+          params: {},
+        }),
       );
     }
     try {
@@ -657,7 +858,10 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
     } catch (error) {
       if (!(error instanceof PlanApplyError)) throw error;
       return toNewSteps(
-        failureSteps(input, result.summary, `The plan could not be applied: ${error.message}`),
+        failureSteps(input, result.summary, `The plan could not be applied: ${error.message}`, {
+          code: "GGJ-401",
+          params: { detail: error.message },
+        }),
       );
     }
     return toNewSteps(planSteps(input, result.plan));
@@ -667,5 +871,132 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
     { kind: "comment", params: { body: successComment(input) } },
     { kind: "remove-label", params: { label: input.config.reporting.failureLabel } },
     finishTransition(input, workspace.workflow.reviewStatus),
+  ]);
+}
+
+/** Batch id of the journal for recording one plan approval (ADR 0044), one per deployment. */
+export function planDeploymentBatchId(deploymentId: number): string {
+  return `deploy:${deploymentId}`;
+}
+
+/** Batch id of the journal for the parent of a deployed plan once all its tasks are done. */
+export function planCompletedBatchId(deploymentId: number): string {
+  return `deploy-done:${deploymentId}`;
+}
+
+/** Batch id of the one notice that a move to in progress was not taken as a plan approval. */
+export function planApprovalRefusedBatchId(issueKey: string, approvalId: string): string {
+  return `approval-refused:${issueKey}:${approvalId}`;
+}
+
+/**
+ * A human approved a plan (ADR 0044): say so on the parent, and move each task of the plan to
+ * the shared in-progress status, where it runs once its dependencies are done. Every move is
+ * re-checked against the plan's approval when it is applied, so a plan withdrawn in the meantime
+ * moves nothing.
+ */
+export function buildPlanDeploymentSteps(input: {
+  workspace: WorkspaceConfig;
+  parentKey: string;
+  planVersion: string;
+  approvalId: string;
+  /** Tasks found in Jira under this plan, with where each is now. */
+  tasks: ReadonlyArray<{ issueKey: string; statusName: string }>;
+  language: MessageLanguage;
+}): NewReportStep[] {
+  const { workspace, parentKey } = input;
+  const { inProgressStatus, requestStatus } = workspace.workflow;
+  const text = COMMENT_TEXT[input.language].plan;
+  const rule = planApprovalRule(workspace, parentKey);
+  const body = [
+    text.approved(input.planVersion, inProgressStatus),
+    input.tasks.length > 0
+      ? text.tasksRun(
+          input.tasks.length,
+          inProgressStatus,
+          input.tasks.map((task) => task.issueKey).join(", "),
+        )
+      : text.workInIssue,
+    "",
+    text.withdraw(inProgressStatus, requestStatus),
+    "",
+    `approval: ${input.approvalId}`,
+  ];
+  return toNewSteps([
+    { kind: "comment", params: { body: body.join("\n") } },
+    ...input.tasks
+      .filter((task) => task.statusName !== inProgressStatus)
+      .map(
+        (task): ReportStepSpec => ({
+          kind: "transition",
+          params: {
+            to: inProgressStatus,
+            from: [task.statusName],
+            approvalStatus: inProgressStatus,
+            approvalId: input.approvalId,
+            approvalRule: rule,
+            issueKey: task.issueKey,
+          },
+        }),
+      ),
+  ]);
+}
+
+/** Every task of a deployed plan is done: the parent goes to review, still under the plan's
+ *  approval (ADR 0044). */
+export function buildPlanCompletedSteps(input: {
+  workspace: WorkspaceConfig;
+  parentKey: string;
+  approvalId: string;
+  taskKeys: readonly string[];
+  language: MessageLanguage;
+}): NewReportStep[] {
+  const { workspace, parentKey } = input;
+  const { inProgressStatus, reviewStatus } = workspace.workflow;
+  const text = COMMENT_TEXT[input.language].plan;
+  return toNewSteps([
+    {
+      kind: "comment",
+      params: {
+        body: [
+          text.completed(input.taskKeys.join(", ")),
+          text.completedNext(reviewStatus),
+          "",
+          `approval: ${input.approvalId}`,
+        ].join("\n"),
+      },
+    },
+    {
+      kind: "transition",
+      params: {
+        to: reviewStatus,
+        from: [inProgressStatus],
+        approvalStatus: inProgressStatus,
+        approvalId: input.approvalId,
+        approvalRule: planApprovalRule(workspace, parentKey),
+      },
+    },
+  ]);
+}
+
+/** A move to in progress that approves nothing, and why — said once per move (ADR 0044). */
+export function buildPlanApprovalRefusedSteps(input: {
+  workspace: WorkspaceConfig;
+  refusal: PlanRefusal;
+  language: MessageLanguage;
+}): NewReportStep[] {
+  const { requestStatus, inProgressStatus } = input.workspace.workflow;
+  const text = COMMENT_TEXT[input.language].plan;
+  return toNewSteps([
+    {
+      kind: "comment",
+      params: {
+        body: [
+          text.refused(inProgressStatus, input.refusal),
+          text.refusedImpact,
+          text.refusedNext(input.refusal, requestStatus),
+        ].join("\n"),
+      },
+    },
   ]);
 }

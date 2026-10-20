@@ -28,7 +28,7 @@ import { buildWorkerAvailability, isWorkerDispatchable } from "./availability.js
 import type { RouterConfig } from "./config.js";
 import { inputHashMatches } from "./approval.js";
 import { getApproval } from "./db/approvals.js";
-import { type ApprovalSnapshot, storedApprovalHashes } from "./issue-check.js";
+import type { ApprovalSnapshot } from "./issue-check.js";
 import {
   type AttemptRow,
   bindAttemptToRequest,
@@ -47,7 +47,7 @@ import { consumePairingCode, createPairingCode, PairingCodeRejectedError } from 
 import { appendAudit } from "./db/audit.js";
 import { saveProviderUsage } from "./db/provider-usage.js";
 import { recordPullRequest } from "./db/pull-requests.js";
-import { insertReportBatch } from "./db/report-steps.js";
+import { insertReportBatch, type NewReportStep } from "./db/report-steps.js";
 import { recordResult, ResultConflictError } from "./db/results.js";
 import { recordReviewTarget } from "./db/review-targets.js";
 import { type AttentionOutcome, recordAttention, resolveAttention } from "./db/attention.js";
@@ -69,9 +69,12 @@ import {
   buildRecoveredSteps,
   buildResultSteps,
   buildStartSteps,
+  planVersionFor,
   recoveredBatchId,
   startBatchId,
 } from "./report-journal.js";
+import { planDeploymentAuthorizes } from "./delegation.js";
+import { recordPlanReview } from "./db/plan-delegation.js";
 import { assignQueuedJobs, LEASE_DURATION_MS } from "./scheduler.js";
 
 /** §3 "long polling: 25초". */
@@ -636,7 +639,7 @@ export class WorkerService {
       jobId: job.id,
       attemptId: attempt.id,
       issueKey: job.issueKey,
-      steps: buildStartSteps(job, workspace),
+      steps: buildStartSteps(job, workspace, attempt.id, this.config.reporting.language),
       now,
     });
   }
@@ -695,6 +698,9 @@ export class WorkerService {
       snapshot,
       ...(review ? { review } : {}),
     });
+    if (job.kind === "planning" && finalState === "succeeded") {
+      this.recordPlanForReview(job, attempt, result, steps, now);
+    }
     insertReportBatch(this.db, {
       batchId: result.resultId,
       resultId: result.resultId,
@@ -704,6 +710,40 @@ export class WorkerService {
       // M4-09: the same unresolved incident again (a retry that failed the same way) is counted
       // on its attention item; Jira already has the comment. Labels and moves still apply.
       steps: incident === "repeated" ? steps.filter((step) => step.kind !== "comment") : steps,
+      now,
+    });
+  }
+
+  /**
+   * ADR 0044: a planning result is the plan a human now reviews — or, when it could not be
+   * applied or asks for a decision, the reason no earlier plan of the issue may be approved any
+   * more. Recorded with the result, so the approval that follows is always judged against it.
+   */
+  private recordPlanForReview(
+    job: JobRow,
+    attempt: AttemptRow,
+    result: JobResult,
+    steps: readonly NewReportStep[],
+    now: string,
+  ): void {
+    const property = steps.find((step) => step.kind === "plan-property");
+    const outcome =
+      result.status === "planned" && property
+        ? "planned"
+        : result.status === "needs_decision" && result.plan?.decision
+          ? "needs_decision"
+          : "not_applied";
+    const taskIds = outcome === "planned" ? ((property?.params.taskIds as string[]) ?? []) : [];
+    recordPlanReview(this.db, {
+      id: result.resultId,
+      issueKey: job.issueKey,
+      workspaceId: job.workspaceId,
+      jobId: job.id,
+      attemptId: attempt.id,
+      requestApprovalId: job.approvalId,
+      planVersion: planVersionFor(attempt.id),
+      outcome,
+      taskIds,
       now,
     });
   }
@@ -775,7 +815,7 @@ export class WorkerService {
       jobId: job.id,
       attemptId: attempt.id,
       issueKey: job.issueKey,
-      steps: buildRecoveredSteps(job, attempt.id, result),
+      steps: buildRecoveredSteps(this.config, job, attempt.id, result),
       now,
     });
   }
@@ -785,11 +825,15 @@ export class WorkerService {
     if (job.state === "running") transitionJobState(this.db, job.id, "cancel_requested", now);
   }
 
-  /** The job's approval id and input hash still match what the last reconcile saw in Jira. */
+  /** The job's approval id and input hash still match what the last reconcile saw in Jira, and
+   *  the plan an implementation runs under is still deployed (ADR 0044). */
   private approvalCurrent(job: JobRow): boolean {
     const approval = getApproval(this.db, job.issueKey);
     if (!approval || approval.approvalId !== job.approvalId) return false;
-    return inputHashMatches(job.inputHash, storedApprovalHashes(approval));
+    if (!inputHashMatches(job.inputHash, approval.inputHash)) return false;
+    if (job.kind !== "implementation") return true;
+    const snapshot = approval.inputSnapshot as ApprovalSnapshot | null;
+    return planDeploymentAuthorizes(this.db, job, snapshot?.planTask?.parentKey ?? null);
   }
 
   private renew(attemptId: string, now: string): string {
