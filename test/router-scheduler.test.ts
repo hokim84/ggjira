@@ -172,7 +172,9 @@ describe("reconcileCandidates", () => {
     await reconcileCandidates(deps, []);
     const comments = jira.comments.filter((comment) => comment.key === "KAN-1");
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toMatch(/has no assignee[\s\S]*Next: assign the issue/);
+    expect(comments[0]?.body).toMatch(
+      /이슈에 담당자가 없습니다[\s\S]*다음: 이슈에 책임자를 담당자로 지정하세요/,
+    );
     expect(unassigned()).toMatchObject([{ status: "open", severity: "immediate" }]);
     expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
 

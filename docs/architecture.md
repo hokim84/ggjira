@@ -216,7 +216,7 @@ DB와 루프 없이 `/ui/`와 `/api/v1/setup/*`만 제공하고, 콘솔에 찍�
 | 계층 | 신호 |
 |---|---|
 | router (sync/verify) | 로그 `layer:"router" pass:"reconcile"/"verify"`, `skipped`/`held` 사유 |
-| router (reports) | `report_steps.status`·`last_error`, `router reports list` |
+| router (reports) | `report_steps.status`·`last_error`, `router reports list`, 댓글 문장 `src/router/comment-text.ts`(`reporting.language`, 기본 ko), 실패 코드 `GGJ-xxx`(`src/router/failure-codes.ts`, runbook §35)와 실패 전문 `data/failure-logs/<이슈>-<attemptId>.log`(ADR 0048) |
 | router (leases) | 로그 `leases expired`, job `recovery_required` |
 | jira | `JiraApiError`(status, endpoint), 429는 `Retry-After` 준수 |
 | worker-runtime | 로그 `layer:"worker-runtime"`, spool 파일, 결과의 `failureReason` |

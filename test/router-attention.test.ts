@@ -80,7 +80,7 @@ describe("attention items", () => {
 
   function failureComments(): string[] {
     return router.jira.comments
-      .filter((comment) => comment.key === "KAN-1" && comment.body.includes("Execution failed."))
+      .filter((comment) => comment.key === "KAN-1" && comment.body.includes("실행 실패 ["))
       .map((comment) => comment.body);
   }
 
@@ -94,9 +94,9 @@ describe("attention items", () => {
         .filter((line) => !line.startsWith("[GGJIRA:"))
         .slice(0, 3),
     ).toEqual([
-      "Execution failed.",
-      `Impact: the issue stays in "${IN_PROGRESS_STATUS}" with the "ggjira-failed" label, and GGJIRA does not run it again under this approval.`,
-      `Next: fix the cause, then ${reRequestHint(testWorkspace)}.`,
+      "실행 실패 [GGJ-999]: 분류되지 않은 오류: Tests failed: 3 of 120 in run 4711.",
+      `다음: 원인을 고친 뒤 ${reRequestHint(testWorkspace, "implementation", "ko")}.`,
+      expect.stringMatching(/^자세한 내용: Router 머신의 .*KAN-1-.*\.log$/),
     ]);
 
     // The same failure again on an admin retry: one more occurrence, no second comment.

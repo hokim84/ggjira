@@ -157,8 +157,14 @@ export class CodexCliProvider implements WorkerProvider {
         return {
           exitReason: "nonzero",
           isError: true,
+          // Router codes the failure by its first line (src/router/failure-codes.ts).
           summary:
-            lastMessage || `Worker exited with code ${result.code}. ${result.stderrTail}`.trim(),
+            lastMessage ||
+            (call.failure
+              ? `Worker exited with code ${result.code}: ${call.failure}
+${result.stderrTail}`
+              : `Worker exited with code ${result.code}. ${result.stderrTail}`
+            ).trim(),
           durationMs: result.durationMs,
           exitCode: result.code,
           ...callFields(),

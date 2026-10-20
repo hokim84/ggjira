@@ -231,14 +231,16 @@ describe("delegation mode (ADR 0044)", () => {
     await process();
     // Planning happens in the request status: the start moves nothing, the card says it runs.
     expect(await status("KAN-1")).toBe(REQUEST_STATUS);
-    expect(commentsOn("KAN-1").join("\n")).toContain("GGJIRA started planning this request");
+    expect(commentsOn("KAN-1").join("\n")).toContain("GGJIRA가 이 요청의 계획을 시작했습니다");
 
     await submit(envelope, { status: "failed", summary: "broke", failureReason: "no idea" });
     await process();
     const issue = await router.jira.getIssue("KAN-1");
     expect(issue.statusName).toBe(REQUEST_STATUS);
     expect(issue.labels).toEqual(["ggjira-failed"]);
-    expect(commentsOn("KAN-1").join("\n")).toContain(`the issue stays in "${REQUEST_STATUS}"`);
+    expect(commentsOn("KAN-1").join("\n")).toContain(
+      `실행 실패 [GGJ-999]: 분류되지 않은 오류: no idea.\n다음: 원인을 고친 뒤 이슈를 "${REQUEST_STATUS}" 상태 밖으로 옮겼다가 다시 넣으세요.`,
+    );
     expect((await router.reconcile()).jobsCreated).toEqual([]);
     expect((await router.reconcile()).jobsCreated).toEqual([]);
   });
@@ -285,9 +287,9 @@ describe("delegation mode (ADR 0044)", () => {
 
     expect(await status("KAN-1")).toBe(PLAN_REVIEW_STATUS);
     const comments = commentsOn("KAN-1").join("\n");
-    expect(comments).toContain("Plan applied.");
+    expect(comments).toContain("계획을 반영했습니다.");
     expect(comments).toContain(
-      `To approve this plan: move the issue from "${PLAN_REVIEW_STATUS}" to "${IN_PROGRESS_STATUS}".`,
+      `이 계획을 승인하려면: 이슈를 "${PLAN_REVIEW_STATUS}"에서 "${IN_PROGRESS_STATUS}" 상태로 옮기세요.`,
     );
     expect(getLatestPlanReview(router.db, "KAN-1")).toMatchObject({
       outcome: "planned",
@@ -318,7 +320,7 @@ describe("delegation mode (ADR 0044)", () => {
 
     const [deployment] = listPlanDeployments(router.db, "KAN-1");
     expect(deployment).toMatchObject({ state: "active", taskIds: [] });
-    expect(commentsOn("KAN-1").join("\n")).toContain("approved: GGJIRA recorded the move");
+    expect(commentsOn("KAN-1").join("\n")).toContain("상태로의 이동을 승인으로 기록했습니다");
     await router.reconcile();
     const job = getOpenJobForIssue(router.db, "KAN-1");
     expect(job).toMatchObject({ kind: "implementation", approvalId: deployment?.approvalId });
@@ -342,7 +344,7 @@ describe("delegation mode (ADR 0044)", () => {
     seed("KAN-1");
     await planned("KAN-1", DECISION_PLAN);
     expect(await status("KAN-1")).toBe(PLAN_REVIEW_STATUS);
-    expect(commentsOn("KAN-1").join("\n")).toContain(`move it back to "${REQUEST_STATUS}"`);
+    expect(commentsOn("KAN-1").join("\n")).toContain(`"${REQUEST_STATUS}" 상태로 다시 옮기세요`);
 
     await move("KAN-1", IN_PROGRESS_STATUS);
     await router.reconcile();
@@ -351,9 +353,11 @@ describe("delegation mode (ADR 0044)", () => {
 
     expect(listPlanDeployments(router.db, "KAN-1")).toEqual([]);
     expect(getOpenJobForIssue(router.db, "KAN-1")).toBeUndefined();
-    const refusals = commentsOn("KAN-1").filter((body) => body.includes("did not take the move"));
+    const refusals = commentsOn("KAN-1").filter((body) =>
+      body.includes("계획 승인으로 보지 않았습니다"),
+    );
     expect(refusals).toHaveLength(1);
-    expect(refusals[0]).toContain("answer the decision request");
+    expect(refusals[0]).toContain("결정 요청에 답한 뒤");
     expect(
       listAttentionItems(router.db, { status: "open", kind: "plan_approval_refused" }),
     ).toHaveLength(1);
@@ -372,7 +376,7 @@ describe("delegation mode (ADR 0044)", () => {
 
     expect(listPlanDeployments(router.db, "KAN-1")).toEqual([]);
     expect(jobsFor("KAN-1").filter((job) => job.kind === "implementation")).toEqual([]);
-    expect(commentsOn("KAN-1").join("\n")).toContain("answers an earlier request");
+    expect(commentsOn("KAN-1").join("\n")).toContain("이전 요청에 대한 계획입니다");
   });
 
   it("waits for a plan still being applied, then deploys it once, through restarts (7)", async () => {
@@ -398,7 +402,9 @@ describe("delegation mode (ADR 0044)", () => {
     expect(listPlanDeployments(router.db, "KAN-1")).toHaveLength(1);
     expect(listPlanDeployments(router.db, "KAN-1")[0]?.state).toBe("active");
     expect(router.jira.createdIssues).toHaveLength(2);
-    const approvals = commentsOn("KAN-1").filter((body) => body.includes("approved: GGJIRA"));
+    const approvals = commentsOn("KAN-1").filter((body) =>
+      body.includes("이동을 승인으로 기록했습니다"),
+    );
     expect(approvals).toHaveLength(1);
   });
 
@@ -447,7 +453,7 @@ describe("delegation mode (ADR 0044)", () => {
 
     expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     expect(listPlanDeployments(router.db, "KAN-1")[0]?.state).toBe("completed");
-    expect(commentsOn("KAN-1").join("\n")).toContain("All subtasks of the approved plan are done");
+    expect(commentsOn("KAN-1").join("\n")).toContain("승인된 계획의 하위 작업이 모두 끝났습니다");
     expect(jobsFor("KAN-1").map((job) => job.kind)).toEqual(["planning"]);
     expect(jobsFor(apiKey).map((job) => job.kind)).toEqual(["implementation"]);
   });
@@ -524,11 +530,11 @@ describe("delegation mode (ADR 0044)", () => {
     await process();
 
     const failure = commentsOn("KAN-1").find(
-      (body) => body.startsWith("[GGJIRA:REPORT") && body.includes("Execution failed."),
+      (body) => body.startsWith("[GGJIRA:REPORT") && body.includes("실행 실패 ["),
     );
-    expect(failure).toContain(`stays in "${IN_PROGRESS_STATUS}"`);
+    expect(failure).toContain("실행 실패 [GGJ-999]: 분류되지 않은 오류: tests red.");
     expect(failure).toContain(
-      `Next: fix the cause, then move the issue to "${PLAN_REVIEW_STATUS}" and then to "${IN_PROGRESS_STATUS}"`,
+      `다음: 원인을 고친 뒤 이슈를 "${PLAN_REVIEW_STATUS}" 상태로 옮겼다가 "${IN_PROGRESS_STATUS}" 상태로 옮겨 승인된 계획을 다시 실행하거나`,
     );
     await router.jira.removeLabel("KAN-1", "ggjira-failed");
     expect((await router.reconcile()).jobsCreated).toEqual([]);

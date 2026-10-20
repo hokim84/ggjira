@@ -59,6 +59,7 @@ export class RouterHarness {
     this.db = openRouterDb(this.dbPath);
     this.config = buildRouterConfig({
       workers: [workerPolicy({ workerId: "worker-1" }), workerPolicy({ workerId: "worker-2" })],
+      db: { path: this.dbPath },
       ...opts.config,
     });
     this.serviceOverrides = opts.service ?? {};

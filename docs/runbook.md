@@ -79,6 +79,10 @@ Router의 Jira 쓰기는 `report_steps` 저널을 `router serve`의 reports 루�
   확인 후 배치를 재시도하면 단계가 마커를 먼저 찾으므로, 이미 생성된 이슈는 다시 만들지 않는다.
 - **실패한 이슈** — `inProgressStatus`에 `ggjira-failed` 라벨과 실패 댓글이 남는다. 다시 돌리려면
   요청 상태로 옮긴다. 이전 job은 닫히고 새 job이 만들어진다.
+- **실패 댓글이 짧다(ADR 0048)** — 댓글에는 실패 코드, 한 줄 원인, 다음 행동만 있다(코드는 §35). 실패
+  이유·요약·stderr·보존된 변경 위치는 댓글의 `자세한 내용:` 경로에 있다. 기본은 Router 머신의
+  `data/failure-logs/<이슈>-<attemptId>.log`이다. 파일이 없으면 `router reports list`에서 그 배치의
+  `failure-log` 단계가 skipped인 이유(쓰기 권한 등)를 본다.
 - **계획이 적용되지 않음** — 적용할 수 없는 계획(작업 수 초과, taskId 중복, 의존성 순환·미해결)은
   실패 댓글로 보고한다. 하위 이슈가 실행되지 않으면 `ggjira.plan-task`의 `planVersion`이 부모
   `ggjira.plan`의 `version`과 같은지 본다. 재계획 뒤의 옛 작업은 승인되지 않는다.
@@ -228,9 +232,10 @@ npm run dev -- worker start      # 이후: 바로 실행
   실행하지 않는다).
 - **Codex 실행 실패 `The '<model>' model is not supported when using Codex with a ChatGPT account`**: 워커
   설정 `providers[].model`에 계정이 쓸 수 없는 모델이 적혀 있다. 지우면 Codex 설정(`~/.codex/config.toml`의
-  `model`)을 따른다. 예전 버전은 Codex에도 Claude 기본값 `sonnet`을 넘겼다. 실제 원인은 워커 로그
-  `data\worker-logs\<jobId>-<attemptId>.jsonl`의 `turn.failed`에 있다. 실패 요약의 `rmcp ... /mcp` 오류는
-  Codex 설정의 다른 MCP 서버가 꺼져 있다는 경고일 뿐이다.
+  `model`)을 따른다. 예전 버전은 Codex에도 Claude 기본값 `sonnet`을 넘겼다. 원인은 워커 로그
+  `data\worker-logs\<jobId>-<attemptId>.jsonl`의 `turn.failed`에 있고, 이제 실패 요약 첫 줄에도 올라와 댓글에
+  "the AI CLI rejected the model"로 나온다(ADR 0048). 실패 로그의 `rmcp ... /mcp` 오류는 Codex 설정의 다른
+  MCP 서버가 꺼져 있다는 경고일 뿐이다.
 - **워커 로그에 `Router is not reachable; retrying in 5s`**: 워커가 시작할 때나 Router가 다시 시작되는 동안
   Router에 연결하지 못했다. 워커는 끝나지 않고 연결될 때까지 5초마다 다시 시도한다(예전에는 `fetch failed`로
   바로 끝났다). 계속되면 Router가 떠 있는지(`run-router.bat` 창, `http://127.0.0.1:8787/ui/`)와 워커 설정의
@@ -731,3 +736,32 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 6. 새 버전으로 업그레이드하고 Router를 시작한다. `ggjira router check --issue <KEY>`로 상태와 전이를 확인한다.
 7. 되돌리기: 이전 버전, 이전 설정, 1단계의 백업을 함께 복원한다. 이 버전이 남긴 계획·승인 기록(migration 14·15)은
    이전 버전이 읽지 않는다.
+
+## 35. 실패 코드 (ADR 0048)
+
+실패 댓글의 첫 줄은 `실행 실패 [GGJ-xxx]: <원인>`이다. 문구는 `src/router/failure-codes.ts`의 표에 있다.
+언어는 Router 설정 `reporting.language`(`ko` 기본, `en`)로 정하고, 실패 댓글뿐 아니라 Router가 다는 모든
+댓글에 적용된다(문장은 `src/router/comment-text.ts`). 결정 답은 언어와 상관없이 `Decision: <선택지 id>`로 단다. 워커가 보고한 실패는 실패 이유의 첫 줄을
+표의 규칙과 위에서부터 맞춰 코드를 정한다. 시간 초과·계획 문제는 Router가 직접 코드를 붙인다. 원문은 댓글의
+`자세한 내용:` 로그 파일에 있다.
+
+| 코드 | 뜻 | 할 일 |
+|---|---|---|
+| `GGJ-101` | 워커가 AI CLI를 실행하지 못함(설치 안 됨, PATH 없음) | 워커 터미널에서 `where codex`/`where claude`, 필요하면 `providers[].command`에 경로 |
+| `GGJ-102` | 실행 중 워커 재시작 | 워커가 계속 떠 있는지 확인하고 다시 요청 |
+| `GGJ-103` | 워커에 job의 저장소·provider가 없음 | 워커 설정의 `repositories`/`providers`와 Router 설정의 id를 맞춤 |
+| `GGJ-104` | git worktree 준비 실패 | 워커의 저장소 경로·`git worktree list`·디스크 공간 확인 |
+| `GGJ-105` | 시간 초과 | 범위를 줄이거나 `execution.timeoutMs`를 늘림 |
+| `GGJ-201` | AI CLI가 모델을 거부 | 워커 `providers[].model`을 지우거나 계정이 쓸 수 있는 모델로(§18) |
+| `GGJ-202` | AI 계정 사용량 한도 | 한도가 초기화된 뒤 다시 요청 |
+| `GGJ-203` | AI CLI 로그인 안 됨·거부 | 워커 머신에서 `codex login`/`claude` 로그인 |
+| `GGJ-204` | AI CLI가 오류를 내고 끝남(원인 문구 포함) | 문구대로 고침. 원문은 로그 파일 |
+| `GGJ-205` | AI CLI가 종료 코드만 남기고 끝남 | 로그 파일과 워커 로그 `data/worker-logs/<jobId>-<attemptId>.jsonl` 확인 |
+| `GGJ-301` | 워커 검증 명령(`validateCommand`) 실패 | 로그 파일의 명령 출력 확인 |
+| `GGJ-302` | 완료 조건 검증 실패 | 계획의 완료 조건이나 구현을 고쳐 다시 요청 |
+| `GGJ-303` | AI가 검증 근거 없이 완료 보고 | 다시 요청. 반복되면 계획의 Verification을 구체적으로 |
+| `GGJ-401` | 계획을 적용할 수 없음(작업 수 초과, 완료 조건 없음 등) | 원인 문구대로 요청을 고쳐 다시 계획 |
+| `GGJ-402` | 계획 결과에 계획 없음 | 다시 계획 요청 |
+| `GGJ-403` | 결정 필요라고 했지만 결정 내용 없음 | 다시 요청 |
+| `GGJ-501` | 연결이 끊긴 실행의 결과가 늦게 도착해 반영 안 함 | 다시 실행하려면 요청 상태로 옮김 |
+| `GGJ-999` | 분류되지 않은 오류(첫 줄을 그대로 보임) | 로그 파일 확인. 자주 나오면 표에 규칙 추가 |

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
+import { COMMENT_TEXT, type MergeWhy } from "./comment-text.js";
 import type { RouterConfig } from "./config.js";
 import { appendAudit } from "./db/audit.js";
 import { getJob } from "./db/jobs.js";
@@ -88,31 +89,26 @@ export function parsePullRequestClosed(
 export function judgeMerge(
   target: ReviewTargetRow | undefined,
   headSha: string | null,
-): { outcome: ReviewRecordOutcome; reason: string } {
-  if (!target) {
-    return { outcome: "no_target", reason: "no review target was recorded for this run" };
-  }
-  if (target.supersededBy) {
-    return {
-      outcome: "stale",
-      reason: "a newer result exists for this issue; this pull request is from an earlier run",
-    };
-  }
+): { outcome: ReviewRecordOutcome; why: MergeWhy; reason: string } {
+  const judged = (outcome: ReviewRecordOutcome, why: MergeWhy) => ({
+    outcome,
+    why,
+    // The review record keeps the English reason; the comment says it in Router's language.
+    reason: COMMENT_TEXT.en.pullRequest.why(why),
+  });
+  if (!target) return judged("no_target", { kind: "no_target" });
+  if (target.supersededBy) return judged("stale", { kind: "superseded" });
   if (!target.headSha || !headSha) {
-    return {
-      outcome: "unverified",
-      reason: target.headSha
-        ? "GitHub did not report the merged head commit"
-        : "the worker did not report the commit it produced",
-    };
+    return judged("unverified", { kind: target.headSha ? "no_merged_head" : "no_reviewed_commit" });
   }
   if (target.headSha !== headSha) {
-    return {
-      outcome: "stale",
-      reason: `the merged head ${headSha.slice(0, 12)} is not the reviewed commit ${target.headSha.slice(0, 12)} (commits were added after GGJIRA's run)`,
-    };
+    return judged("stale", {
+      kind: "head_mismatch",
+      merged: headSha.slice(0, 12),
+      reviewed: target.headSha.slice(0, 12),
+    });
   }
-  return { outcome: "matched", reason: "the merged head is the reviewed commit" };
+  return judged("matched", { kind: "matched" });
 }
 
 export type PullRequestOutcome = "unknown" | "already-closed" | "journaled";
@@ -180,10 +176,11 @@ export function handlePullRequestClosed(
           by: event.by,
           // Unverified (an older worker, or GitHub left the head out) keeps ADR 0027's behaviour.
           ...(judged?.outcome === "stale" || judged?.outcome === "no_target"
-            ? { doneWithheld: judged.reason }
+            ? { doneWithheld: judged.why }
             : {}),
-          ...(judged?.outcome === "unverified" ? { headNotCompared: judged.reason } : {}),
+          ...(judged?.outcome === "unverified" ? { headNotCompared: judged.why } : {}),
           ...(target?.assessment.risk.status === "high" ? { highRisk: true } : {}),
+          language: config.reporting.language,
         }),
         now,
       });

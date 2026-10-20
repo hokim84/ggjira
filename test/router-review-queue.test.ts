@@ -95,7 +95,7 @@ describe("review queue", () => {
       .filter(
         (comment) =>
           comment.key === key &&
-          (comment.body.includes("Review on hold") || comment.body.includes("Rework requested")),
+          (comment.body.includes("검토 보류") || comment.body.includes("재작업 요청")),
       )
       .map((comment) => comment.body);
 
@@ -165,8 +165,8 @@ describe("review queue", () => {
     await process();
     await process(); // a replay of the journal posts nothing twice
     expect(judgmentComments("KAN-2")).toHaveLength(1);
-    expect(judgmentComments("KAN-2")[0]).toContain("Reason: Waiting on the design review");
-    expect(judgmentComments("KAN-2")[0]).toContain("name declared with the shared admin token");
+    expect(judgmentComments("KAN-2")[0]).toContain("이유: Waiting on the design review");
+    expect(judgmentComments("KAN-2")[0]).toContain("공유 관리자 토큰으로 밝힌 이름");
     expect(judgmentComments("KAN-1")).toEqual([]);
 
     expect((await queue()).map((item) => [item.target.id, item.state])).toEqual([[two, "held"]]);
@@ -244,9 +244,9 @@ describe("review queue", () => {
     expect((await judge(firstTarget, "rework", "The error message is wrong")).statusCode).toBe(201);
     await process();
     const [comment] = judgmentComments("KAN-1");
-    expect(comment).toContain("Rework requested");
-    expect(comment).toContain("GGJIRA does not rerun it by itself");
-    expect(comment).toContain(reRequestHint(testWorkspace));
+    expect(comment).toContain("재작업 요청");
+    expect(comment).toContain("GGJIRA가 스스로 다시 실행하지 않습니다");
+    expect(comment).toContain(reRequestHint(testWorkspace, "implementation", "ko"));
     expect(await queue()).toEqual([]);
     await router.reconcile();
     expect((await router.adminCall("GET", "/jobs?state=queued")).json()).toMatchObject({

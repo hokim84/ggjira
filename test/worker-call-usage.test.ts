@@ -61,6 +61,35 @@ describe("readCodexCallEvent", () => {
     });
   });
 
+  it("takes why a turn failed from turn.failed, unwrapping an API error body", () => {
+    const apiError = readCodexCallEvent(
+      {},
+      {
+        type: "turn.failed",
+        error: {
+          message: JSON.stringify({
+            type: "error",
+            status: 400,
+            error: {
+              type: "invalid_request_error",
+              message:
+                "The 'sonnet' model is not supported when using Codex with a ChatGPT account.",
+            },
+          }),
+        },
+      },
+    );
+    expect(apiError.failure).toBe(
+      "The 'sonnet' model is not supported when using Codex with a ChatGPT account.",
+    );
+    expect(
+      readCodexCallEvent({}, { type: "turn.failed", error: { message: "stream disconnected" } })
+        .failure,
+    ).toBe("stream disconnected");
+    // A warning-level `error` event is not the failure.
+    expect(readCodexCallEvent({}, { type: "error", message: "ignoring a setting" })).toEqual({});
+  });
+
   it("keeps fields a turn did not report absent", () => {
     const info = readCodexCallEvent({}, { type: "turn.completed", usage: { output_tokens: 7 } });
     expect(info.usage).toEqual({ outputTokens: 7, cacheReadIncludedInInput: true });

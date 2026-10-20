@@ -159,7 +159,7 @@ describe("GitHub pull request → Jira done", () => {
     expect(pass.blocked).toEqual([]);
     expect(await status("KAN-1")).toBe(DONE);
     const comments = router.jira.comments.filter((c) => c.key === "KAN-1").map((c) => c.body);
-    expect(comments.at(-1)).toContain("Pull request #12 was merged by reviewer");
+    expect(comments.at(-1)).toContain("PR #12이 머지됐습니다(머지: reviewer)");
     expect(listAudit(router.db, "KAN-1").map((entry) => entry.action)).toContain(
       "pull_request.merged",
     );
@@ -204,8 +204,8 @@ describe("GitHub pull request → Jira done", () => {
 
     expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
-    expect(comment).toContain("GGJIRA did not move the issue");
-    expect(comment).toContain(`is not the reviewed commit ${HEAD.slice(0, 12)}`);
+    expect(comment).toContain("GGJIRA는 이슈를 옮기지 않았습니다");
+    expect(comment).toContain(`검토한 커밋 ${HEAD.slice(0, 12)}와 다릅니다`);
     expect(listReviewRecords(router.db, "KAN-1")[0]).toMatchObject({ outcome: "stale" });
   });
 
@@ -245,7 +245,7 @@ describe("GitHub pull request → Jira done", () => {
       outcome: "stale",
     });
     const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
-    expect(comment).toContain("a newer result exists");
+    expect(comment).toContain("이 이슈에 더 새로운 결과가 있습니다");
     expect(await status("KAN-1")).not.toBe(DONE);
   });
 
@@ -255,7 +255,7 @@ describe("GitHub pull request → Jira done", () => {
     await process();
     expect(await status("KAN-1")).toBe(DONE);
     const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
-    expect(comment).toContain("Head commit not compared");
+    expect(comment).toContain("head 커밋을 비교하지 못했습니다");
     expect(listReviewRecords(router.db, "KAN-1")[0]).toMatchObject({ outcome: "unverified" });
   });
 
@@ -265,7 +265,7 @@ describe("GitHub pull request → Jira done", () => {
     await process();
     expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     const comments = router.jira.comments.filter((c) => c.key === "KAN-1").map((c) => c.body);
-    expect(comments.at(-1)).toContain("closed without merging");
+    expect(comments.at(-1)).toContain("머지되지 않고 닫혔습니다");
   });
 
   it("leaves an issue a human already moved out of review", async () => {

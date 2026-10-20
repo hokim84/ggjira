@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
@@ -138,6 +139,13 @@ describe("Router Jira reporting journal", () => {
     );
   }
 
+  /** The failure log a short failure comment points to (ADR 0048). */
+  function failureLogOf(comment: string): string {
+    const file = comment.match(/^자세한 내용: Router 머신의 (.+)$/m)?.[1];
+    if (!file) throw new Error(`no failure log in: ${comment}`);
+    return file;
+  }
+
   function commentsOn(key: string): string[] {
     return router.jira.comments.filter((comment) => comment.key === key).map((c) => c.body);
   }
@@ -159,7 +167,7 @@ describe("Router Jira reporting journal", () => {
     expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     const comments = commentsOn("KAN-1");
     expect(comments).toHaveLength(1);
-    expect(comments[0]).toContain("Implementation completed.");
+    expect(comments[0]).toContain("구현을 완료했습니다.");
     expect(comments[0]).toContain("- src/a.ts");
     expect(comments[0]).toContain(`attempt: ${envelope.attemptId}`);
     // M4-11/M4-09: what to do comes first; a result whose commit is unknown is reviewed on its own.
@@ -167,9 +175,9 @@ describe("Router Jira reporting journal", () => {
       .split("\n")
       .filter((line) => !line.startsWith("[GGJIRA:"));
     expect([first, second, third]).toEqual([
-      "Implementation completed.",
-      "Needs your individual review before it is accepted:",
-      "- the worker did not report which commit this is (older worker)",
+      "구현을 완료했습니다.",
+      "받아들이기 전에 개별 검토가 필요합니다:",
+      "- 워커가 이 결과의 커밋을 보고하지 않았습니다(이전 버전 워커)",
     ]);
     expect(comments[0]).toContain(`approval: ${getJob(router.db, envelope.jobId)?.approvalId}`);
 
@@ -195,8 +203,15 @@ describe("Router Jira reporting journal", () => {
     const issue = await router.jira.getIssue("KAN-1");
     expect(issue.statusName).toBe(IN_PROGRESS_STATUS);
     expect(issue.labels).toContain("ggjira-failed");
-    expect(commentsOn("KAN-1")[0]).toContain("Failure Reason:\ntests red");
-    expect(commentsOn("KAN-1")[0]).toContain(reRequestHint(testWorkspace));
+    // ADR 0048: the comment says what failed and what to do; the full text is in the log.
+    const comment = commentsOn("KAN-1")[0] ?? "";
+    expect(comment).toContain("실행 실패 [GGJ-999]: 분류되지 않은 오류: tests red.");
+    expect(comment).toContain(reRequestHint(testWorkspace, "implementation", "ko"));
+    expect(comment).not.toContain("Failure Reason:");
+    const log = readFileSync(failureLogOf(comment), "utf-8");
+    expect(log).toContain("Failure Reason:\ntests red");
+    expect(log).toContain("Summary:\nbroke");
+    expect(log).toContain(`ggjira job: ${envelope.jobId}`);
   });
 
   it("never overrides a status a human set while the job ran", async () => {
@@ -415,7 +430,7 @@ describe("Router Jira reporting journal", () => {
         body.includes("[GGJIRA:DECISION-REQUEST]"),
       );
       expect(comment).toContain(`planVersion: plan-${envelope.attemptId}`);
-      expect(comment).toContain(`move it back to "${REQUEST_STATUS}"`);
+      expect(comment).toContain(`"${REQUEST_STATUS}" 상태로 다시 옮기세요`);
       expect(await status("KAN-9")).toBe(PLAN_REVIEW_STATUS);
       expect(router.jira.createdIssues).toEqual([]);
     });
@@ -501,11 +516,11 @@ describe("Router Jira reporting journal", () => {
       await process();
 
       const [comment] = commentsOn("KAN-1");
-      expect(comment).toContain("stopped this implementation before commit and push");
-      expect(comment).toContain("Out of scope: Schema change (the API needs it)");
-      expect(comment).toContain("Question: Add a column to users?");
-      expect(comment).toContain("Impact: A migration is outside this ticket's scope.");
-      expect(comment).toContain(`move the issue to "${REQUEST_STATUS}" to plan it again`);
+      expect(comment).toContain("이 구현을 커밋·push 전에 멈췄습니다");
+      expect(comment).toContain("범위 밖: Schema change(the API needs it)");
+      expect(comment).toContain("질문: Add a column to users?");
+      expect(comment).toContain("영향: A migration is outside this ticket's scope.");
+      expect(comment).toContain(`이슈를 "${REQUEST_STATUS}" 상태로 옮겨 다시 계획하세요`);
       expect(comment).toContain(`- patch: ${evidence.patchFile}`);
       expect(comment).not.toContain("[GGJIRA:DECISION-REQUEST]");
       // It waits where it ran: in progress, under the plan, for the human's decision.
@@ -539,7 +554,7 @@ describe("Router Jira reporting journal", () => {
       await process();
 
       const [comment] = commentsOn("KAN-1");
-      expect(comment).toContain("Changed paths outside Allowed Paths:");
+      expect(comment).toContain("허용 경로 밖에서 바뀐 경로:");
       expect(comment).toContain("- db/schema.sql (added)");
       expect(comment).toContain("- lib/old.ts -> src/new.ts (renamed)");
     });
@@ -550,7 +565,9 @@ describe("Router Jira reporting journal", () => {
       await submit(envelope, { status: "needs_decision", summary: "?" });
       await process();
 
-      expect(commentsOn("KAN-1")[0]).toContain("carried no decision or deviation");
+      expect(commentsOn("KAN-1")[0]).toContain(
+        "실행 실패 [GGJ-403]: 결정이 필요하다고 보고했지만 결정 내용이 없습니다.",
+      );
       expect((await router.jira.getIssue("KAN-1")).labels).toContain("ggjira-failed");
     });
 
@@ -589,9 +606,14 @@ describe("Router Jira reporting journal", () => {
       });
       await process();
 
-      const [comment] = commentsOn("KAN-1");
-      expect(comment).toContain("Uncommitted changes were kept on the worker:");
-      expect(comment).toContain(`- patch: ${evidence.patchFile}`);
+      const comment = commentsOn("KAN-1")[0] ?? "";
+      expect(comment).toContain(
+        "실행 실패 [GGJ-302]: 완료 조건 검증에 실패했습니다: The change works.",
+      );
+      expect(comment).toContain("커밋하지 않은 변경은 워커에 보관했습니다(자세한 내용 참고).");
+      const log = readFileSync(failureLogOf(comment), "utf-8");
+      expect(log).toContain("Uncommitted changes were kept on the worker:");
+      expect(log).toContain(`- patch: ${evidence.patchFile}`);
     });
   });
 
@@ -659,7 +681,7 @@ describe("Router Jira reporting journal", () => {
       ]);
       await process();
       expect(commentsOn("KAN-1").at(-1)).toContain(
-        "An admin (admin) confirmed the run is stopped.",
+        "관리자(admin)가 실행이 멈춘 것을 확인했습니다.",
       );
     });
 

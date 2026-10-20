@@ -8,6 +8,7 @@ import {
   readPlanTaskMetadata,
 } from "../pm/metadata.js";
 import { computeDelegationApprovalIds } from "./approval.js";
+import { COMMENT_TEXT, type PlanRefusal } from "./comment-text.js";
 import type { WorkspaceConfig } from "./config.js";
 import { recordAttention, resolveAttention } from "./db/attention.js";
 import { appendAudit } from "./db/audit.js";
@@ -190,6 +191,7 @@ async function reconcilePlan(
           parentKey: issue.key,
           approvalId: deployment.approvalId,
           taskKeys: tasks.map((task) => task.issue.key),
+          language: deps.config.reporting.language,
         }),
         now,
       });
@@ -226,9 +228,19 @@ async function activate(
     await deps.jira.getIssueProperty(review.issueKey, PLAN_PROPERTY_KEY),
   );
   if (!property.success || property.data.version !== review.planVersion) {
-    const reason = `the plan in Jira (${property.success ? property.data.version : "none"}) is not the reviewed plan ${review.planVersion}`;
-    setPlanDeploymentState(db, recorded.id, "revoked", reason, deps.now());
-    refuse(deps, workspace, review, recorded.approvalId, reason, report);
+    const refusal: PlanRefusal = {
+      kind: "plan_mismatch",
+      planVersion: review.planVersion,
+      jiraVersion: property.success ? property.data.version : null,
+    };
+    setPlanDeploymentState(
+      db,
+      recorded.id,
+      "revoked",
+      COMMENT_TEXT.en.plan.refusal(refusal),
+      deps.now(),
+    );
+    refuse(deps, workspace, review, recorded.approvalId, refusal, report);
     return undefined;
   }
   // The plan's tasks as applied, including tasks a re-plan kept from the plan before.
@@ -255,6 +267,7 @@ async function activate(
               task.issue.statusName !== reviewStatus && task.issue.statusName !== doneStatus,
           )
           .map((task) => ({ issueKey: task.issue.key, statusName: task.issue.statusName })),
+        language: deps.config.reporting.language,
       }),
       now,
     });
@@ -269,15 +282,12 @@ async function activate(
 }
 
 /** Why a move to in progress does not approve the issue's latest plan, if it does not. */
-function refusalOf(review: PlanReviewRow, requestApprovalId: string): string | undefined {
-  if (review.outcome === "needs_decision") {
-    return `its latest plan ${review.planVersion} waits for a decision that has not been answered`;
-  }
-  if (review.outcome === "not_applied") {
-    return `its latest plan ${review.planVersion} could not be applied`;
-  }
+function refusalOf(review: PlanReviewRow, requestApprovalId: string): PlanRefusal | undefined {
+  const { planVersion } = review;
+  if (review.outcome === "needs_decision") return { kind: "needs_decision", planVersion };
+  if (review.outcome === "not_applied") return { kind: "not_applied", planVersion };
   if (review.requestApprovalId !== requestApprovalId) {
-    return `plan ${review.planVersion} answers an earlier request, not the latest one`;
+    return { kind: "earlier_request", planVersion };
   }
   return undefined;
 }
@@ -288,10 +298,12 @@ function refuse(
   workspace: WorkspaceConfig,
   review: PlanReviewRow,
   approvalId: string,
-  reason: string,
+  refusal: PlanRefusal,
   report: SchedulerReport,
 ): void {
   const now = deps.now();
+  // Recorded in English, so an attention item stays one incident whatever the comment language.
+  const reason = COMMENT_TEXT.en.plan.refusal(refusal);
   const run = deps.db.transaction(() => {
     recordAttention(deps.db, {
       issueKey: review.issueKey,
@@ -308,7 +320,11 @@ function refuse(
       jobId: review.jobId,
       attemptId: review.attemptId,
       issueKey: review.issueKey,
-      steps: buildPlanApprovalRefusedSteps({ workspace, reason }),
+      steps: buildPlanApprovalRefusedSteps({
+        workspace,
+        refusal,
+        language: deps.config.reporting.language,
+      }),
       now,
     });
   });

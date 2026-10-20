@@ -245,7 +245,7 @@ describe("RouterDaemon", () => {
 
     await daemon.reportTick();
     expect(jira.comments.map((comment) => comment.body)).toEqual([
-      expect.stringContaining("GGJIRA started planning this request"),
+      expect.stringContaining("GGJIRA가 이 요청의 계획을 시작했습니다"),
     ]);
     expect((await jira.getIssue("KAN-1")).statusName).toBe(REQUEST_STATUS);
     expect(listJobReportSteps(db, envelope.jobId).every((s) => s.status === "applied")).toBe(true);

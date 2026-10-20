@@ -1,5 +1,6 @@
 import type { JobKind } from "../contracts/protocol.js";
 import type { WorkspaceConfig } from "./config.js";
+import type { MessageLanguage } from "./comment-text.js";
 
 /**
  * The workspace workflow's rules (ADR 0044, ADR 0047): delegated by status, always planned first,
@@ -26,8 +27,14 @@ export function decisionTransitionTarget(workspace: WorkspaceConfig, kind: JobKi
 export function reRequestHint(
   workspace: WorkspaceConfig,
   kind: JobKind = "implementation",
+  language: MessageLanguage = "en",
 ): string {
   const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
+  if (language === "ko") {
+    return kind === "implementation"
+      ? `이슈를 "${planReviewStatus}" 상태로 옮겼다가 "${inProgressStatus}" 상태로 옮겨 승인된 계획을 다시 실행하거나, "${requestStatus}" 상태로 옮겨 다시 계획하세요`
+      : `이슈를 "${requestStatus}" 상태 밖으로 옮겼다가 다시 넣으세요`;
+  }
   return kind === "implementation"
     ? `move the issue to "${planReviewStatus}" and then to "${inProgressStatus}" to run the approved plan again, or to "${requestStatus}" to plan it again`
     : `move the issue out of "${requestStatus}" and back into it`;

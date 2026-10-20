@@ -85,7 +85,7 @@ export function resolveRecoveryJob(
         jobId: job.id,
         attemptId: job.currentAttemptId,
         issueKey: job.issueKey,
-        steps: buildRecoveredSteps(job, job.currentAttemptId, { admin: input.actor }),
+        steps: buildRecoveredSteps(config, job, job.currentAttemptId, { admin: input.actor }),
         now: input.now,
       });
     }

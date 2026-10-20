@@ -639,7 +639,7 @@ export class WorkerService {
       jobId: job.id,
       attemptId: attempt.id,
       issueKey: job.issueKey,
-      steps: buildStartSteps(job, workspace, attempt.id),
+      steps: buildStartSteps(job, workspace, attempt.id, this.config.reporting.language),
       now,
     });
   }
@@ -815,7 +815,7 @@ export class WorkerService {
       jobId: job.id,
       attemptId: attempt.id,
       issueKey: job.issueKey,
-      steps: buildRecoveredSteps(job, attempt.id, result),
+      steps: buildRecoveredSteps(this.config, job, attempt.id, result),
       now,
     });
   }

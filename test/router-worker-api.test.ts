@@ -331,7 +331,11 @@ describe("worker API", () => {
       "recovery.stop_confirmed",
     ]);
     const steps = listBatchReportSteps(router.db, `recovered:${envelope.attemptId}`);
-    expect(steps.map((step) => step.kind)).toEqual(["comment"]);
+    // ADR 0048: the worker's summary goes to the failure log; the comment stays short.
+    expect(steps.map((step) => step.kind)).toEqual(["failure-log", "comment"]);
+    expect(steps[1]?.params.body).toMatch(
+      /^AI 실행이 GGJIRA Router와 연결이 끊겼습니다\.\n\[GGJ-501\] 결과가 너무 늦게 도착해 반영하지 않았습니다\(워커 보고: \w+\)\.\n다음: /,
+    );
   });
 
   it("rejects a revoked token with 401", async () => {

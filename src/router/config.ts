@@ -179,6 +179,8 @@ const ReportingConfigSchema = z.object({
   /** Added to an issue whose execution failed or timed out; the issue itself stays in
    *  `inProgressStatus` until a human re-approves it (ADR 0021). */
   failureLabel: z.string().min(1).default("ggjira-failed"),
+  /** The language of failure comments (src/router/failure-codes.ts, ADR 0048). */
+  language: z.enum(["ko", "en"]).default("ko"),
 });
 
 /** How reported LLM plan usage affects assignment (ADR 0029). */

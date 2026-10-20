@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { RouterConfig, WorkerPolicyConfig, WorkspaceConfig } from "../../src/router/config.js";
 
 /** Shared v5 Router test fixtures (scheduler, worker API, leases, runner end-to-end). */
@@ -61,7 +63,8 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
     repositories: [{ id: "repo1" }],
     workspaces: [testWorkspace],
     workers: [],
-    db: { path: "data/router.sqlite3" },
+    // Never the repository's data/: Router writes failure logs next to its database (ADR 0048).
+    db: { path: path.join(tmpdir(), "ggjira-test-router", "router.sqlite3") },
     http: { host: "127.0.0.1", port: 8787 },
     reconciliation: {
       startupFullSyncOnBoot: true,
@@ -70,7 +73,7 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
     },
     execution: { timeoutMs: 60_000 },
     planning: { subtaskIssueType: "Sub-task", maxTasksPerPlan: 10 },
-    reporting: { failureLabel: "ggjira-failed" },
+    reporting: { failureLabel: "ggjira-failed", language: "ko" },
     github: { pollIntervalMs: 300_000 },
     scheduling: { usage: { deprioritizeAtPercent: 90, skipExhausted: true } },
     jev: { enabled: true, model: "jev-latest", timeoutMs: 5_000 },

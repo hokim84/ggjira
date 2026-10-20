@@ -34,6 +34,7 @@ import { reconcileDelegatedPlans } from "./delegation.js";
 import { isLatestReviewConfirmed } from "./db/review-targets.js";
 import { listAttentionItems, recordAttention, resolveAttention } from "./db/attention.js";
 import { SETTLED_BY_NEW_APPROVAL } from "./attention.js";
+import { COMMENT_TEXT } from "./comment-text.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 import {
   checkJobAgainstJira,
@@ -341,17 +342,13 @@ async function holdUnassigned(
   }).some((item) => item.approvalId === approvalId);
   if (!told) {
     const marker = `[GGJIRA:UNASSIGNED:${approvalId}]`;
+    const text = COMMENT_TEXT[deps.config.reporting.language].unassigned;
     try {
       const comments = await deps.jira.getComments(issue.key);
       if (!comments.some((comment) => comment.body.includes(marker))) {
         await deps.jira.addComment(
           issue.key,
-          [
-            marker,
-            "GGJIRA did not start this request: the issue has no assignee.",
-            "Impact: nothing runs; GGJIRA only runs work a person is responsible for.",
-            `Next: assign the issue to that person. GGJIRA starts on its next pass; the issue stays in "${issue.statusName}".`,
-          ].join("\n"),
+          [marker, text.title, text.impact, text.next(issue.statusName)].join("\n"),
         );
       }
     } catch (error) {

@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import type Database from "better-sqlite3";
 import { JiraApiError, StatusNotReachableError, TransitionNotFoundError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
@@ -10,6 +12,7 @@ import {
 } from "../pm/metadata.js";
 import { PlanApplyError, renderParentPlan, renderTaskDescription } from "../pm/plan-render.js";
 import { computeApprovalId, computeDelegationApprovalIds } from "./approval.js";
+import { COMMENT_TEXT } from "./comment-text.js";
 import {
   listAttentionItems,
   normalizeCause,
@@ -30,6 +33,7 @@ import {
 import type {
   CommentParams,
   CreateSubtaskParams,
+  FailureLogParams,
   LabelParams,
   ParentPlanParams,
   PlanCommentParams,
@@ -153,6 +157,18 @@ async function addCommentOnce(
   if (comments.some((comment) => comment.body.includes(marker))) return { status: "applied" };
   await write(() => jira.addComment(issueKey, `${marker}\n${body}`));
   return { status: "applied" };
+}
+
+/** A local file, not Jira: rewriting it is harmless, so a replay just writes it again. A log that
+ *  cannot be written does not hold up the comment; the step says why it was skipped. */
+function writeFailureLog(params: FailureLogParams): StepOutcome {
+  try {
+    mkdirSync(path.dirname(params.path), { recursive: true });
+    writeFileSync(params.path, params.body, "utf-8");
+    return { status: "applied" };
+  } catch (error) {
+    return { status: "skipped", reason: `cannot write ${params.path}: ${errorMessage(error)}` };
+  }
 }
 
 async function runTransition(
@@ -317,11 +333,12 @@ async function runSupersede(
   if (params.startedStatuses.includes(issue.statusName)) {
     return { status: "skipped", reason: `${issue.key} already started ("${issue.statusName}")` };
   }
+  // A step journaled before ADR 0048 carries no comment of its own.
   await addCommentOnce(
     jira,
     issue.key,
     markerFor(step),
-    "Superseded by a replan of the parent issue.",
+    params.comment ?? COMMENT_TEXT.en.plan.superseded,
   );
   if (!issue.labels.includes(params.label)) {
     await write(() => jira.addLabel(issue.key, params.label));
@@ -381,16 +398,20 @@ async function runStep(
     }
     case "supersede":
       return runSupersede(jira, step, step.params as unknown as SupersedeParams);
+    case "failure-log":
+      return writeFailureLog(step.params as unknown as FailureLogParams);
     case "plan-comment": {
       const params = step.params as unknown as PlanCommentParams;
       const created = [...ctx.createdKeys.values()];
+      // A step journaled before ADR 0048 carries no language: it was written in English.
+      const text = (COMMENT_TEXT[params.language] ?? COMMENT_TEXT.en).plan;
       const body = [
-        "Plan applied.",
+        text.applied,
         "",
-        "Summary:",
+        text.summary,
         params.summary,
         ...(created.length > 0
-          ? ["", "Created subtasks:", ...created.map((key) => `- ${key}`)]
+          ? ["", text.createdSubtasks, ...created.map((key) => `- ${key}`)]
           : []),
         ...(params.next?.length ? ["", ...params.next] : []),
         "",
