@@ -131,7 +131,6 @@ export async function retryJob(
       approvalId: check.approval.approvalId,
       inputHash: check.approval.inputHash,
       kind: job.kind,
-      requiredCapabilities: check.approval.requirements.requiredCapabilities,
       now,
     });
     const queued = transitionJobState(deps.db, job.id, "queued", now);

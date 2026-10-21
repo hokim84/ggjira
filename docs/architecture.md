@@ -30,7 +30,7 @@ HTTPS 앞단은 둘 중 하나다. `docker-compose.yml`은 Caddy가 80/443을 �
 | Worker | `src/worker-runtime/` | Router 인증, 작업 수신, 실행, heartbeat, 취소, 결과 spool·재전송 | Jira 호출, Router DB 접근(`test/worker-runtime-no-jira.test.ts`) |
 | 실행 구성요소 | `src/worker/` | provider(Claude Code·Codex), 프로세스 트리 종료, worktree, 검증 명령 | |
 | 계약 | `src/contracts/` | envelope·결과·API 스키마, job/attempt 상태 머신 | |
-| 공유 순수 로직 | `src/pm/`, `src/issue/` | 계획 스키마·메타데이터·렌더링·프롬프트, 요구 capability 파싱·매칭 | I/O |
+| 공유 순수 로직 | `src/pm/`, `src/issue/` | 계획 스키마·메타데이터·렌더링·프롬프트, 실행 계약·입력 해시 | I/O |
 
 Jira는 업무 상태와 인간 승인의 기준이다. SQLite는 job·attempt·임대·보고 상태의 기준이다.
 Assignee는 인간 책임자이며, Router는 이를 워커 계정으로 바꾸지 않는다.
@@ -62,15 +62,15 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
    포함하지 않는다. 계획은 GGJIRA 관리 블록을 제외한다. 번호 답변은 해시 대신 별도 새 요청으로 식별한다.
    v1 해시로 찍힌 job은 입력이 바뀐 것으로 본다. 구현 중 입력 변경은 취소·승인 보류(`admin_holds`)이며,
    AI 검토 중 입력 변경은 이전 계획 작업을 취소한 뒤 새 요청으로 다시 계획한다.
-3. 실행 계약(ADR 0047): 구현이 따르는 완료 조건·검증·범위·허용 경로·capability·의존성은 사람이 승인한 계획에서
+3. 실행 계약(ADR 0047): 구현이 따르는 완료 조건·검증·범위·허용 경로·의존성은 사람이 승인한 계획에서
    온다(`src/pm/contract.ts`). Router가 저장한 계획 결과(`plan_reviews` → `results`)를 읽고, 설명에 렌더링한 절은
    다시 파싱하지 않는다. 하위 작업은 그 작업을 정의한 계획에서, 의존성은 Router가 생성 시 기록한
    `ggjira.plan-task`의 이슈 키에서 읽는다. 계획 요청에는 계약이 없다.
-4. `RuleDecisionProvider`: 인간 Assignee, 계획 버전(부모의 현재 계획일 때만), 의존성, capability, 실행-Agent
+4. `RuleDecisionProvider`: 인간 Assignee, 계획 버전(부모의 현재 계획일 때만), 의존성, 실행-Agent
    필드 고정을 본다. 결과는 `planning | implementation | wait | human | ignore`다. 완료 조건이나 검증이 빈 계획은
    애초에 적용되지 않으므로 구현 단계의 계약 보류는 없다.
 5. 배정: queued job을 생성 순서대로 처리한다. 조건은 관리자 정책(`workers[]`)과 워커가 보고한
-   capability·저장소의 교집합이다. 워커당 동시 1개다. 후보는 LLM 플랜 여유가 많은 순, 그다음 가장 오래
+   저장소의 교집합이다. 워커당 동시 1개다. 후보는 LLM 플랜 여유가 많은 순, 그다음 가장 오래
    배정받지 않은 순이다. 리셋 전 100%인 한도 창이 있는 워커는 건너뛴다(ADR 0029,
    `scheduling.usage`). `jobs/next`에서는 요청한 워커만 받을 수 있고, 여유가 더 많은 유휴 워커가
    있으면 양보한다.
@@ -78,7 +78,20 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 7. Jev 관찰 평가(ADR 0030): `TYPESAFE_API_KEY`가 있으면 `assess` 루프가 새 job마다 모델 등급과
    준비 상태를 Jev에 묻고 `job_assessments`에 기록한다. 아직 어떤 결정에도 쓰지 않는다.
 
-### 위임과 계획 승인 (ADR 0044, `src/router/delegation.ts`)
+### 자식 승인과 부모 완료 평가 (ADR 0051)
+
+Migration 17 이후 새 요청은 생명주기 v2다. 유효한 계획은 최소 1개의 대기 자식을 게시하고,
+부모는 requestStatus에 유지한다. 자식의 수동 inProgressStatus 진입만 해당 계약을 승인한다.
+부모 직접 구현과 자동 자식 시작은 v2에서 사용하지 않는다. 모든 필수 자식의 완료와 최신 검토 head에
+일치하는 PR 병합 커밋을 확인하면 quality_review 작업을 생성한다. Worker는 fetch한 불변 커밋에서
+신뢰된 검증과 읽기 전용 분석을 수행한다. 후보의 Jira 번호 판단·필수 개선·최신성 재검증이 끝나야
+부모를 reviewStatus로 옮긴다. 부모 최종 완료는 사람의 판단이다.
+
+quality_cycles는 평가 대상·정책·실행 결과를, quality_decisions는 담당자·소스 댓글·사유를,
+plan_extensions는 개선 계약과 채택 근거를 보존한다. 수정은 별도 자식에서만 실행한다.
+진행 요약은 부모 관리 영역과 read-only UI에 표시한다. 자세한 정책은 방향 문서와 ADR 0051을 따른다.
+
+### 기존 v1 위임과 계획 승인 (ADR 0044, `src/router/delegation.ts`)
 
 1. 위임: `requestStatus`(AI 검토) 진입, 제목·설명 변경, 담당자의 선택지 번호 답변 또는 실패 후 `재시도` 댓글이
    새 계획 요청이다(ADR 0050). migration 16의 `planning_requests`에 진입 ID·입력 해시·원문 스냅샷·답변·소스 댓글을
@@ -116,7 +129,8 @@ Worker                                   Router (SQLite)
   spool → jobs/{id}/result ──────────▶   결과 저장 + 보고 단계 기록(한 트랜잭션)
 ```
 
-프로토콜 2(ADR 0036): 구현 envelope는 승인된 범위 계약(`executionContract`)을 담는다. 구현 워커는
+프로토콜 4(ADR 0051, 0052)는 기존 구현 계약에 `integration`, `qualityContext`, `quality`와 `quality_review`를 추가한다.
+Router와 Worker는 버전 불일치를 실행 전에 거절한다. 구현 envelope는 승인된 범위 계약(`executionContract`)을 담는다. 구현 워커는
 provider의 최종 구조화 응답(`ImplementationReport`: outcome, 이탈, 결정, acceptance별 검증)을 받고, 커밋
 전에 변경 경로를 `allowedPaths`와 대조한다. 결정 필요·의미상 이탈·경로 이탈이면 commit·push·PR 없이
 patch와 worktree를 남기고 `needs_decision`으로 보고한다. 보고를 읽을 수 없거나 검증 근거가 없거나 실패한
@@ -187,7 +201,7 @@ result 저장 ─▶ [<resultId>]         구현 성공: 댓글 → 실패 라�
 
 ## 워커 시작 (`worker start`, ADR 0025)
 
-`workers/register` 응답에는 워커 프로필(허용 capabilities, providerId, 저장소 id·`cloneUrl`·`baseBranch`)이
+`workers/register` 응답에는 워커 프로필(providerId, 저장소 id·`cloneUrl`·`baseBranch`)이
 함께 온다. `worker start`(`src/worker-runtime/start.ts`)는 처음 실행될 때 터미널에서 Router 주소, LLM CLI,
 페어링 코드, 저장소 폴더를 차례로 묻고 이 프로필로 워커 설정을 쓴다. `cloneUrl`이 있는 저장소는
 `<dataDir>/repos/<id>`에 clone하고 바로 실행한다. Router는 URL만 주고, 로컬 경로와 검증 명령은 워커가 정한다. 성공한 작업 브랜치는 워커 설정의 `pushRemote`(기본 `origin`)에 push하고,

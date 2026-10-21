@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { JobResultSchema } from "../src/contracts/envelope.js";
+import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import {
   IMPLEMENTATION_REPORT_JSON_SCHEMA,
   ImplementationReportSchema,
 } from "../src/contracts/implementation.js";
 import { readImplementationReport } from "../src/worker-runtime/executor.js";
-import { compareJsonSchema, type JsonNode } from "./helpers/json-schema-parity.js";
+import { type JsonNode, compareJsonSchema } from "./helpers/json-schema-parity.js";
 
 const decision = {
   question: "Add a column to the users table?",
@@ -54,7 +55,7 @@ describe("ImplementationReportSchema", () => {
 describe("results from a protocol-2 worker before M4 (T14)", () => {
   it("still parse: no git, no execution, no risks — read as unknown, never invented", () => {
     const parsed = JobResultSchema.parse({
-      protocolVersion: 2,
+      protocolVersion: PROTOCOL_VERSION,
       jobId: "job-1",
       attemptId: "attempt-1",
       resultId: "result-1",

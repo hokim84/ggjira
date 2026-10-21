@@ -13,20 +13,23 @@ import type { WorkspaceConfig } from "./config.js";
 import { recordAttention, resolveAttention } from "./db/attention.js";
 import { appendAudit } from "./db/audit.js";
 import { getApprovalHoldActor } from "./db/holds.js";
-import { hasSucceededJobForApproval, type JobRow } from "./db/jobs.js";
+import { type JobRow, hasSucceededJobForApproval } from "./db/jobs.js";
 import {
+  type PlanDeploymentRow,
+  type PlanReviewRow,
   activatePlanDeployment,
   closePlanReview,
   getPlanDeployment,
   listLivePlanDeployments,
   listOpenPlanReviews,
-  type PlanDeploymentRow,
-  type PlanReviewRow,
   recordPlanDeployment,
   setPlanDeploymentState,
 } from "./db/plan-delegation.js";
 import { insertReportBatch, isReportStepSettled, listBatchReportSteps } from "./db/report-steps.js";
 import { isLatestReviewConfirmed } from "./db/review-targets.js";
+import { lifecycleVersion } from "./lifecycle.js";
+import { latestPlanningRequest, planningFingerprint } from "./planning-requests.js";
+import { latestQualityCycle, reconcileQualityReview } from "./quality-review.js";
 import {
   buildPlanApprovalRefusedSteps,
   buildPlanCompletedSteps,
@@ -38,7 +41,6 @@ import {
 } from "./report-journal.js";
 import type { SchedulerDeps, SchedulerReport } from "./scheduler.js";
 import { isDependencyResolved } from "./workflow-mode.js";
-import { latestPlanningRequest, planningFingerprint } from "./planning-requests.js";
 
 /**
  * The plan half of the reconcile pass (ADR 0044). A plan Router applied waits for a
@@ -82,6 +84,78 @@ async function reconcilePlan(
     throw error;
   }
 
+  if (lifecycleVersion(db, review) === 2) {
+    const recorded = getPlanDeployment(db, issue.key, review.requestApprovalId);
+    const cycle = recorded && latestQualityCycle(db, recorded.id);
+    if (
+      issue.statusName === workspace.workflow.reviewStatus &&
+      cycle?.state === "passed" &&
+      recorded
+    ) {
+      setPlanDeploymentState(db, recorded.id, "completed", "quality review passed", now);
+      closePlanReview(db, review.id, "quality review passed", now);
+      return;
+    }
+    if (issue.statusName !== requestStatus) {
+      if (doneStatus && issue.statusName === doneStatus)
+        recordAttention(db, {
+          issueKey: issue.key,
+          approvalId: review.requestApprovalId,
+          kind: "review_required",
+          cause: "parent closed before quality gate",
+          severity: "immediate",
+          reason:
+            "부모가 평가 통과 전에 수동 완료되었습니다. 완료 상태는 유지하지만 검증 완료로 기록하지 않습니다.",
+          evidence: { planVersion: review.planVersion, cycle: cycle?.state ?? "not evaluated" },
+          now,
+        });
+      endLiveDeployments(db, issue.key, "parent delegation withdrawn before quality gate", now);
+      closePlanReview(db, review.id, "parent delegation withdrawn before quality gate", now);
+      return;
+    }
+    const request = latestPlanningRequest(db, issue.key);
+    if (
+      request?.id !== review.requestApprovalId ||
+      !request.ready_history ||
+      review.outcome !== "planned"
+    )
+      return;
+    const metadata = PlanMetadataSchema.safeParse(
+      await deps.jira.getIssueProperty(issue.key, PLAN_PROPERTY_KEY),
+    );
+    if (
+      !metadata.success ||
+      metadata.data.version !== review.planVersion ||
+      !metadata.data.taskIds.length
+    )
+      return;
+    const deployment =
+      recorded ??
+      recordPlanDeployment(db, {
+        issueKey: issue.key,
+        planReviewId: review.id,
+        planVersion: review.planVersion,
+        approvalId: review.requestApprovalId,
+        taskIds: metadata.data.taskIds,
+        state: "active",
+        now,
+      }).row;
+    if (deployment.state !== "active" || getApprovalHoldActor(db, issue.key, deployment.approvalId))
+      return;
+    const tasks = await findPlanTasks(deps, issue.key, deployment);
+    for (const task of tasks)
+      if (task.issue.statusName === inProgressStatus) await reconcile(task.issue);
+    await reconcileQualityReview(
+      deps,
+      workspace,
+      issue,
+      review,
+      deployment,
+      tasks.map((task) => task.issue),
+      report,
+    );
+    return;
+  }
   if (doneStatus && issue.statusName === doneStatus) {
     endLiveDeployments(db, issue.key, `${issue.key} reached "${doneStatus}"`, now);
     closePlanReview(db, review.id, `the issue reached "${doneStatus}"`, now);

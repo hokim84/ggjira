@@ -41,8 +41,6 @@ describe("loadWorkerConfig", () => {
       validateCommand: null,
       createPullRequest: false,
     });
-    expect(config.capabilities).toEqual([]);
-    expect(config.backends).toEqual([]);
     expect(config.logPath).toBe("data/worker-logs");
   });
 

@@ -18,7 +18,6 @@ function task(overrides: Partial<PlanTask> = {}): PlanTask {
     acceptance: ["GET /inventory returns the items", "Unknown ids return 404"],
     dependencies: ["KAN-7"],
     constraints: ["No schema change"],
-    requiredCapabilities: ["programming"],
     suggestedExecutionStrategy: "Reuse the existing repository layer",
     inScope: ["Read endpoint"],
     outOfScope: ["Write endpoints", "Changing the data model"],
@@ -37,7 +36,6 @@ describe("the contract a run is held to comes from the approved plan (ADR 0047)"
       acceptanceCriteria: planned.acceptance,
       dependencies: ["KAN-7", "KAN-12"],
       constraints: planned.constraints,
-      requiredCapabilities: planned.requiredCapabilities,
       suggestedExecutionStrategy: planned.suggestedExecutionStrategy,
       verification: planned.verification,
       inScope: planned.inScope,
@@ -45,12 +43,6 @@ describe("the contract a run is held to comes from the approved plan (ADR 0047)"
       affectedAreas: planned.affectedAreas,
       allowedPaths: planned.allowedPaths,
     });
-  });
-
-  it("defaults a task without capabilities to programming, as its Jira rendering says", () => {
-    expect(
-      planTaskRequirements(task({ requiredCapabilities: undefined }), []).requiredCapabilities,
-    ).toEqual(["programming"]);
   });
 
   it("takes the parent's own contract from a plan without tasks", () => {
@@ -61,7 +53,6 @@ describe("the contract a run is held to comes from the approved plan (ADR 0047)"
       verification: ["Open the settings page"],
       inScope: ["Button label"],
       outOfScope: ["Other labels"],
-      requiredCapabilities: ["Programming"],
     });
     expect(parentPlanRequirements(plan, "Button label")).toMatchObject({
       objective: "Button label",
@@ -69,7 +60,6 @@ describe("the contract a run is held to comes from the approved plan (ADR 0047)"
       verification: ["Open the settings page"],
       inScope: ["Button label"],
       outOfScope: ["Other labels"],
-      requiredCapabilities: ["programming"],
     });
   });
 
@@ -77,7 +67,6 @@ describe("the contract a run is held to comes from the approved plan (ADR 0047)"
     const single = PlanSchema.parse({
       needsDecision: false,
       summary: "s",
-      requiredCapabilities: ["programming"],
       verification: ["npm test"],
     });
     expect(missingContracts(single)).toEqual(["the plan has no acceptance criteria"]);
@@ -98,7 +87,6 @@ describe("the contract a run is held to comes from the approved plan (ADR 0047)"
       objective: "Fix the button label",
       acceptanceCriteria: ["The button reads Save"],
       verification: ["Open the settings page"],
-      requiredCapabilities: ["programming"],
     });
     const description = renderParentPlan(
       { summary: "Button label", description: "Please fix the typo on the settings page." },
@@ -110,13 +98,12 @@ describe("the contract a run is held to comes from the approved plan (ADR 0047)"
 });
 
 describe("a single-outcome plan", () => {
-  it("is valid with no subtasks when it records the parent's own capabilities", () => {
+  it("is valid with no subtasks when it records the parent's own contract", () => {
     const parsed = PlanSchema.safeParse({
       needsDecision: false,
       summary: "Wording change",
       acceptanceCriteria: ["Label reads Save"],
       verification: ["Open the page"],
-      requiredCapabilities: ["programming"],
       tasks: [],
     });
     expect(parsed.success).toBe(true);

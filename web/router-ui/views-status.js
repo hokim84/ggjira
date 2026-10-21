@@ -329,12 +329,6 @@ export function renderWorkers(root, ctx) {
       autocomplete: "off",
       spellcheck: "false",
     });
-    const capsInput = h("input", {
-      type: "text",
-      id: "new-worker-caps",
-      value: "programming, testing",
-      autocomplete: "off",
-    });
     const repoBoxes = repositories.map((repo, i) =>
       h(
         "label",
@@ -353,13 +347,6 @@ export function renderWorkers(root, ctx) {
         "div",
         { class: "grid" },
         h("div", { class: "field" }, h("label", { for: "new-worker-id" }, "workerId"), idInput),
-        h(
-          "div",
-          { class: "field" },
-          h("label", { for: "new-worker-caps" }, "허용 capabilities"),
-          capsInput,
-          h("small", { class: "hint" }, "쉼표로 구분"),
-        ),
       ),
       h(
         "fieldset",
@@ -385,10 +372,6 @@ export function renderWorkers(root, ctx) {
       clear(formMessage);
       const body = {
         workerId: idInput.value.trim(),
-        allowedCapabilities: capsInput.value
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
         allowedRepositoryIds: repoBoxes
           .map((label) => label.querySelector("input"))
           .filter((input) => input.checked)
@@ -513,8 +496,6 @@ export function renderWorkers(root, ctx) {
             ? `${worker.activeAttempt.jobId} (${worker.activeAttempt.state})`
             : "없음",
         ),
-        h("dt", {}, "capabilities"),
-        h("dd", {}, tags(worker.reportedCapabilities)),
         h("dt", {}, "저장소"),
         h("dd", {}, repositories(worker.reportedRepositoryIds, worker.repositoryPaths || {})),
         h("dt", {}, "LLM 사용량"),

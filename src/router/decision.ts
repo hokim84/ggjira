@@ -1,4 +1,3 @@
-import { unknownCapabilities } from "../issue/capability.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import type { JiraIssue } from "../jira/types.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
@@ -44,7 +43,7 @@ export class RuleDecisionProvider implements DecisionProvider {
   constructor(private readonly executionAgent?: ExecutionAgentFieldConfig) {}
 
   decide(context: RouteContext): RouteResult {
-    const { issue, requirements, planTask, workspace, unresolvedDependencies } = context;
+    const { issue, planTask, workspace, unresolvedDependencies } = context;
 
     if (!issue.assigneeAccountId) {
       return { target: "human", reason: `${issue.key} has no human assignee` };
@@ -61,14 +60,6 @@ export class RuleDecisionProvider implements DecisionProvider {
       return {
         target: "wait",
         reason: `${issue.key} is waiting on unresolved dependencies: ${unresolvedDependencies.join(", ")}`,
-      };
-    }
-
-    const unknown = unknownCapabilities(requirements.requiredCapabilities);
-    if (unknown.length > 0) {
-      return {
-        target: "human",
-        reason: `${issue.key} requires unknown capabilities: ${unknown.join(", ")}`,
       };
     }
 
@@ -92,7 +83,6 @@ export class RuleDecisionProvider implements DecisionProvider {
       target,
       workspaceId: workspace.id,
       repositoryId: workspace.repositoryId,
-      requiredCapabilities: requirements.requiredCapabilities,
       reason: `${issue.key} is approved and ready to dispatch`,
       ...(pinnedWorkerId ? { pinnedWorkerId } : {}),
     };

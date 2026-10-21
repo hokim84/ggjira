@@ -1,10 +1,10 @@
 import path from "node:path";
 import type { JobResult } from "../contracts/envelope.js";
+import { missingContracts } from "../pm/contract.js";
 import {
   renderDecisionRequest,
   renderImplementationDecisionRequest,
 } from "../pm/decision-render.js";
-import { missingContracts } from "../pm/contract.js";
 import {
   PlanApplyError,
   type PlanTask,
@@ -14,15 +14,15 @@ import {
   validateTaskGraph,
 } from "../pm/plan-render.js";
 import type { Plan } from "../pm/plan.js";
-import type { RouterConfig, WorkspaceConfig } from "./config.js";
-import type { JobRow } from "./db/jobs.js";
-import type { NewReportStep } from "./db/report-steps.js";
 import {
   COMMENT_TEXT,
   type MergeWhy,
   type MessageLanguage,
   type PlanRefusal,
 } from "./comment-text.js";
+import type { RouterConfig, WorkspaceConfig } from "./config.js";
+import type { JobRow } from "./db/jobs.js";
+import type { NewReportStep } from "./db/report-steps.js";
 import { type FailureMatch, failureMessage, matchFailure } from "./failure-codes.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import type { ReviewAssessment } from "./review-gate.js";
@@ -61,6 +61,16 @@ export interface TransitionParams {
  */
 export type ApprovalRule =
   | {
+      kind: "quality";
+      cycleId: string;
+      planVersion: string;
+      requestId: string;
+      inputHash: string;
+      tasks: { key: string; resultId: string }[];
+      baseBranch: string;
+      taskStatus: string;
+    }
+  | {
       kind: "plan-approval";
       issueKey: string;
       requestStatus: string;
@@ -89,6 +99,7 @@ export interface ParentPlanParams {
 }
 
 export interface CreateSubtaskParams {
+  standalone?: boolean;
   taskId: string;
   projectKey: string;
   parentKey: string;
@@ -137,6 +148,7 @@ export interface PlanCommentParams {
 }
 
 export type ReportStepSpec =
+  | { kind: "children-ready"; params: { version: string; inProgressStatus: string } }
   | { kind: "transition"; params: TransitionParams }
   | { kind: "comment"; params: CommentParams }
   | { kind: "add-label"; params: LabelParams }
@@ -633,6 +645,42 @@ function successComment(input: ResultJournalInput): string {
 
 /** Throws `PlanApplyError` for a plan Router must not apply (the v4 `applyPlan` checks). */
 function validatePlan(input: ResultJournalInput, plan: Plan): void {
+  if (input.snapshot?.planning?.lifecycleVersion === 2 && !plan.needsDecision) {
+    if (plan.tasks.length + plan.keepTaskKeys.length < 1)
+      throw new PlanApplyError(
+        "Every implementation needs at least one subtask; the parent only coordinates",
+      );
+    if (!plan.acceptanceCriteria?.length || !plan.verification.length)
+      throw new PlanApplyError(
+        "Parent acceptanceCriteria and integration verification are required",
+      );
+    const existing = input.snapshot.planning.existingSubtasks;
+    const tracked = input.snapshot.planning.existingTaskContracts ?? [];
+    const keptIds = plan.keepTaskKeys.map(
+      (key) => tracked.find((task) => task.issueKey === key)?.taskId,
+    );
+    if (keptIds.some((id) => !id))
+      throw new PlanApplyError("Only Router-tracked children may be kept");
+    const allIds = [...planTaskIds(plan), ...keptIds];
+    if (new Set(allIds).size !== allIds.length)
+      throw new PlanApplyError("New and kept task IDs must be unique together");
+    const started = [
+      input.workspace.workflow.inProgressStatus,
+      input.workspace.workflow.reviewStatus,
+      input.workspace.workflow.doneStatus,
+    ];
+    if (
+      existing.some(
+        (task) =>
+          tracked.some((identity) => identity.issueKey === task.key) &&
+          started.includes(task.statusName) &&
+          !plan.keepTaskKeys.includes(task.key),
+      )
+    )
+      throw new PlanApplyError("A replan must preserve started and completed tasks explicitly");
+    if (plan.keepTaskKeys.some((key) => !existing.some((task) => task.key === key)))
+      throw new PlanApplyError("keepTaskKeys must name existing children");
+  }
   if (plan.tasks.length > input.config.planning.maxTasksPerPlan) {
     throw new PlanApplyError(
       `Plan has ${plan.tasks.length} tasks, exceeding planning.maxTasksPerPlan (${input.config.planning.maxTasksPerPlan})`,
@@ -715,6 +763,11 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
     params: { version: planVersion, taskIds, ...(decisionId ? { decisionId } : {}) },
   });
   for (const subtask of snapshot?.planning?.existingSubtasks ?? []) {
+    if (
+      snapshot?.planning?.lifecycleVersion === 2 &&
+      !snapshot.planning.existingTaskContracts?.some((task) => task.issueKey === subtask.key)
+    )
+      continue;
     if (keep.has(subtask.key)) continue;
     steps.push({
       kind: "supersede",
@@ -732,12 +785,23 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
       params: {
         summary: plan.summary,
         signature: signature(job, input.attemptId),
-        next: planReviewNext(workspace, plan.tasks.length > 0, config.reporting.language),
+        next:
+          snapshot?.planning?.lifecycleVersion === 2
+            ? [
+                "부모는 AI 검토에 유지합니다. 실행할 자식을 작업 중으로 옮기면 해당 작업만 승인됩니다.",
+                "모든 필수 작업 완료·통합 후 자동 평가하고 결과 검토로 이동합니다.",
+              ]
+            : planReviewNext(workspace, plan.tasks.length > 0, config.reporting.language),
         language: config.reporting.language,
       },
     },
     { kind: "remove-label", params: { label: config.reporting.failureLabel } },
   );
+  if (snapshot?.planning?.lifecycleVersion === 2)
+    steps.push({
+      kind: "children-ready",
+      params: { version: planVersion, inProgressStatus: workspace.workflow.inProgressStatus },
+    });
   return steps;
 }
 

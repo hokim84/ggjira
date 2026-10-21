@@ -124,7 +124,6 @@ export interface AdminWorkerView {
   lastHeartbeatAt: string | null;
   /** Could be handed a job right now (session, fresh heartbeat, enabled, not revoked). */
   online: boolean;
-  reportedCapabilities: string[];
   reportedRepositoryIds: string[];
   /** repositoryId → local path on the worker machine (display only). */
   repositoryPaths: Record<string, string>;
@@ -336,7 +335,6 @@ export class AdminService {
         revokedAt: row?.revokedAt ?? null,
         lastHeartbeatAt: row?.lastHeartbeatAt ?? null,
         online: row ? isWorkerDispatchable(row, this.config, now) : false,
-        reportedCapabilities: row?.reportedCapabilities ?? [],
         reportedRepositoryIds: row?.reportedRepositoryIds ?? [],
         repositoryPaths: row?.reportedRepositoryPaths ?? {},
         activeAttempt: active
@@ -651,7 +649,6 @@ export class AdminService {
         ...workers,
         {
           workerId: input.workerId,
-          allowedCapabilities: input.allowedCapabilities,
           allowedRepositoryIds: input.allowedRepositoryIds,
           ...(input.providerId ? { providerId: input.providerId } : {}),
         },

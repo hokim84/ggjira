@@ -156,7 +156,6 @@ export function routerConfigTemplate(): Record<string, unknown> {
     workers: [
       {
         workerId: "worker-1",
-        allowedCapabilities: ["programming", "testing"],
         allowedRepositoryIds: ["main-repo"],
         providerId: "default",
       },

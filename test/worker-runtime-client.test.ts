@@ -88,7 +88,7 @@ describe("RouterClient", () => {
       .heartbeat({
         sessionId: "s",
         workerId: "w",
-        availability: { capabilities: [], repositoryIds: [], busy: false },
+        availability: { repositoryIds: [], busy: false },
       })
       .catch((caught: unknown) => caught);
 

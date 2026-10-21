@@ -2,22 +2,22 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
 import { COMMENT_TEXT, type MergeWhy } from "./comment-text.js";
 import type { RouterConfig } from "./config.js";
+import { recordAttention, resolveAttention, resolveAttentionIncident } from "./db/attention.js";
 import { appendAudit } from "./db/audit.js";
 import { getJob } from "./db/jobs.js";
 import {
+  type PullRequestRow,
   closePullRequest,
   getPullRequest,
   listOpenPullRequests,
-  type PullRequestRow,
   recordPullRequestCheck,
 } from "./db/pull-requests.js";
 import { insertReportBatch } from "./db/report-steps.js";
-import { recordAttention, resolveAttention, resolveAttentionIncident } from "./db/attention.js";
 import {
-  appendReviewRecord,
-  getReviewTargetForAttempt,
   type ReviewRecordOutcome,
   type ReviewTargetRow,
+  appendReviewRecord,
+  getReviewTargetForAttempt,
 } from "./db/review-targets.js";
 import { buildPullRequestClosedSteps, pullRequestBatchId } from "./report-journal.js";
 
@@ -49,6 +49,8 @@ export interface PullRequestClosed {
   by: string | null;
   /** The pull request's head commit when it closed; `null` when GitHub did not say. */
   headSha: string | null;
+  mergeSha?: string | null;
+  targetBranch?: string | null;
 }
 
 /** The closing of a pull request out of a `pull_request` webhook payload; undefined otherwise. */
@@ -64,6 +66,8 @@ export function parsePullRequestClosed(
       merged?: boolean;
       merged_by?: { login?: string } | null;
       head?: { sha?: string } | null;
+      merge_commit_sha?: string | null;
+      base?: { ref?: string } | null;
     };
     repository?: { full_name?: string };
     sender?: { login?: string };
@@ -78,6 +82,8 @@ export function parsePullRequestClosed(
     merged,
     by: (merged ? pr.merged_by?.login : body.sender?.login) ?? body.sender?.login ?? null,
     headSha: pr.head?.sha ?? null,
+    ...(pr.merge_commit_sha ? { mergeSha: pr.merge_commit_sha } : {}),
+    ...(pr.base?.ref ? { targetBranch: pr.base.ref } : {}),
   };
 }
 
@@ -129,6 +135,9 @@ export function handlePullRequestClosed(
       state: event.merged ? "merged" : "closed",
       by: event.by,
       now,
+      mergeSha: event.mergeSha ?? null,
+      reviewedHead: event.headSha,
+      targetBranch: event.targetBranch ?? null,
     });
     if (!changed) return "already-closed";
     resolveAttentionIncident(db, {
@@ -251,6 +260,8 @@ export async function pollPullRequests(deps: {
           merged: state.merged,
           by: state.by,
           headSha: state.headSha,
+          mergeSha: state.mergeSha ?? null,
+          targetBranch: state.targetBranch ?? null,
         },
         deps.now(),
       );
@@ -311,7 +322,14 @@ async function fetchPullRequestState(
   fetchImpl: FetchLike,
   pr: PullRequestRow,
   token: string | undefined,
-): Promise<{ closed: boolean; merged: boolean; by: string | null; headSha: string | null }> {
+): Promise<{
+  closed: boolean;
+  merged: boolean;
+  by: string | null;
+  headSha: string | null;
+  mergeSha?: string | null;
+  targetBranch?: string | null;
+}> {
   const response = await fetchImpl(`https://api.github.com/repos/${pr.repo}/pulls/${pr.number}`, {
     method: "GET",
     headers: {
@@ -328,6 +346,8 @@ async function fetchPullRequestState(
     merged_at?: string | null;
     merged_by?: { login?: string } | null;
     head?: { sha?: string } | null;
+    merge_commit_sha?: string | null;
+    base?: { ref?: string } | null;
   };
   const merged = body.merged === true || Boolean(body.merged_at);
   return {
@@ -335,5 +355,7 @@ async function fetchPullRequestState(
     merged,
     by: body.merged_by?.login ?? null,
     headSha: body.head?.sha ?? null,
+    mergeSha: body.merge_commit_sha ?? null,
+    targetBranch: body.base?.ref ?? null,
   };
 }

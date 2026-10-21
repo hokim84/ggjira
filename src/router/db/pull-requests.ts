@@ -93,6 +93,9 @@ export function closePullRequest(
     repo: string;
     number: number;
     state: "merged" | "closed";
+    mergeSha?: string | null;
+    reviewedHead?: string | null;
+    targetBranch?: string | null;
     by: string | null;
     now: string;
   },
@@ -100,10 +103,19 @@ export function closePullRequest(
   return (
     db
       .prepare(
-        `UPDATE pull_requests SET state = ?, closed_by = ?, updated_at = ?
+        `UPDATE pull_requests SET state = ?, closed_by = ?, updated_at = ?, merge_sha = ?, reviewed_head = ?, target_branch = ?
          WHERE repo = ? AND number = ? AND state = 'open'`,
       )
-      .run(input.state, input.by, input.now, normalizeRepo(input.repo), input.number).changes === 1
+      .run(
+        input.state,
+        input.by,
+        input.now,
+        input.mergeSha ?? null,
+        input.reviewedHead ?? null,
+        input.targetBranch ?? null,
+        normalizeRepo(input.repo),
+        input.number,
+      ).changes === 1
   );
 }
 

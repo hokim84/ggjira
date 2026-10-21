@@ -7,6 +7,7 @@ import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provi
 import { createWorktree, isGitRepository } from "../worker/worktree.js";
 import type { WorkerRepositoryConfig } from "./config.js";
 import type { ExecutionOutcome } from "./executor.js";
+import type { ExecutionStage } from "./progress.js";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -28,6 +29,7 @@ export async function executePlanningEnvelope(
     logPath: string;
     signal: AbortSignal;
     onUsage?: (usage: UsageReading) => void;
+    onProgress?: (stage: ExecutionStage) => void;
   },
 ): Promise<ExecutionOutcome> {
   const issue = envelope.issueSnapshot;
@@ -61,17 +63,26 @@ export async function executePlanningEnvelope(
 
   let workerResult: WorkerResult;
   try {
+    deps.onProgress?.("agent");
     workerResult = await deps.provider.run(
       {
-        prompt: buildPlanningPrompt({
-          issue,
-          comments: context.comments,
-          existingSubtasks: context.existingSubtasks,
-          ...(context.humanDecision ? { humanDecision: context.humanDecision } : {}),
-        }),
+        prompt:
+          buildPlanningPrompt({
+            issue,
+            comments: context.comments,
+            existingSubtasks: context.existingSubtasks,
+            ...(context.humanDecision ? { humanDecision: context.humanDecision } : {}),
+          }) +
+          (context.existingTaskContracts?.length
+            ? `\nExisting managed task identities (kept keys must not share IDs with new tasks): ${JSON.stringify(context.existingTaskContracts)}`
+            : ""),
         cwd,
         timeoutMs: envelope.timeoutMs,
-        systemPrompt: envelope.systemPrompt,
+        systemPrompt:
+          envelope.systemPrompt +
+          (context.lifecycleVersion === 2
+            ? "\nLifecycle v2: the parent only coordinates. Every implementation requires at least one subtask, even a small request. Never nest subtasks. Include parent acceptanceCriteria and integration verification. Preserve started/completed existing tasks with keepTaskKeys; do not silently replace their contracts. Publishing creates waiting tasks; only a human moving each child to in-progress authorizes it."
+            : ""),
         outputSchema: PLAN_JSON_SCHEMA,
         readOnly: true,
       },

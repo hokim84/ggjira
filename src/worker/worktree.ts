@@ -396,4 +396,28 @@ export function listRepositoryWorktreePaths(repoPath: string): Promise<string[]>
   });
 }
 
+/** Fetch without changing a shared checkout; require every dependency on the selected branch. */
+export async function integrationTarget(
+  repoPath: string,
+  remote: string,
+  baseBranch: string,
+  commits: readonly string[],
+): Promise<string> {
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote) ||
+    baseBranch.startsWith("-") ||
+    !/^[A-Za-z0-9_./-]+$/.test(baseBranch)
+  )
+    throw new Error("invalid integration ref");
+  await runGit(["fetch", "--no-tags", remote, `refs/heads/${baseBranch}`], repoPath, {
+    timeoutMs: 60_000,
+  });
+  const sha = await revParse(repoPath, "FETCH_HEAD");
+  for (const commit of commits) {
+    if (!/^[a-f0-9]{40}$/i.test(commit)) throw new Error("invalid merge commit");
+    await runGit(["merge-base", "--is-ancestor", commit, sha], repoPath);
+  }
+  return sha;
+}
+
 export { GitCommandError };

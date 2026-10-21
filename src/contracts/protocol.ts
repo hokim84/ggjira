@@ -7,8 +7,10 @@
  *
  * 2 (ADR 0036): the envelope carries `executionContract`, and an implementation `needs_decision`
  * result carries `implementation`/`scopeCheck`/`localEvidence` instead of a plan.
+ * 4 (ADR 0052): all workers execute every job kind; no capability fields.
+ * 3 (ADR 0051): child-only lifecycle, Git integration inputs and quality_review results.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 4;
 
-export const JOB_KINDS = ["planning", "implementation"] as const;
+export const JOB_KINDS = ["planning", "implementation", "quality_review"] as const;
 export type JobKind = (typeof JOB_KINDS)[number];

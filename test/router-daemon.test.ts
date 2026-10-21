@@ -229,7 +229,7 @@ describe("RouterDaemon", () => {
     daemon.workerService.heartbeat(worker, {
       sessionId,
       workerId: "worker-1",
-      availability: { capabilities: ["programming"], repositoryIds: ["repo1"], busy: false },
+      availability: { repositoryIds: ["repo1"], busy: false },
     });
     const envelope = await daemon.workerService.nextJob(worker, {
       sessionId,
@@ -334,7 +334,7 @@ describe("backup and restore", () => {
     daemon.workerService.heartbeat(worker, {
       sessionId,
       workerId: "worker-1",
-      availability: { capabilities: ["programming"], repositoryIds: ["repo1"], busy: false },
+      availability: { repositoryIds: ["repo1"], busy: false },
     });
     const envelope = await daemon.workerService.nextJob(worker, {
       sessionId,

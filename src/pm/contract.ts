@@ -1,4 +1,3 @@
-import { normalizeCapabilities } from "../issue/capability.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import type { Plan } from "./plan.js";
 import type { PlanTask } from "./plan-render.js";
@@ -16,7 +15,6 @@ export function planningRequirements(summary: string): IssueRequirements {
     acceptanceCriteria: [],
     dependencies: [],
     constraints: [],
-    requiredCapabilities: [],
     suggestedExecutionStrategy: null,
     verification: [],
     inScope: [],
@@ -33,7 +31,6 @@ export function parentPlanRequirements(plan: Plan, summary: string): IssueRequir
     acceptanceCriteria: plan.acceptanceCriteria ?? [],
     dependencies: plan.dependencies ?? [],
     constraints: plan.constraints ?? [],
-    requiredCapabilities: normalizeCapabilities(plan.requiredCapabilities ?? []),
     suggestedExecutionStrategy: plan.suggestedExecutionStrategy ?? null,
     verification: plan.verification,
     inScope: plan.inScope,
@@ -54,7 +51,6 @@ export function planTaskRequirements(
     acceptanceCriteria: task.acceptance,
     dependencies: [...dependencies],
     constraints: task.constraints ?? [],
-    requiredCapabilities: normalizeCapabilities(task.requiredCapabilities ?? ["programming"]),
     suggestedExecutionStrategy: task.suggestedExecutionStrategy ?? null,
     verification: task.verification,
     inScope: task.inScope,

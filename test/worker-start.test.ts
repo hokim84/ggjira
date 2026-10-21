@@ -108,7 +108,6 @@ describe("workerConfigFromProfile", () => {
         credentialPath: "data/worker-credential.json",
         providerType: "codex",
         profile: {
-          capabilities: ["programming"],
           providerId: "default",
           repositories: [
             { id: "repo1", cloneUrl: "git@github.com:org/repo.git", baseBranch: "dev" },
@@ -123,7 +122,6 @@ describe("workerConfigFromProfile", () => {
       baseBranch: "dev",
       cloneUrl: "git@github.com:org/repo.git",
     });
-    expect(config.capabilities).toEqual(["programming"]);
   });
 });
 
@@ -174,7 +172,6 @@ describe("worker start against a running Router", () => {
   async function addWorker(workerId: string): Promise<string> {
     const added = await router.adminCall("POST", "/workers", {
       workerId,
-      allowedCapabilities: ["programming"],
       allowedRepositoryIds: ["repo1"],
     });
     expect(added.statusCode).toBe(201);

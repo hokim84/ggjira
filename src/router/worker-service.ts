@@ -13,8 +13,8 @@ import type {
   JobsNextRequest,
   WorkerHeartbeatRequest,
   WorkerHeartbeatResponse,
-  WorkerRegisterRequest,
   WorkerProfile,
+  WorkerRegisterRequest,
   WorkerRegisterResponse,
   WorkerSessionRequest,
   WorkerSessionResponse,
@@ -24,11 +24,11 @@ import type {
 import type { AttemptState } from "../contracts/attempt-state.js";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
 import type { JobState } from "../contracts/job-state.js";
+import { inputHashMatches } from "./approval.js";
+import { resultAttention } from "./attention.js";
 import { buildWorkerAvailability, isWorkerDispatchable } from "./availability.js";
 import type { RouterConfig } from "./config.js";
-import { inputHashMatches } from "./approval.js";
 import { getApproval } from "./db/approvals.js";
-import type { ApprovalSnapshot } from "./issue-check.js";
 import {
   type AttemptRow,
   bindAttemptToRequest,
@@ -40,20 +40,20 @@ import {
   setAttemptResultId,
   transitionAttemptState,
 } from "./db/attempts.js";
-import { countEarlierJobsForIssue, getJob, type JobRow, transitionJobState } from "./db/jobs.js";
-import { type CauseCategory, recordExecution } from "./db/execution-records.js";
-import { getApprovalHoldActor, INPUTS_CHANGED_HOLD_ACTOR } from "./db/holds.js";
-import { consumePairingCode, createPairingCode, PairingCodeRejectedError } from "./db/pairing.js";
+import { type AttentionOutcome, recordAttention, resolveAttention } from "./db/attention.js";
 import { appendAudit } from "./db/audit.js";
+import { type CauseCategory, recordExecution } from "./db/execution-records.js";
+import { INPUTS_CHANGED_HOLD_ACTOR, getApprovalHoldActor } from "./db/holds.js";
+import { type JobRow, countEarlierJobsForIssue, getJob, transitionJobState } from "./db/jobs.js";
+import { PairingCodeRejectedError, consumePairingCode, createPairingCode } from "./db/pairing.js";
+import { recordPlanReview } from "./db/plan-delegation.js";
 import { saveProviderUsage } from "./db/provider-usage.js";
 import { recordPullRequest } from "./db/pull-requests.js";
-import { insertReportBatch, type NewReportStep } from "./db/report-steps.js";
-import { recordResult, ResultConflictError } from "./db/results.js";
+import { type NewReportStep, insertReportBatch } from "./db/report-steps.js";
+import { ResultConflictError, recordResult } from "./db/results.js";
 import { recordReviewTarget } from "./db/review-targets.js";
-import { type AttentionOutcome, recordAttention, resolveAttention } from "./db/attention.js";
-import { resultAttention } from "./attention.js";
-import { assessResult } from "./review-gate.js";
 import {
+  type WorkerRow,
   findWorkerByTokenHash,
   getWorker,
   hashWorkerToken,
@@ -61,10 +61,12 @@ import {
   registerWorker,
   startWorkerSession,
   touchWorkerHeartbeat,
-  type WorkerRow,
 } from "./db/workers.js";
+import { planDeploymentAuthorizes } from "./delegation.js";
 import { buildJobEnvelope } from "./envelope.js";
+import type { ApprovalSnapshot } from "./issue-check.js";
 import { expireLeases } from "./leases.js";
+import { recordQualityResult } from "./quality-review.js";
 import {
   buildRecoveredSteps,
   buildResultSteps,
@@ -73,9 +75,8 @@ import {
   recoveredBatchId,
   startBatchId,
 } from "./report-journal.js";
-import { planDeploymentAuthorizes } from "./delegation.js";
-import { recordPlanReview } from "./db/plan-delegation.js";
-import { assignQueuedJobs, LEASE_DURATION_MS } from "./scheduler.js";
+import { assessResult } from "./review-gate.js";
+import { LEASE_DURATION_MS, assignQueuedJobs } from "./scheduler.js";
 
 /** §3 "long polling: 25초". */
 export const LONG_POLL_MS = 25_000;
@@ -211,13 +212,12 @@ export class WorkerService {
     return { workerId, workerToken: token, profile: this.profileFor(workerId) };
   }
 
-  /** The worker's policy as `worker start` needs it: allowed capabilities and repositories (with
+  /** The worker's policy as `worker start` needs it: allowed repositories (with
    *  clone URLs) and the provider id Router will name in its envelopes (ADR 0025). */
   private profileFor(workerId: string): WorkerProfile {
     const policy = this.config.workers.find((entry) => entry.workerId === workerId);
     const repositories = new Map(this.config.repositories.map((repo) => [repo.id, repo]));
     return {
-      capabilities: policy?.allowedCapabilities ?? [],
       providerId: policy?.providerId ?? "default",
       repositories: (policy?.allowedRepositoryIds ?? []).map((id) => {
         const repo = repositories.get(id);
@@ -263,7 +263,6 @@ export class WorkerService {
     expireLeases(this.db, now);
     recordWorkerHeartbeat(this.db, {
       workerId: worker.id,
-      capabilities: request.availability.capabilities,
       repositoryIds: request.availability.repositoryIds,
       now,
     });
@@ -658,6 +657,28 @@ export class WorkerService {
     const snapshot = getApproval(this.db, job.issueKey)?.inputSnapshot as
       | ApprovalSnapshot
       | undefined;
+    if (job.kind === "quality_review") {
+      recordQualityResult(this.db, job.id, result, now);
+      insertReportBatch(this.db, {
+        batchId: result.resultId,
+        resultId: result.resultId,
+        jobId: job.id,
+        attemptId: attempt.id,
+        issueKey: job.issueKey,
+        steps: [
+          {
+            kind: "comment",
+            params: {
+              body: result.quality
+                ? `통합 평가 결과: ${result.quality.summary}\n검증: ${result.quality.verificationPassed ? "통과" : "미통과"}\n후보: ${result.quality.findings.length}개\n대상: ${result.quality.targetSha}`
+                : `평가 미완료: ${result.failureReason ?? result.summary}\n원인 확인 후 ‘재시도’ 댓글을 남기세요.`,
+            },
+          },
+        ],
+        now,
+      });
+      return;
+    }
     if (result.pullRequest && finalState === "succeeded") {
       recordPullRequest(this.db, {
         ...result.pullRequest,
@@ -831,6 +852,13 @@ export class WorkerService {
     const approval = getApproval(this.db, job.issueKey);
     if (!approval || approval.approvalId !== job.approvalId) return false;
     if (!inputHashMatches(job.inputHash, approval.inputHash)) return false;
+    if (job.kind === "quality_review") {
+      return !!this.db
+        .prepare(
+          "SELECT 1 FROM quality_cycles q JOIN plan_deployments d ON d.id=q.deployment_id WHERE q.job_id=? AND q.state='running' AND d.state='active'",
+        )
+        .get(job.id);
+    }
     if (job.kind !== "implementation") return true;
     const snapshot = approval.inputSnapshot as ApprovalSnapshot | null;
     return planDeploymentAuthorizes(this.db, job, snapshot?.planTask?.parentKey ?? null);

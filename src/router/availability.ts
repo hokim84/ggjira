@@ -26,7 +26,6 @@ export function isWorkerDispatchable(
 export function toWorkerAvailability(worker: WorkerRow): WorkerAvailability {
   return {
     workerId: worker.id,
-    capabilities: worker.reportedCapabilities,
     repositoryIds: worker.reportedRepositoryIds,
     lastAssignedAt: worker.lastAssignedAt,
   };

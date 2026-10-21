@@ -89,8 +89,8 @@ export async function computeDelegationApprovalIds(
 /**
  * Hashes everything a worker is told to do (ADR 0035, `src/issue/input-hash.ts`), so the
  * scheduler can detect any edit to the title, description, strategy, scope contract,
- * capabilities, dependencies or plan placement underneath an already-open job
- * (§2 "실행 중 작업 설명·요구 capability·의존성 변경도 취소하고 새 승인을 요구한다").
+ * dependencies or plan placement underneath an already-open job
+ * (§2 "실행 중 작업 설명·의존성 변경도 취소하고 새 승인을 요구한다").
  */
 export function computeInputHash(input: {
   kind: JobKind;

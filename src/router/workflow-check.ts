@@ -35,6 +35,7 @@ export function routerWorkflowHops(workflow: WorkflowStatus): WorkflowHop[] {
   const hops: WorkflowHop[] = [
     { label: "계획 승인(사람)", from: workflow.requestStatus, to: workflow.inProgressStatus },
     { label: "작업 완료", from: workflow.inProgressStatus, to: workflow.reviewStatus },
+    { label: "부모 평가 통과", from: workflow.requestStatus, to: workflow.reviewStatus },
   ];
   if (workflow.doneStatus) {
     hops.push({ label: "PR 머지 후 완료", from: workflow.reviewStatus, to: workflow.doneStatus });

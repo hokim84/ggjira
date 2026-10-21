@@ -6,7 +6,7 @@ import type { Plan, PlanTaskSchema } from "./plan.js";
 /**
  * Pure plan rendering and validation shared by the legacy v4 PM path (`src/pm/apply.ts`) and
  * Router's v5 plan application (`src/router/report-journal.ts`) — docs/router-service-implementation-plan.md
- * §4 "capability·requirements·계획 검증 → 공유 순수 로직으로 분리". No Jira access here.
+ * §4 "requirements·계획 검증 → 공유 순수 로직으로 분리". No Jira access here.
  */
 
 export type PlanTask = z.infer<typeof PlanTaskSchema>;
@@ -49,7 +49,6 @@ export function renderTaskDescription(task: PlanTask): string {
       ...scopeContractSections(task),
       { heading: "Dependencies", items: task.dependencies ?? [] },
       { heading: "Constraints", items: task.constraints ?? [] },
-      { heading: "Required Capabilities", items: task.requiredCapabilities ?? ["programming"] },
     ]),
   ].join("\n");
 }
@@ -126,7 +125,6 @@ export function renderParentPlan(
       ...scopeContractSections(plan),
       { heading: "Dependencies", items: plan.dependencies ?? [] },
       { heading: "Constraints", items: plan.constraints ?? [] },
-      { heading: "Required Capabilities", items: plan.requiredCapabilities ?? [] },
     ]),
     PLAN_END,
   ].join("\n");

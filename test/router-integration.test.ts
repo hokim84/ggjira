@@ -6,25 +6,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkerProviderConfigSchema } from "../src/contracts/provider.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { AdminClient } from "../src/router/admin-client.js";
+import { RouterDaemon } from "../src/router/daemon.js";
 import { openRouterDb } from "../src/router/db/connection.js";
 import { getOpenJobForIssue, listJobs } from "../src/router/db/jobs.js";
-import { RouterDaemon } from "../src/router/daemon.js";
-import type { WorkerRequest, WorkerResult } from "../src/worker/provider.js";
-import { fakeSuccessResult } from "../src/worker/fake.js";
+import { syncPlanningRequest } from "../src/router/planning-requests.js";
 import { RouterClient } from "../src/worker-runtime/client.js";
 import { WorkerConfigSchema } from "../src/worker-runtime/config.js";
 import { pairWorker } from "../src/worker-runtime/ops.js";
 import { WorkerRunner } from "../src/worker-runtime/runner.js";
 import { ResultSpool } from "../src/worker-runtime/spool.js";
+import { fakeSuccessResult } from "../src/worker/fake.js";
+import type { WorkerRequest, WorkerResult } from "../src/worker/provider.js";
+import { legacyLifecycle } from "./helpers/legacy-lifecycle.js";
 import {
-  buildRouterConfig,
   IN_PROGRESS_STATUS,
-  issueDescription,
   PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
   REVIEW_STATUS,
-  singlePlan,
   WORKFLOW_TRANSITIONS,
+  buildRouterConfig,
+  issueDescription,
+  singlePlan,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
@@ -82,6 +84,9 @@ describe("Router with two workers over HTTP", () => {
         WORKFLOW_TRANSITIONS,
       );
     }
+    for (const key of ["KAN-1", "KAN-2", "KAN-3"])
+      await syncPlanningRequest(db, jira, await jira.getIssue(key), REQUEST_STATUS);
+    legacyLifecycle(db);
     daemon = new RouterDaemon({
       db,
       jira,
@@ -135,7 +140,6 @@ describe("Router with two workers over HTTP", () => {
       credentialPath,
       // Plain directories: the executor edits in place, no git needed for the scenario.
       repositories: [{ id: "repo1", path: repoDir }],
-      capabilities: ["programming"],
       providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
       dataDir: path.join(workerDir, "data"),
     });

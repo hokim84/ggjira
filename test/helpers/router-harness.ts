@@ -246,7 +246,7 @@ export class RouterHarness {
       {
         sessionId,
         workerId,
-        availability: { capabilities: ["programming"], repositoryIds: ["repo1"], busy: false },
+        availability: { repositoryIds: ["repo1"], busy: false },
       },
       token,
     );

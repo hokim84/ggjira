@@ -12,15 +12,19 @@ Jira ──Webhook──▶ Router ──▶ SQLite          사람: 이슈를 "
 ```
 
 - **Router**(`ggjira router serve`)만 Jira에 접근한다. 웹훅을 받고 60초마다 보완 조회를 한다. 승인·
-  Assignee·의존성·계획 버전을 확인한 뒤 capability·저장소·가용성이 맞는 워커에 배정한다. 결과는
+  Assignee·의존성·계획 버전을 확인한 뒤 저장소·가용성이 맞는 워커에 배정한다. 결과는
   댓글·라벨·상태 전이로 Jira에 남긴다.
 - **Worker**(`ggjira worker run`)는 Router에만 연결한다. 로컬 저장소와 AI CLI 로그인은 워커가 갖는다.
   Router는 `repositoryId`와 `providerId`만 보내고, 실제 경로·명령은 워커 설정이 정한다.
+  `worker start`·`worker run` 콘솔은 대기, 이슈별 시작·현재 단계·완료와 결과 전송 여부를 한 줄씩 표시한다.
+  긴 작업은 30초마다 경과 시간을 표시하고, 반복 대기 메시지는 생략한다.
 - **Jira Assignee는 결과에 책임지는 사람**이다. AI 실행 중에도 바꾸지 않는다.
 - **모든 위임은 계획부터 시작한다**(ADR 0044, 0047). 워커가 계획을 세우면 Router가 부모 이슈에 계획을
   기록하고 하위 이슈를 만든다. 계획·질문·승인 대기는 모두 "AI 검토"에 머문다. 담당자의 번호 댓글로
   질문에 답하거나 제목·설명을 수정하면 자동으로 다시 계획한다. 실패한 계획은 담당자의 `재시도` 댓글로
-  다시 실행한다. 완성된 계획을 확인하고 사람이 "작업 중"으로 옮겨야 구현이 시작된다(ADR 0050).
+  다시 실행한다. 새 계획은 최소 1개의 대기 자식을 생성하며, 사람이 실행할 자식을 "작업 중"으로 옮겨야
+  해당 작업만 시작된다. 부모는 "AI 검토"에 유지한다. 필수 자식 완료·통합 후 자동 검증·기술부채 평가와
+  후보 판단·개선을 거쳐 부모를 결과 검토로 옮긴다. 최종 완료는 사람이 결정한다(ADR 0051).
   실행은 승인된 계획의 완료 조건·검증 방법·범위를 지킨다. 이슈 설명의 특정 절 이름은 읽지 않는다.
 
 구조와 동작은 [`docs/architecture.md`](./docs/architecture.md), 운영·장애 대응은
@@ -49,13 +53,14 @@ nvm use && npm install        # 워커 머신은 npm run build 후 `node dist/cl
 
 | 설정 키 | 예 | 의미 |
 |---|---|---|
-| `requestStatus` | AI 검토 | 계획·질문·승인 대기. 담당자의 번호 답변과 제목·설명 수정은 자동 재계획 |
-| `inProgressStatus` | 작업 중 | 사람이 AI 검토에서 옮기면 최신 완성 계획을 승인 |
-| `reviewStatus` | 결과 검토 | 구현이 끝나면 Router가 옮김 |
+| `requestStatus` | AI 검토 | 부모의 계획·자식 실행·완료 평가 관리 |
+| `inProgressStatus` | 작업 중 | 사람이 실행할 자식을 옮기면 해당 계약만 승인 |
+| `reviewStatus` | 결과 검토 | 자식 구현 결과 또는 부모 품질 평가 통과 후 Router가 옮김 |
 | `doneStatus` (선택) | 완료 | 워커가 연 PR이 머지되면 Router가 옮김. 의존성은 여기에 와야 풀린다 |
 
-AI 검토 → 작업 중 → 결과 검토(→ 완료)로 가는 전이가 있어야 한다. 필요한 capability는
-계획이 정한다(`requiredCapabilities`). 예전 `planReviewStatus`·`planningStatus`·`needsDecisionStatus`·`mode` 설정은 오류로
+자식은 작업 중 → 결과 검토(→ 완료), 부모는 AI 검토 → 결과 검토 → 수동 완료 전이가 필요하다.
+프로토콜 4이므로 Router와 Worker를 함께 갱신한다. 기존 계획은 기존 생명주기로 마무리한다.
+새 흐름은 Git 통합 근거와 Worker의 `validateCommand`가 필요하다. 가용한 Worker는 계획·구현·완료 평가를 모두 수행한다. 예전 `planReviewStatus`·`planningStatus`·`needsDecisionStatus`·`mode` 설정은 오류로
 거절한다(runbook §36).
 
 ## 2. Router 띄우기
@@ -81,7 +86,7 @@ Windows에서는 `run-all.bat`(Router와 Worker 창을 함께 연다, runbook §
 
 ## 3. Worker 붙이기
 
-1. Router 웹 UI > **워커** > **워커 추가**에서 workerId, capabilities, 저장소를 고른다. 정책이 저장,
+1. Router 웹 UI > **워커** > **워커 추가**에서 workerId, 저장소를 고른다. 정책이 저장,
    적용되고 페어링 코드(10분, 1회용)가 표시된다.
 2. 워커 머신의 ggjira 폴더에서 실행하고, 묻는 대로 답한다(Router 주소, LLM, 페어링 코드, 필요하면
    저장소 폴더).

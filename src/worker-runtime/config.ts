@@ -58,11 +58,6 @@ export const WorkerConfigSchema = z
      *  §3 "발급된 워커 token은 hash만 Router에 저장하고... 워커 token은 별도 로컬 파일"). */
     credentialPath: z.string().min(1),
     repositories: z.array(WorkerRepositorySchema).min(1),
-    /** Human-facing capabilities this worker offers; intersected against Router's
-     *  admin-declared allowlist for this workerId, never trusted alone. */
-    capabilities: z.array(z.string().min(1)).default([]),
-    /** Local execution environments available (filesystem, git, coding-runtime, ...). */
-    backends: z.array(z.string().min(1)).default([]),
     providers: z.array(WorkerProviderConfigSchema).min(1),
     logPath: z.string().min(1).default("data/worker-logs"),
     /** Worker-local state: `<dataDir>/spool` (results awaiting Router's ack) and

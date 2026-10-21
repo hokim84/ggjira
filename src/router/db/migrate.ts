@@ -6,20 +6,21 @@ import {
   GITHUB_STATEMENTS,
   JOB_ASSESSMENT_STATEMENTS,
   PLAN_DELEGATION_STATEMENTS,
-  READINESS_HOLD_CLOSE_STATEMENTS,
   PROVIDER_USAGE_STATEMENTS,
   PULL_REQUEST_CHECK_STATEMENTS,
+  READINESS_HOLD_CLOSE_STATEMENTS,
   READINESS_HOLD_STATEMENTS,
   REPORT_JOURNAL_STATEMENTS,
   REVIEW_TARGET_STATEMENTS,
-  WORKER_REPOSITORY_PATH_STATEMENTS,
   SCHEMA_STATEMENTS,
   WORKER_PROTOCOL_STATEMENTS,
+  WORKER_REPOSITORY_PATH_STATEMENTS,
 } from "./schema.js";
 
 interface Migration {
   version: number;
   description: string;
+  rebuildJobs?: boolean;
   up(db: Database.Database): void;
 }
 
@@ -161,6 +162,70 @@ const MIGRATIONS: readonly Migration[] = [
       ).run(cutoff);
     },
   },
+  {
+    version: 17,
+    description: "versioned child execution and parent quality review",
+    rebuildJobs: true,
+    up(db) {
+      // Rebuild the constrained table without renaming the original: dependent FK targets
+      // remain jobs. The runner disables FK enforcement outside this transaction only.
+      const table = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'")
+        .get() as { sql: string };
+      const indexes = db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='jobs' AND sql IS NOT NULL",
+        )
+        .all() as { sql: string }[];
+      db.exec(
+        table.sql
+          .replace(/CREATE TABLE(?: IF NOT EXISTS)? ["`]?jobs["`]?/i, "CREATE TABLE jobs_new")
+          .replace(
+            "'planning', 'implementation')",
+            "'planning', 'implementation', 'quality_review')",
+          ),
+      );
+      db.exec(
+        "INSERT INTO jobs_new SELECT * FROM jobs; DROP TABLE jobs; ALTER TABLE jobs_new RENAME TO jobs;",
+      );
+      for (const index of indexes) db.exec(index.sql);
+      db.exec(`ALTER TABLE planning_requests ADD COLUMN lifecycle_version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE pull_requests ADD COLUMN merge_sha TEXT;
+        ALTER TABLE pull_requests ADD COLUMN reviewed_head TEXT;
+        ALTER TABLE pull_requests ADD COLUMN target_branch TEXT;
+        CREATE TABLE quality_cycles (
+          id TEXT PRIMARY KEY, deployment_id INTEGER NOT NULL REFERENCES plan_deployments(id),
+          input_key TEXT NOT NULL, job_id TEXT NOT NULL REFERENCES jobs(id),
+          state TEXT NOT NULL, context TEXT NOT NULL, report TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE INDEX quality_cycles_deployment ON quality_cycles(deployment_id);
+        CREATE TABLE child_approval_baselines (
+          parent_key TEXT NOT NULL, plan_version TEXT NOT NULL, task_id TEXT NOT NULL,
+          entry_id TEXT NOT NULL, PRIMARY KEY(parent_key,plan_version,task_id));
+        CREATE TABLE quality_decisions (
+          cycle_id TEXT NOT NULL REFERENCES quality_cycles(id), finding_id TEXT NOT NULL,
+          action INTEGER NOT NULL CHECK(action BETWEEN 1 AND 4), reason TEXT NOT NULL,
+          source_comment_id TEXT NOT NULL, batch_id TEXT, created_at TEXT NOT NULL, actor_id TEXT NOT NULL,
+          source_cycle_id TEXT,
+          PRIMARY KEY(cycle_id, finding_id, source_comment_id));
+        CREATE TABLE plan_extensions (
+          cycle_id TEXT NOT NULL REFERENCES quality_cycles(id), finding_id TEXT NOT NULL,
+          parent_key TEXT NOT NULL, plan_version TEXT NOT NULL, task_id TEXT NOT NULL,
+          task TEXT NOT NULL, source_comment_id TEXT NOT NULL,
+          PRIMARY KEY(cycle_id, finding_id));`);
+      if ((db.pragma("foreign_key_check") as unknown[]).length)
+        throw new Error("quality migration foreign key check failed");
+    },
+  },
+  {
+    version: 18,
+    description: "remove worker capability distinctions",
+    up(db) {
+      db.exec(
+        "ALTER TABLE jobs DROP COLUMN required_capabilities; ALTER TABLE workers DROP COLUMN reported_capabilities;",
+      );
+    },
+  },
 ];
 
 interface MigrationRow {
@@ -187,7 +252,13 @@ export function runMigrations(db: Database.Database): void {
         new Date().toISOString(),
       );
     });
-    apply();
+    const foreignKeys = db.pragma("foreign_keys", { simple: true });
+    if (migration.rebuildJobs) db.pragma("foreign_keys = OFF");
+    try {
+      apply();
+    } finally {
+      if (migration.rebuildJobs) db.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
+    }
   }
 }
 

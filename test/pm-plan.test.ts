@@ -48,7 +48,7 @@ describe("parsePlan", () => {
     expect(() => parsePlan(undefined, "no json here at all")).toThrow(PlanParseError);
   });
 
-  it("rejects empty tasks when the plan neither asks for a decision nor records capabilities", () => {
+  it("rejects empty tasks when the plan neither asks for a decision nor records a parent contract", () => {
     expect(() =>
       parsePlan({ needsDecision: false, summary: "ok", tasks: [], keepTaskKeys: [] }, ""),
     ).toThrow(PlanParseError);

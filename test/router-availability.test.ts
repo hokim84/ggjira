@@ -34,7 +34,6 @@ describe("buildWorkerAvailability", () => {
     expect(buildWorkerAvailability(router.db, router.config, router.clock.now())).toEqual([
       {
         workerId: "worker-1",
-        capabilities: ["programming"],
         repositoryIds: ["repo1"],
         lastAssignedAt: null,
       },

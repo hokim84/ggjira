@@ -132,6 +132,15 @@ async function buildView(
     workspaceId: workspace.id,
     requestStatus: workspace.workflow.requestStatus,
     openJob: job ? { jobId: job.id, kind: job.kind, state: job.state } : null,
-    delegation: await readIssueDelegation(deps, workspace, issue),
+    delegation: await readIssueDelegation(
+      {
+        ...deps,
+        baseBranch:
+          deps.config.repositories.find((repo) => repo.id === workspace.repositoryId)?.baseBranch ??
+          "main",
+      },
+      workspace,
+      issue,
+    ),
   };
 }

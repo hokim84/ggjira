@@ -1,15 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
-import { processReportJournal } from "../src/router/report-processor.js";
+import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { latestPlanningRequest, syncPlanningRequest } from "../src/router/planning-requests.js";
-import { RouterHarness, type RegisteredWorker } from "./helpers/router-harness.js";
+import { processReportJournal } from "../src/router/report-processor.js";
+import { legacyLifecycle } from "./helpers/legacy-lifecycle.js";
 import {
-  REQUEST_STATUS,
   IN_PROGRESS_STATUS,
+  REQUEST_STATUS,
   WORKFLOW_TRANSITIONS,
   singlePlan,
 } from "./helpers/router-fixtures.js";
+import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
 
 describe("single AI review workflow", () => {
   let router: RouterHarness;
@@ -55,6 +57,7 @@ describe("single AI review workflow", () => {
     await router.reconcile();
     const response = await router.next(worker, `single-${++counter}`);
     expect(response.statusCode).toBe(200);
+    legacyLifecycle(router.db);
     const job = response.json() as JobEnvelope;
     const responseStart = await router.jobCall(worker, job.jobId, "start", {
       attemptId: job.attemptId,
@@ -67,7 +70,7 @@ describe("single AI review workflow", () => {
     const response = await router.post(
       `/api/v1/jobs/${job.jobId}/result`,
       {
-        protocolVersion: 2,
+        protocolVersion: PROTOCOL_VERSION,
         jobId: job.jobId,
         attemptId: job.attemptId,
         resultId: `result-${job.attemptId}`,
@@ -155,7 +158,7 @@ describe("single AI review workflow", () => {
     await router.post(
       `/api/v1/jobs/${job.jobId}/result`,
       {
-        protocolVersion: 2,
+        protocolVersion: PROTOCOL_VERSION,
         jobId: job.jobId,
         attemptId: job.attemptId,
         resultId: `result-${job.attemptId}`,

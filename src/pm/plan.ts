@@ -33,7 +33,6 @@ export const PlanTaskSchema = z.object({
   acceptance: z.array(z.string()).default([]),
   dependencies: z.array(z.string()).optional(),
   constraints: z.array(z.string()).optional(),
-  requiredCapabilities: z.array(z.string().min(1)).min(1).optional(),
   suggestedExecutionStrategy: z.string().min(1).optional(),
   ...scopeContractShape(),
 });
@@ -46,7 +45,6 @@ export const PlanSchema = z
     acceptanceCriteria: z.array(z.string()).optional(),
     dependencies: z.array(z.string()).optional(),
     constraints: z.array(z.string()).optional(),
-    requiredCapabilities: z.array(z.string().min(1)).optional(),
     suggestedExecutionStrategy: z.string().min(1).optional(),
     /** The parent's own contract, for a plan that keeps the parent as the executable unit. */
     ...scopeContractShape(),
@@ -63,13 +61,18 @@ export const PlanSchema = z
         message: "decision is required when needsDecision is true",
       });
     }
-    const recordsParentPlan = (plan.requiredCapabilities?.length ?? 0) > 0;
-    if (!plan.needsDecision && plan.tasks.length === 0 && !recordsParentPlan) {
+    const recordsParentPlan = plan.acceptanceCriteria !== undefined || plan.verification.length > 0;
+    if (
+      !plan.needsDecision &&
+      plan.tasks.length === 0 &&
+      plan.keepTaskKeys.length === 0 &&
+      !recordsParentPlan
+    ) {
       ctx.addIssue({
         code: "custom",
         path: ["tasks"],
         message:
-          "tasks must be non-empty when needsDecision is false, unless the plan records the parent's own requiredCapabilities",
+          "tasks must be non-empty when needsDecision is false, unless the plan records the parent's own acceptance criteria and verification",
       });
     }
   });
@@ -102,7 +105,6 @@ export const PLAN_JSON_SCHEMA = {
     "acceptanceCriteria",
     "dependencies",
     "constraints",
-    "requiredCapabilities",
     "suggestedExecutionStrategy",
     "inScope",
     "outOfScope",
@@ -119,7 +121,6 @@ export const PLAN_JSON_SCHEMA = {
     acceptanceCriteria: { type: "array", items: { type: "string" } },
     dependencies: { type: "array", items: { type: "string" } },
     constraints: { type: "array", items: { type: "string" } },
-    requiredCapabilities: { type: "array", items: { type: "string" } },
     suggestedExecutionStrategy: { type: "string" },
     ...SCOPE_CONTRACT_JSON_PROPERTIES,
     tasks: {
@@ -134,7 +135,6 @@ export const PLAN_JSON_SCHEMA = {
           "acceptance",
           "dependencies",
           "constraints",
-          "requiredCapabilities",
           "inScope",
           "outOfScope",
           "affectedAreas",
@@ -148,7 +148,6 @@ export const PLAN_JSON_SCHEMA = {
           acceptance: { type: "array", items: { type: "string" } },
           dependencies: { type: "array", items: { type: "string" } },
           constraints: { type: "array", items: { type: "string" } },
-          requiredCapabilities: { type: "array", minItems: 1, items: { type: "string" } },
           suggestedExecutionStrategy: { type: "string" },
           ...SCOPE_CONTRACT_JSON_PROPERTIES,
         },

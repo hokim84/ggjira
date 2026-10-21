@@ -6,25 +6,26 @@ import { PLAN_PROPERTY_KEY, PLAN_TASK_PROPERTY_KEY } from "../src/pm/metadata.js
 import { listAudit } from "../src/router/db/audit.js";
 import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { listBlockedReportSteps, listJobReportSteps } from "../src/router/db/report-steps.js";
+import { RuleDecisionProvider } from "../src/router/decision.js";
 import {
   RecoveryError,
   resolveRecoveryJob,
   retryJob,
   retryReportBatch,
 } from "../src/router/recovery.js";
-import { RuleDecisionProvider } from "../src/router/decision.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import { verifyActiveJobs } from "../src/router/scheduler.js";
 import { reRequestHint } from "../src/router/workflow-mode.js";
+import { legacyLifecycle } from "./helpers/legacy-lifecycle.js";
 import {
   IN_PROGRESS_STATUS,
-  issueDescription,
   PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
   REVIEW_STATUS,
   TODO_STATUS,
-  testWorkspace,
   WORKFLOW_TRANSITIONS,
+  issueDescription,
+  testWorkspace,
 } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
 
@@ -54,7 +55,6 @@ const twoTaskPlan = {
       description: "Endpoints",
       acceptance: ["returns 200"],
       verification: ["npm run test -- api"],
-      requiredCapabilities: ["programming"],
     },
     {
       taskId: "ui",
@@ -63,7 +63,6 @@ const twoTaskPlan = {
       acceptance: ["shows the list"],
       verification: ["npm run test -- ui"],
       dependencies: ["api"],
-      requiredCapabilities: ["programming"],
     },
   ],
   keepTaskKeys: [],
@@ -108,6 +107,7 @@ describe("Router Jira reporting journal", () => {
   async function reserve(requestId = "req-1"): Promise<JobEnvelope> {
     const response = await router.next(worker, requestId);
     expect(response.statusCode).toBe(200);
+    legacyLifecycle(router.db);
     return response.json() as JobEnvelope;
   }
 

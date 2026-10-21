@@ -7,10 +7,11 @@ import { FakeJiraGateway } from "../src/jira/fake.js";
 import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
 import { listAttentionItems } from "../src/router/db/attention.js";
 import { openRouterDb } from "../src/router/db/connection.js";
-import { getJob, getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
+import { createJob, getJob, getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
 import { RuleDecisionProvider } from "../src/router/decision.js";
 import type { RouterConfig } from "../src/router/config.js";
 import {
+  assignQueuedJobs,
   reconcileCandidates,
   type SchedulerDeps,
   type WorkerAvailability,
@@ -38,7 +39,6 @@ import {
 function workerAvailability(overrides: Partial<WorkerAvailability> = {}): WorkerAvailability {
   return {
     workerId: "worker-1",
-    capabilities: ["programming"],
     repositoryIds: ["repo1"],
     lastAssignedAt: null,
     ...overrides,
@@ -195,19 +195,28 @@ describe("reconcileCandidates", () => {
     expect(getActiveAttemptForWorker(db, "worker-1")).toBeDefined();
   });
 
-  it("leaves the job queued when no available worker has the required capability", async () => {
-    await approved("KAN-1", { plan: singlePlan({ requiredCapabilities: ["testing"] }) });
-    const config = buildConfig({
-      workers: [workerPolicy({ allowedCapabilities: ["programming"] })],
-    });
+  it.each(["planning", "implementation", "quality_review"] as const)(
+    "assigns %s without a worker capability declaration",
+    (kind) => {
+      createJob(db, {
+        id: "universal",
+        issueKey: "KAN-1",
+        workspaceId: "ws1",
+        repositoryId: "repo1",
+        kind,
+        approvalId: "human-entry",
+        now: "2026-10-21",
+      });
+      const config = buildConfig({
+        workers: [workerPolicy()],
+      });
 
-    const report = await reconcileCandidates(makeDeps(config), [
-      workerAvailability({ capabilities: ["programming"] }),
-    ]);
+      const assignments = assignQueuedJobs(makeDeps(config), [workerAvailability()]);
 
-    expect(report.jobsAssigned).toHaveLength(0);
-    expect(getOpenJobForIssue(db, "KAN-1")?.state).toBe("queued");
-  });
+      expect(assignments).toHaveLength(1);
+      expect(getOpenJobForIssue(db, "KAN-1")?.state).toBe("leased");
+    },
+  );
 
   it("leaves the job queued when the available worker isn't allowed the job's repository", async () => {
     await approved("KAN-1");
@@ -293,7 +302,7 @@ describe("reconcileCandidates", () => {
     const second = await reconcileCandidates(deps, [workerAvailability()]);
 
     // The old "waiting" row is cancelled and replaced by a fresh queued/leased job — dependency
-    // resolution re-runs the full decision (capability/pin checks included), so the row can't
+    // resolution re-runs the full decision (pin checks included), so the row can't
     // just flip state in place.
     expect(second.jobsCancelled).toContain(waitingJobId);
     const job = getOpenJobForIssue(db, "KAN-2");

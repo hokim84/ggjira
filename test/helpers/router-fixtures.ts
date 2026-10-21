@@ -49,7 +49,6 @@ export function singlePlan(overrides: Record<string, unknown> = {}): Record<stri
     summary: "One outcome; contract filled in",
     acceptanceCriteria: ["The change works"],
     verification: ["npm run test"],
-    requiredCapabilities: ["programming"],
     tasks: [],
     keepTaskKeys: [],
     ...overrides,
@@ -72,7 +71,7 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
       activeJobPollIntervalMs: 5_000,
     },
     execution: { timeoutMs: 60_000 },
-    planning: { subtaskIssueType: "Sub-task", maxTasksPerPlan: 10 },
+    planning: { subtaskIssueType: "Sub-task", followupIssueType: "Task", maxTasksPerPlan: 10 },
     reporting: { failureLabel: "ggjira-failed", language: "ko" },
     github: { pollIntervalMs: 300_000 },
     scheduling: { usage: { deprioritizeAtPercent: 90, skipExhausted: true } },
@@ -84,7 +83,6 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
 export function workerPolicy(overrides: Partial<WorkerPolicyConfig> = {}): WorkerPolicyConfig {
   return {
     workerId: "worker-1",
-    allowedCapabilities: ["programming"],
     allowedRepositoryIds: ["repo1"],
     enabled: true,
     providerId: "default",

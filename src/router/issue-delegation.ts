@@ -6,15 +6,17 @@ import type { WorkspaceConfig } from "./config.js";
 import { getApprovalHoldActor } from "./db/holds.js";
 import { getOpenJobForIssue } from "./db/jobs.js";
 import {
+  type PlanDeploymentState,
+  type PlanReviewOutcome,
   getActivePlanDeployment,
   getLatestPlanReview,
   listPlanDeployments,
-  type PlanDeploymentState,
-  type PlanReviewOutcome,
 } from "./db/plan-delegation.js";
-import { parseTaskApprovalId } from "./report-journal.js";
-import { latestPlanningRequest } from "./planning-requests.js";
 import { listBatchReportSteps } from "./db/report-steps.js";
+import { integrationEvidence, lifecycleVersion } from "./lifecycle.js";
+import { latestPlanningRequest } from "./planning-requests.js";
+import { latestQualityCycle } from "./quality-review.js";
+import { parseTaskApprovalId } from "./report-journal.js";
 
 /**
  * Where an issue stands (ADR 0044), for the admin API and the web UI. Read-only:
@@ -45,6 +47,13 @@ export type DelegationStage =
   | "done";
 
 export interface IssueDelegationView {
+  quality?: {
+    state: string;
+    completed: number;
+    total: number;
+    targetSha: string | null;
+    findings: number;
+  };
   stage: DelegationStage;
   statuses: {
     request: string;
@@ -72,7 +81,7 @@ export interface IssueDelegationView {
 }
 
 export async function readIssueDelegation(
-  deps: { db: Database.Database; jira: JiraGateway },
+  deps: { db: Database.Database; jira: JiraGateway; baseBranch?: string },
   workspace: WorkspaceConfig,
   issue: JiraIssue,
 ): Promise<IssueDelegationView> {
@@ -141,11 +150,38 @@ export async function readIssueDelegation(
     (request ? getApprovalHoldActor(db, issue.key, request.id) : undefined) ??
     (runApproval ? getApprovalHoldActor(db, issue.key, runApproval) : undefined) ??
     (planApproval ? getApprovalHoldActor(db, issue.key, planApproval) : undefined) ??
-    (!request && db.prepare("SELECT 1 FROM planning_baselines LIMIT 1").get()
+    (!request && stage !== "task" && db.prepare("SELECT 1 FROM planning_baselines LIMIT 1").get()
       ? "migration:single-review"
       : null);
   if (heldBy && issue.statusName === requestStatus) stage = "plan_held";
+  let quality: IssueDelegationView["quality"];
+  if (review && lifecycleVersion(db, review) === 2 && deployment) {
+    const cycle = latestQualityCycle(db, deployment.id);
+    const children = await deps.jira.searchIssues(`parent = "${issue.key}"`, { all: true });
+    let completed = 0;
+    for (const child of children) {
+      const metadata = await readPlanTaskMetadata(deps.jira, child.key);
+      if (
+        metadata?.planVersion === deployment.planVersion &&
+        deployment.taskIds.includes(metadata.taskId) &&
+        integrationEvidence(db, child.key, deps.baseBranch ?? "main")
+      )
+        completed++;
+    }
+    const result = cycle?.report
+      ? (JSON.parse(cycle.report) as { targetSha: string; findings: unknown[] })
+      : undefined;
+    quality = {
+      state: cycle?.state ?? "children_waiting",
+      completed,
+      total: deployment.taskIds.length,
+      targetSha: result?.targetSha ?? null,
+      findings: result?.findings.length ?? 0,
+    };
+    if (issue.statusName === requestStatus && deployment.state === "active") stage = "coordinating";
+  }
   return {
+    ...(quality ? { quality } : {}),
     stage,
     statuses: {
       request: requestStatus,

@@ -46,6 +46,7 @@ describe("routerWorkflowHops (ADR 0044)", () => {
     expect(hops.map((hop) => `${hop.label}: ${hop.from}→${hop.to}`)).toEqual([
       "계획 승인(사람): AI 계획 요청→AI 작업 중",
       "작업 완료: AI 작업 중→AI 작업 완료(리뷰)",
+      "부모 평가 통과: AI 계획 요청→AI 작업 완료(리뷰)",
       "PR 머지 후 완료: AI 작업 완료(리뷰)→완료",
     ]);
   });
@@ -56,6 +57,7 @@ describe("checkWorkflowHops", () => {
     const jira = seededJira();
     jira.seedIssue({ key: "KAN-1", statusName: "AI 계획 요청", projectKey: "KAN" }, [
       { id: "1", name: "승인", toStatusName: "AI 작업 중" },
+      { id: "4", name: "부모 평가 통과", toStatusName: "AI 작업 완료(리뷰)" },
     ]);
     jira.seedIssue({ key: "KAN-3", statusName: "계획 검토 대기", projectKey: "KAN" }, [
       { id: "3", name: "승인", toStatusName: "AI 작업 중" },
@@ -67,6 +69,7 @@ describe("checkWorkflowHops", () => {
     expect(hops.map((hop) => [hop.state, hop.state === "ok" ? hop.sampleIssue : null])).toEqual([
       ["ok", "KAN-1"],
       ["ok", "KAN-2"],
+      ["ok", "KAN-1"],
     ]);
   });
 
@@ -157,7 +160,7 @@ describe("admin Jira workflow API", () => {
     });
     expect(check.statusCode).toBe(200);
     const { hops } = check.json() as { hops: Array<{ state: string }> };
-    expect(hops.map((hop) => hop.state)).toEqual(["ok", "unknown"]);
+    expect(hops.map((hop) => hop.state)).toEqual(["ok", "unknown", "missing"]);
   });
 
   it("maps Jira failures to 502 and needs the admin token", async () => {

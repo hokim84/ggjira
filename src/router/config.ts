@@ -16,8 +16,9 @@ const nfcString = z.string().min(1).transform(nfc);
  *         -> human approves: requestStatus -> inProgressStatus (shared with people)
  *         -> [Router runs the approved plan] reviewStatus -> [merge] doneStatus
  *
- * Every request is planned first; only a human's move from `requestStatus` to
- * `inProgressStatus` approves a plan. Labels play no part. Keys of the removed workflows (`mode`,
+ * New requests use lifecycle v2: the parent stays in requestStatus, child moves approve
+ * their contracts, and completion quality review moves the parent to reviewStatus.
+ * Existing v1 requests retain parent approval and execution. Labels play no part. Keys of the removed workflows (`mode`,
  * `planReviewStatus`, `planningStatus`, `needsDecisionStatus`, `optInLabel`) are rejected, never reinterpreted.
  */
 const WorkflowStatusSchema = z
@@ -102,7 +103,6 @@ export type WorkspaceConfig = z.infer<typeof WorkspaceSchema>;
  */
 const WorkerPolicySchema = z.object({
   workerId: z.string().min(1),
-  allowedCapabilities: z.array(z.string().min(1)).default([]),
   allowedRepositoryIds: z.array(z.string().min(1)).min(1),
   enabled: z.boolean().default(true),
   /** The worker-local provider (`WorkerConfig.providers[].id`) Router names in this worker's
@@ -158,6 +158,7 @@ const ExecutionConfigSchema = z.object({
 /** How Router applies a PM plan to Jira (the v5 counterpart of v4's `pm.*` settings). */
 const PlanningConfigSchema = z.object({
   subtaskIssueType: nfcString.default("Sub-task"),
+  followupIssueType: nfcString.default("Task"),
   maxTasksPerPlan: z.number().int().positive().default(10),
 });
 

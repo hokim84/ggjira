@@ -255,7 +255,6 @@ async function fillMissingRepositoryPaths(
   if (!missing.length || !deps.ask) return config;
   const paths = await chooseRepositoryPaths({
     profile: {
-      capabilities: [],
       providerId: "default",
       repositories: missing.map((repo) => ({ id: repo.id })),
     },

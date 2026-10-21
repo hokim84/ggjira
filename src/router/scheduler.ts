@@ -1,49 +1,53 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { canHandle } from "../issue/capability.js";
-import { listProviderUsage } from "./db/provider-usage.js";
-import { pressureRank, usagePressure } from "./usage-routing.js";
+import { canTransitionAttemptState } from "../contracts/attempt-state.js";
+import { isRouteDispatch } from "../contracts/route.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PlanMetadataError } from "../pm/metadata.js";
+import { inputHashMatches } from "./approval.js";
+import { SETTLED_BY_NEW_APPROVAL } from "./attention.js";
+import { findWorkspaceCandidates } from "./candidates.js";
+import { COMMENT_TEXT } from "./comment-text.js";
+import type { RouterConfig, WorkspaceConfig } from "./config.js";
+import { getApproval } from "./db/approvals.js";
 import {
   getActiveAttemptForWorker,
   getAttempt,
   leaseAttempt,
   transitionAttemptState,
 } from "./db/attempts.js";
-import { getApprovalHoldActor, INPUTS_CHANGED_HOLD_ACTOR, recordAdminHold } from "./db/holds.js";
-import { markWorkerAssigned } from "./db/workers.js";
+import { listAttentionItems, recordAttention, resolveAttention } from "./db/attention.js";
+import { INPUTS_CHANGED_HOLD_ACTOR, getApprovalHoldActor, recordAdminHold } from "./db/holds.js";
 import {
-  createJob,
   type JobRow,
-  getOpenJobForIssue,
+  createJob,
   getActiveJobs,
+  getOpenJobForIssue,
   getOpenJobs,
   getQueuedJobs,
   hasSucceededJobForApproval,
   transitionJobState,
 } from "./db/jobs.js";
-import { findWorkspaceCandidates } from "./candidates.js";
-import type { RouterConfig, WorkspaceConfig } from "./config.js";
-import { canTransitionAttemptState } from "../contracts/attempt-state.js";
-import { isRouteDispatch } from "../contracts/route.js";
-import { inputHashMatches } from "./approval.js";
-import { isDependencyResolved, reRequestHint } from "./workflow-mode.js";
-import { reconcileDelegatedPlans } from "./delegation.js";
+import { getActivePlanDeployment, getPlanReview } from "./db/plan-delegation.js";
+import { listProviderUsage } from "./db/provider-usage.js";
 import { isLatestReviewConfirmed } from "./db/review-targets.js";
-import { listAttentionItems, recordAttention, resolveAttention } from "./db/attention.js";
-import { SETTLED_BY_NEW_APPROVAL } from "./attention.js";
-import { COMMENT_TEXT } from "./comment-text.js";
+import { markWorkerAssigned } from "./db/workers.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
+import { reconcileDelegatedPlans } from "./delegation.js";
+import type { ApprovalSnapshot } from "./issue-check.js";
 import {
-  checkJobAgainstJira,
-  collectPlanningContext,
   type IssueApproval,
   NotDelegatedError,
+  checkJobAgainstJira,
+  collectPlanningContext,
   readIssueApproval,
   storeApproval,
 } from "./issue-check.js";
+import { integrationEvidence, lifecycleVersion } from "./lifecycle.js";
+import { syncPlanningRequest } from "./planning-requests.js";
+import { pressureRank, usagePressure } from "./usage-routing.js";
+import { isDependencyResolved, reRequestHint } from "./workflow-mode.js";
 
 /** How long a lease is valid before Router considers it expired
  *  (docs/router-service-implementation-plan.md §3 "임대: 30초"). Stage 3/4 own renewal. */
@@ -51,9 +55,6 @@ export const LEASE_DURATION_MS = 30_000;
 
 export interface WorkerAvailability {
   workerId: string;
-  /** As reported by the worker itself, before intersecting with the admin's `allowedCapabilities`
-   *  (§2 "관리자가 허용한 capability·저장소와 워커가 보고한 가용성의 교집합만 사용한다"). */
-  capabilities: string[];
   repositoryIds: string[];
   /** ISO timestamp of the worker's last assignment, or `null` if it has never been assigned
    *  (sorts first — §2 "워커는 가장 오래 배정받지 않은 순서"). */
@@ -186,9 +187,37 @@ async function reconcileIssue(
   routerAccountId: () => Promise<string>,
   report: SchedulerReport,
 ): Promise<void> {
+  const liveParent = getActivePlanDeployment(deps.db, issue.key);
+  if (liveParent) {
+    const parentReview = getPlanReview(deps.db, liveParent.planReviewId);
+    if (
+      parentReview &&
+      lifecycleVersion(deps.db, parentReview) === 2 &&
+      issue.statusName === workspace.workflow.requestStatus
+    ) {
+      const request = await syncPlanningRequest(
+        deps.db,
+        deps.jira,
+        issue,
+        workspace.workflow.requestStatus,
+        deps.now(),
+      );
+      if (request?.id === parentReview.requestApprovalId) return;
+    }
+  }
   let approval: IssueApproval;
   try {
-    approval = await readIssueApproval(deps.jira, deps.db, issue, workspace, undefined, deps.now());
+    const running = getOpenJobForIssue(deps.db, issue.key);
+    approval = await readIssueApproval(
+      deps.jira,
+      deps.db,
+      issue,
+      workspace,
+      running?.kind === "implementation" && running.state === "running"
+        ? "implementation"
+        : undefined,
+      deps.now(),
+    );
   } catch (error) {
     if (error instanceof PlanMetadataError || error instanceof NotDelegatedError) {
       report.skipped.push({ issueKey: issue.key, reason: error.message });
@@ -211,6 +240,25 @@ async function reconcileIssue(
     workspace,
     dependencyKeys,
   );
+  let integration: ApprovalSnapshot["integration"];
+  if (planTask) {
+    const parent = getActivePlanDeployment(deps.db, planTask.parentKey);
+    const review = parent && getPlanReview(deps.db, parent.planReviewId);
+    if (review && lifecycleVersion(deps.db, review) === 2) {
+      const baseBranch =
+        deps.config.repositories.find((repo) => repo.id === workspace.repositoryId)?.baseBranch ??
+        "main";
+      const evidence = dependencyKeys.map((key) => integrationEvidence(deps.db, key, baseBranch));
+      dependencyKeys.forEach((key, index) => {
+        if (!evidence[index] && !unresolvedDependencies.includes(key))
+          unresolvedDependencies.push(key);
+      });
+      integration = {
+        baseBranch,
+        mergeCommits: evidence.flatMap((item) => (item ? [item.mergeSha] : [])),
+      };
+    }
+  }
   // A planning job's envelope carries comments/subtasks/decision reply; collected here, outside
   // any DB transaction, so `jobs/next` can build the envelope from SQLite alone.
   const planning =
@@ -219,6 +267,16 @@ async function reconcileIssue(
       : undefined;
   const now = deps.now();
   storeApproval(deps.db, approval, now, planning);
+  if (integration) {
+    const stored = getApproval(deps.db, issue.key);
+    if (stored)
+      deps.db
+        .prepare("UPDATE approvals SET input_snapshot=? WHERE issue_key=?")
+        .run(
+          JSON.stringify({ ...(stored.inputSnapshot as ApprovalSnapshot), integration }),
+          issue.key,
+        );
+  }
 
   const existingJob = getOpenJobForIssue(deps.db, issue.key);
   if (existingJob) {
@@ -289,7 +347,6 @@ async function reconcileIssue(
       inputHash,
       state: "queued",
       pinnedWorkerId: decision.pinnedWorkerId ?? null,
-      requiredCapabilities: decision.requiredCapabilities,
       now,
     });
     report.jobsCreated.push(job.id);
@@ -307,7 +364,6 @@ async function reconcileIssue(
       approvalId,
       inputHash,
       state: "waiting",
-      requiredCapabilities: requirements.requiredCapabilities,
       now,
     });
     report.jobsCreated.push(job.id);
@@ -451,10 +507,6 @@ export function assignQueuedJobs(
         if (!policy.allowedRepositoryIds.includes(job.repositoryId)) return false;
         if (!worker.repositoryIds.includes(job.repositoryId)) return false;
         if (job.pinnedWorkerId && job.pinnedWorkerId !== worker.workerId) return false;
-        const effectiveCapabilities = policy.allowedCapabilities.filter((capability) =>
-          worker.capabilities.includes(capability),
-        );
-        if (!canHandle(effectiveCapabilities, job.requiredCapabilities).ok) return false;
         if (usagePolicy.skipExhausted && pressureOf.get(worker.workerId) === "exhausted") {
           return false;
         }

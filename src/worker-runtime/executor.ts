@@ -10,13 +10,14 @@ import {
   type ResultGit,
   type ScopeCheck,
 } from "../contracts/implementation.js";
-import { matchesAnyGlob } from "../issue/paths.js";
 import type { WorkerProviderConfig } from "../contracts/provider.js";
-import { runValidateCommand } from "../worker/validate.js";
+import { matchesAnyGlob } from "../issue/paths.js";
 import { type CreatePullRequest, createPullRequest } from "../worker/github.js";
-import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provider.js";
 import { buildImplementPrompt } from "../worker/prompt.js";
+import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provider.js";
+import { runValidateCommand } from "../worker/validate.js";
 import {
+  type WorktreeChange,
   changedFilesSince,
   commitAll,
   createWorktree,
@@ -29,11 +30,13 @@ import {
   pushBranch,
   remoteUrl,
   revParse,
-  type WorktreeChange,
   writeStagedPatch,
 } from "../worker/worktree.js";
+import { integrationTarget } from "../worker/worktree.js";
 import type { WorkerConfig } from "./config.js";
 import { executePlanningEnvelope } from "./planning.js";
+import { executeQualityEnvelope } from "./quality.js";
+import type { ExecutionStage } from "./progress.js";
 
 /** A result minus the identifiers the runner stamps on (`resultId`, `jobId`, ...). */
 export type ExecutionOutcome = Omit<
@@ -42,6 +45,7 @@ export type ExecutionOutcome = Omit<
 >;
 
 export interface ExecutorDeps {
+  onProgress?: (stage: ExecutionStage) => void;
   config: WorkerConfig;
   /** Resolves a local provider entry to a runnable provider. Tests pass a Fake here. */
   createProvider: (provider: WorkerProviderConfig) => WorkerProvider;
@@ -139,6 +143,7 @@ export async function executeEnvelope(
   envelope: JobEnvelope,
   deps: ExecutorDeps,
 ): Promise<ExecutionOutcome> {
+  deps.onProgress?.("preparing");
   const repository = deps.config.repositories.find((repo) => repo.id === envelope.repositoryId);
   if (!repository) {
     return {
@@ -181,18 +186,48 @@ async function executeWithProvider(
       logPath: deps.config.logPath,
       signal: deps.signal,
       ...(onUsage ? { onUsage } : {}),
+      ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
     });
   }
 
+  if (envelope.kind === "quality_review")
+    return executeQualityEnvelope(envelope, {
+      repository,
+      provider,
+      worktreesRoot: deps.worktreesRoot,
+      logPath: deps.config.logPath,
+      signal: deps.signal,
+      ...(onUsage ? { onUsage } : {}),
+      ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
+    });
+
   const issue = envelope.issueSnapshot;
   const gitMode = await isGitRepository(repository.path);
+  if (envelope.integration && envelope.integration.baseBranch !== repository.baseBranch)
+    return {
+      status: "failed",
+      summary: "Router and Worker base branches differ.",
+      failureReason: "integration baseBranch configuration mismatch",
+    };
+  if (envelope.integration && !gitMode)
+    return {
+      status: "failed",
+      summary: "Lifecycle v2 requires Git integration evidence.",
+      failureReason: "non-Git lifecycle v2 is unsupported",
+    };
   const branch = gitMode ? `ggjira/${issue.key}-${envelope.attemptId.slice(0, 8)}` : undefined;
   let cwd = repository.path;
+  let executionBase = repository.baseBranch;
   if (branch) {
     try {
-      cwd = (
-        await createWorktree(repository.path, repository.baseBranch, branch, deps.worktreesRoot)
-      ).path;
+      if (envelope.integration)
+        executionBase = await integrationTarget(
+          repository.path,
+          repository.pushRemote ?? "origin",
+          envelope.integration.baseBranch,
+          envelope.integration.mergeCommits,
+        );
+      cwd = (await createWorktree(repository.path, executionBase, branch, deps.worktreesRoot)).path;
     } catch (error) {
       return {
         status: "failed",
@@ -222,6 +257,7 @@ async function executeWithProvider(
 
   let workerResult: WorkerResult;
   try {
+    deps.onProgress?.("agent");
     workerResult = await provider.run(
       {
         prompt: buildImplementPrompt({
@@ -266,7 +302,7 @@ async function executeWithProvider(
     preserveLocalEvidence({
       cwd,
       repositoryPath: repository.path,
-      baseBranch: repository.baseBranch,
+      baseBranch: executionBase,
       branch,
       patchFile: path.join(deps.config.logPath, `${envelope.jobId}-${envelope.attemptId}.patch`),
     });
@@ -285,7 +321,7 @@ async function executeWithProvider(
   const report = parsedReport.report;
   const scopeCheck: ScopeCheck = branch
     ? checkChangedPaths(
-        await listJobChanges(cwd, repository.baseBranch),
+        await listJobChanges(cwd, executionBase),
         envelope.executionContract?.allowedPaths ?? [],
       )
     : { checked: false, reason: "not a git workspace", changedPaths: [], outsideAllowed: [] };
@@ -333,8 +369,9 @@ async function executeWithProvider(
     if (!(await deps.authorize("commit"))) {
       return cancelled("Stopped before commit: Router withdrew execution authority.", withBranch);
     }
+    deps.onProgress?.("committing");
     await commitAll(cwd, `GGJIRA worker: ${issue.key} ${issue.summary}`.slice(0, 200));
-    changes = await changedFilesSince(cwd, repository.baseBranch);
+    changes = await changedFilesSince(cwd, executionBase);
   }
   // Read after commit, whether or not this run committed: an agent that committed on its own
   // still left a head; a run with no commit leaves HEAD at the base and reports no head.
@@ -349,6 +386,7 @@ async function executeWithProvider(
         changes,
       });
     }
+    deps.onProgress?.("validating");
     const validated = await runValidateCommand(repository.validateCommand, cwd);
     validation.push(validated.summary);
     if (!validated.ok) {
@@ -378,6 +416,7 @@ async function executeWithProvider(
         validation,
       });
     }
+    deps.onProgress?.("pushing");
     const pushed = await pushJobBranch(repository, cwd, branch, {
       issueKey: issue.key,
       issueSummary: issue.summary,

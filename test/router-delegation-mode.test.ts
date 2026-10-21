@@ -9,16 +9,17 @@ import { RuleDecisionProvider } from "../src/router/decision.js";
 import { handlePullRequestClosed } from "../src/router/github.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import { verifyActiveJobs } from "../src/router/scheduler.js";
+import { legacyLifecycle } from "./helpers/legacy-lifecycle.js";
 import {
   DONE_STATUS,
+  IN_PROGRESS_STATUS,
+  PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
+  REVIEW_STATUS,
   TODO_STATUS,
   WORKFLOW_TRANSITIONS,
-  PLAN_REVIEW_STATUS,
-  REVIEW_STATUS,
-  IN_PROGRESS_STATUS,
-  testWorkspace,
   issueDescription,
+  testWorkspace,
 } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
 
@@ -32,7 +33,6 @@ const SINGLE_PLAN = {
   summary: "One outcome; contract filled in",
   acceptanceCriteria: ["The button says Save"],
   verification: ["Open the form and read the button"],
-  requiredCapabilities: ["programming"],
   tasks: [],
   keepTaskKeys: [],
 };
@@ -48,7 +48,6 @@ const SPLIT_PLAN = {
       description: "Endpoints",
       acceptance: ["returns 200"],
       verification: ["npm run test -- api"],
-      requiredCapabilities: ["programming"],
     },
     {
       taskId: "ui",
@@ -57,7 +56,6 @@ const SPLIT_PLAN = {
       acceptance: ["shows the list"],
       verification: ["npm run test -- ui"],
       dependencies: ["api"],
-      requiredCapabilities: ["programming"],
     },
   ],
   keepTaskKeys: [],
@@ -142,6 +140,7 @@ describe("delegation mode (ADR 0044)", () => {
     requestCounter += 1;
     const response = await router.next(worker, `req-${requestCounter}`);
     expect(response.statusCode).toBe(200);
+    legacyLifecycle(router.db);
     const envelope = response.json() as JobEnvelope;
     const start = await router.jobCall(worker, envelope.jobId, "start", lease(envelope));
     expect(start.json()).toMatchObject({ granted: true });

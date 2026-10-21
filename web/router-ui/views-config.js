@@ -27,7 +27,7 @@ const STATUS_FIELDS = [
   [
     "requestStatus",
     "AI 검토 상태",
-    "계획·질문·승인 대기 상태. 완성된 계획을 확인하고 작업 중으로 옮기면 실행",
+    "부모의 계획·자식 실행·평가 대기 상태. 실행할 자식을 작업 중으로 옮기면 해당 작업만 승인",
   ],
   ["inProgressStatus", "진행 상태", "사람과 AI가 함께 쓰는 작업 상태"],
   ["reviewStatus", "검토 상태", "작업이 끝나면 Router가 옮김. 사람이 확인 후 완료 처리"],
@@ -606,10 +606,6 @@ export async function renderConfig(root, ctx) {
     "workers",
     (i) => [
       field(state, `workers.${i}.workerId`, "workerId"),
-      field(state, `workers.${i}.allowedCapabilities`, "허용 capabilities", {
-        kind: "list",
-        hint: "예: programming, testing",
-      }),
       field(state, `workers.${i}.allowedRepositoryIds`, "허용 저장소 id", { kind: "list" }),
       field(state, `workers.${i}.providerId`, "providerId", {
         optional: true,
@@ -617,7 +613,7 @@ export async function renderConfig(root, ctx) {
       }),
       field(state, `workers.${i}.enabled`, "배정 허용", { kind: "checkbox" }),
     ],
-    () => ({ workerId: "", allowedCapabilities: [], allowedRepositoryIds: [] }),
+    () => ({ workerId: "", allowedRepositoryIds: [] }),
     "워커 추가",
   );
 
@@ -646,7 +642,11 @@ export async function renderConfig(root, ctx) {
       "새 job마다 모델 등급과 준비 상태를 Jev에 묻고 기록만 합니다(관찰 모드). 이 영역은 위아래 '저장'과 따로 즉시 적용됩니다.",
       jevSection(view.jev ?? NO_SECRET, ctx),
     ),
-    section("워커 정책", "워커별로 허용하는 capability와 저장소입니다.", workers),
+    section(
+      "워커 정책",
+      "가용한 워커는 모든 기능을 수행합니다. 워커별로 허용 저장소를 설정합니다.",
+      workers,
+    ),
     section(
       "고급 (JSON)",
       "db, http, reconciliation, execution, reporting, executionAgent, github, scheduling",

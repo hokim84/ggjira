@@ -12,8 +12,8 @@ import { buildPmSystemPrompt } from "../pm/prompt.js";
 import { buildImplementSystemPrompt } from "../worker/prompt.js";
 import { inputHashMatches } from "./approval.js";
 import type { RouterConfig } from "./config.js";
-import type { AttemptRow } from "./db/attempts.js";
 import { getApproval } from "./db/approvals.js";
+import type { AttemptRow } from "./db/attempts.js";
 import type { JobRow } from "./db/jobs.js";
 
 export class EnvelopeUnavailableError extends Error {
@@ -111,6 +111,7 @@ export function buildJobEnvelope(
     throw new EnvelopeUnavailableError(job.id, `worker ${attempt.workerId} has no config policy`);
   }
 
+  const snapshot = approval.inputSnapshot as import("./issue-check.js").ApprovalSnapshot;
   return {
     protocolVersion: PROTOCOL_VERSION,
     jobId: job.id,
@@ -125,7 +126,12 @@ export function buildJobEnvelope(
     issueSnapshot: toIssueSnapshot(job.id, approval.inputSnapshot),
     ...(job.kind === "planning"
       ? { planningContext: toPlanningContext(job.id, approval.inputSnapshot) }
-      : { executionContract: toExecutionContract(job.id, approval.inputSnapshot) }),
+      : job.kind === "quality_review"
+        ? { qualityContext: snapshot.quality }
+        : {
+            executionContract: toExecutionContract(job.id, approval.inputSnapshot),
+            ...(snapshot.integration ? { integration: snapshot.integration } : {}),
+          }),
     systemPrompt: job.kind === "planning" ? buildPmSystemPrompt() : buildImplementSystemPrompt(),
     timeoutMs: config.execution.timeoutMs,
   };

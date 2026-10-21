@@ -6,10 +6,10 @@ import { computeDelegationApprovalIds } from "../../src/router/approval.js";
 import type { WorkspaceConfig } from "../../src/router/config.js";
 import { createJob } from "../../src/router/db/jobs.js";
 import {
-  recordPlanDeployment,
-  recordPlanReview,
   getLatestPlanReview,
   getReviewedPlan,
+  recordPlanDeployment,
+  recordPlanReview,
 } from "../../src/router/db/plan-delegation.js";
 import {
   insertReportBatch,
@@ -18,11 +18,12 @@ import {
 } from "../../src/router/db/report-steps.js";
 import { recordResult } from "../../src/router/db/results.js";
 import { planningFingerprint, syncPlanningRequest } from "../../src/router/planning-requests.js";
+import { legacyLifecycle } from "./legacy-lifecycle.js";
 import {
-  issueDescription,
-  singlePlan,
   TODO_STATUS,
   WORKFLOW_TRANSITIONS,
+  issueDescription,
+  singlePlan,
 } from "./router-fixtures.js";
 
 export interface ApprovedIssueOptions {
@@ -160,6 +161,7 @@ export async function reapprove(
     await jira.getIssue(key),
     workspace.workflow.requestStatus,
   );
+  legacyLifecycle(db);
   const old = getLatestPlanReview(db, key);
   if (!request || !old) throw new Error("reapprove needs a previous plan");
   const plan = getReviewedPlan(db, old.id);

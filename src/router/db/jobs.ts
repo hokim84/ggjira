@@ -18,7 +18,6 @@ export interface JobRow {
   inputHash: string | null;
   state: JobState;
   pinnedWorkerId: string | null;
-  requiredCapabilities: string[];
   attemptCount: number;
   currentAttemptId: string | null;
   createdAt: string;
@@ -38,7 +37,6 @@ export interface CreateJobInput {
    *  on an unmet dependency (scheduler decision, not a storage-layer one). */
   state?: JobState;
   pinnedWorkerId?: string | null;
-  requiredCapabilities?: readonly string[];
   /** ISO timestamp. Caller-supplied so tests can use a fake clock. */
   now: string;
 }
@@ -64,7 +62,6 @@ function toJobRow(row: Record<string, unknown>): JobRow {
     inputHash: (row.input_hash as string | null) ?? null,
     state: row.state as JobState,
     pinnedWorkerId: (row.pinned_worker_id as string | null) ?? null,
-    requiredCapabilities: JSON.parse(row.required_capabilities as string) as string[],
     attemptCount: row.attempt_count as number,
     currentAttemptId: (row.current_attempt_id as string | null) ?? null,
     createdAt: row.created_at as string,
@@ -79,9 +76,9 @@ export function createJob(db: Database.Database, input: CreateJobInput): JobRow 
     db.prepare(
       `INSERT INTO jobs (
         id, issue_key, workspace_id, repository_id, kind, approval_id, input_hash, state,
-        pinned_worker_id, required_capabilities, attempt_count, current_attempt_id,
+        pinned_worker_id, attempt_count, current_attempt_id,
         created_at, updated_at, closed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL)`,
     ).run(
       input.id,
       input.issueKey,
@@ -92,7 +89,6 @@ export function createJob(db: Database.Database, input: CreateJobInput): JobRow 
       input.inputHash ?? null,
       state,
       input.pinnedWorkerId ?? null,
-      JSON.stringify(input.requiredCapabilities ?? []),
       input.now,
       input.now,
     );
@@ -211,21 +207,13 @@ export function restampJobApproval(
     approvalId: string;
     inputHash: string;
     kind: JobKind;
-    requiredCapabilities: readonly string[];
     now: string;
   },
 ): void {
   db.prepare(
-    `UPDATE jobs SET approval_id = ?, input_hash = ?, kind = ?, required_capabilities = ?,
+    `UPDATE jobs SET approval_id = ?, input_hash = ?, kind = ?,
        updated_at = ? WHERE id = ?`,
-  ).run(
-    input.approvalId,
-    input.inputHash,
-    input.kind,
-    JSON.stringify(input.requiredCapabilities),
-    input.now,
-    jobId,
-  );
+  ).run(input.approvalId, input.inputHash, input.kind, input.now, jobId);
 }
 
 /** Jobs whose current attempt may still be running somewhere: the set Router re-checks against

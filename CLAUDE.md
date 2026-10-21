@@ -2,7 +2,7 @@
 
 GGJIRA는 Jira를 인간/AI 공용 작업 인터페이스로 쓰는 경량 오케스트레이션 시스템이다.
 configVersion 5에서는 **Router**(`ggjira router serve`, 단일 서버 + SQLite)가 Jira 웹훅·보완 조회로
-승인된 이슈를 찾아 job을 만들고, capability·저장소·가용성으로 **Worker**(`ggjira worker run`,
+승인된 이슈를 찾아 job을 만들고, 저장소·가용성으로 **Worker**(`ggjira worker run`,
 각 머신)에 배정한다. 워커는 Router에만 HTTPS long polling으로 연결하며 Jira를 직접 호출하지 않는다.
 Jira Assignee는 인간 책임자로만 남는다. PM(계획) 실행도 같은 워커가 하고 계획만 반환하며, Jira에
 하위 이슈를 만드는 것은 Router다. 설계와 진행 상황은 `docs/router-service-implementation-plan.md`와
@@ -25,7 +25,7 @@ Jira Assignee는 인간 책임자로만 남는다. PM(계획) 실행도 같은 �
 - `src/jira/` — Jira REST 호출, 인증, 에러 매핑, `FakeJiraGateway`. Router만 쓴다
 - `src/pm/` — 계획 스키마·메타데이터(`ggjira.plan*`)·렌더링·승인된 계획에서 실행 계약 만들기·PM 프롬프트·
   결정 답변 파싱(순수 로직)
-- `src/issue/` — 실행 계약 타입, 입력 해시, 설명 렌더링, capability 매칭(순수 로직). 이슈 설명의 절은
+- `src/issue/` — 실행 계약 타입, 입력 해시, 설명 렌더링, 입력 정규화(순수 로직). 이슈 설명의 절은
   파싱하지 않는다(ADR 0047)
 - `src/cli.ts`·`cli-main.ts`·`cli-io.ts` — 진입점과 명령 분기
 - `web/router-ui/` — Router가 `/ui/`로 서빙하는 빌드 없는 정적 웹 UI(계층 코드 아님, ADR 0023).

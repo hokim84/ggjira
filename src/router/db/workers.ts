@@ -8,7 +8,6 @@ export interface WorkerRow {
   createdAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
-  reportedCapabilities: string[];
   reportedRepositoryIds: string[];
   /** repositoryId → local path, as reported on the last session open (display only). */
   reportedRepositoryPaths: Record<string, string>;
@@ -32,7 +31,6 @@ function toWorkerRow(row: Record<string, unknown>): WorkerRow {
     createdAt: row.created_at as string,
     lastSeenAt: (row.last_seen_at as string | null) ?? null,
     revokedAt: (row.revoked_at as string | null) ?? null,
-    reportedCapabilities: JSON.parse(row.reported_capabilities as string) as string[],
     reportedRepositoryIds: JSON.parse(row.reported_repository_ids as string) as string[],
     reportedRepositoryPaths: JSON.parse(
       (row.reported_repository_paths as string | undefined) ?? "{}",
@@ -137,20 +135,14 @@ export function startWorkerSession(
 
 export function recordWorkerHeartbeat(
   db: Database.Database,
-  input: { workerId: string; capabilities: string[]; repositoryIds: string[]; now: string },
+  input: { workerId: string; repositoryIds: string[]; now: string },
 ): void {
   db.prepare(
     `UPDATE workers SET
-       reported_capabilities = ?, reported_repository_ids = ?,
+       reported_repository_ids = ?,
        last_heartbeat_at = ?, last_seen_at = ?
      WHERE id = ?`,
-  ).run(
-    JSON.stringify(input.capabilities),
-    JSON.stringify(input.repositoryIds),
-    input.now,
-    input.now,
-    input.workerId,
-  );
+  ).run(JSON.stringify(input.repositoryIds), input.now, input.now, input.workerId);
 }
 
 /** Refreshes liveness without changing reported availability — a worker blocked in a 25s

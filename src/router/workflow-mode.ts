@@ -1,6 +1,6 @@
 import type { JobKind } from "../contracts/protocol.js";
-import type { WorkspaceConfig } from "./config.js";
 import type { MessageLanguage } from "./comment-text.js";
+import type { WorkspaceConfig } from "./config.js";
 
 /**
  * The workspace workflow's rules (ADR 0044, ADR 0047): delegated by status, always planned first,
@@ -13,7 +13,7 @@ import type { MessageLanguage } from "./comment-text.js";
  *  (src/router/delegation.ts). */
 export function approvalStatusFor(kind: JobKind, workspace: WorkspaceConfig): string {
   const { requestStatus, inProgressStatus } = workspace.workflow;
-  return kind === "planning" ? requestStatus : inProgressStatus;
+  return kind !== "implementation" ? requestStatus : inProgressStatus;
 }
 
 /** Where a result asking for a human decision moves the issue: a planning question waits with the

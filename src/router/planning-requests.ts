@@ -1,14 +1,18 @@
-import { randomUUID, createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { normalizeExecutionText } from "../issue/input-hash.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraComment, JiraIssue } from "../jira/types.js";
-import { findHumanDecision, type HumanDecision } from "../pm/context.js";
+import { type HumanDecision, findHumanDecision } from "../pm/context.js";
 import { DECISION_REQUEST_MARKER } from "../pm/marker.js";
 import { requirementDescription } from "../pm/plan-render.js";
-import { normalizeExecutionText } from "../issue/input-hash.js";
 import { computeApprovalId } from "./approval.js";
-import { getLatestPlanReview, getReviewedPlan } from "./db/plan-delegation.js";
 import { getOpenJobForIssue } from "./db/jobs.js";
+import {
+  getActivePlanDeployment,
+  getLatestPlanReview,
+  getReviewedPlan,
+} from "./db/plan-delegation.js";
 import { listBatchReportSteps } from "./db/report-steps.js";
 
 export function planningFingerprint(issue: Pick<JiraIssue, "summary" | "description">): string {
@@ -32,6 +36,7 @@ export interface PlanningRequest {
   decision: string | null;
   created_at: string;
   ready_history: string | null;
+  lifecycle_version: 1 | 2;
 }
 
 export function latestPlanningRequest(
@@ -63,6 +68,32 @@ export async function syncPlanningRequest(
   const entry = await computeApprovalId(jira, issue, requestStatus);
   const hash = planningFingerprint(issue);
   const previous = latestPlanningRequest(db, issue.key);
+  const live = getActivePlanDeployment(db, issue.key);
+  if (previous?.lifecycle_version === 2 && live && previous.input_hash !== hash) {
+    const started = db
+      .prepare(
+        "SELECT 1 FROM jobs WHERE issue_key IN (SELECT issue_key FROM approvals WHERE json_extract(input_snapshot,'$.planTask.parentKey') = ?) AND kind='implementation' AND attempt_count > 0 LIMIT 1",
+      )
+      .get(issue.key);
+    if (started) {
+      const busy = db
+        .prepare(
+          "SELECT 1 FROM jobs WHERE issue_key IN (SELECT issue_key FROM approvals WHERE json_extract(input_snapshot,'$.planTask.parentKey') = ?) AND kind='implementation' AND state NOT IN ('succeeded','cancelled','failed','timed_out') LIMIT 1",
+        )
+        .get(issue.key);
+      const comments = await jira.getComments(issue.key);
+      if (
+        busy ||
+        !comments.some(
+          (comment) =>
+            humanComment(comment, issue) &&
+            comment.body.trim() === "재계획" &&
+            comment.created > live.createdAt,
+        )
+      )
+        return previous;
+    }
+  }
   // An upgrade never adopts old requests or their approvals silently.
   const baseline = db.prepare("SELECT MIN(cutoff) AS cutoff FROM planning_baselines").get() as {
     cutoff: string | null;
@@ -130,8 +161,8 @@ export async function syncPlanningRequest(
       return current?.entry_id === entry && current.input_hash === hash ? current : undefined;
     }
     db.prepare(`INSERT INTO planning_requests
-    (id, issue_key, entry_id, input_hash, input_snapshot, source_comment_id, decision, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    (id, issue_key, entry_id, input_hash, input_snapshot, source_comment_id, decision, created_at, lifecycle_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2)`).run(
       id,
       issue.key,
       entry,

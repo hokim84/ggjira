@@ -109,13 +109,27 @@ function delegationRows(view) {
   const d = view.delegation;
   const [label, next] = DELEGATION_STAGES[d.stage] || [d.stage, () => ""];
   return [
+    d.quality ? h("dt", {}, "부모 완료 평가") : null,
+    d.quality
+      ? h(
+          "dd",
+          {},
+          `${d.quality.completed}/${d.quality.total} 통합 · ${({ children_waiting: "자식별 실행·통합 대기", running: "통합 평가 중", judgment: "후보 판단·개선 대기", failed: "평가 실패 · 원인 확인 후 재시도 댓글", stale: "평가 대상 갱신 필요", passed: "평가 통과" })[d.quality.state] ?? d.quality.state}${d.quality.targetSha ? ` · ${d.quality.targetSha.slice(0, 12)}` : ""}`,
+        )
+      : null,
     h("dt", {}, "위임 단계"),
     h(
       "dd",
       {},
       h("span", { class: "badge badge-ok" }, label),
       d.parentKey ? h("span", { class: "muted" }, ` (${d.parentKey}의 계획)`) : null,
-      h("div", { class: "hint" }, next(d.statuses)),
+      h(
+        "div",
+        { class: "hint" },
+        d.quality
+          ? "실행할 자식을 작업 중으로 옮기세요. 필수 작업의 통합·평가·판단 후 부모가 결과 검토로 이동합니다."
+          : next(d.statuses),
+      ),
     ),
     d.plan ? h("dt", {}, "계획") : null,
     d.plan

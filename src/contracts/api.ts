@@ -41,9 +41,8 @@ export const CloneUrlSchema = z
   );
 
 /** What Router's policy for this worker says, so `worker start` can write its config without the
- *  operator typing capabilities or repositories (ADR 0025). Local paths stay the worker's choice. */
+ *  operator typing repositories (ADR 0025). Local paths stay the worker's choice. */
 export const WorkerProfileSchema = z.object({
-  capabilities: z.array(z.string().min(1)),
   providerId: z.string().min(1),
   repositories: z.array(
     z.object({
@@ -92,7 +91,6 @@ export const WorkerHeartbeatRequestSchema = z.object({
   sessionId: z.string().min(1),
   workerId: z.string().min(1),
   availability: z.object({
-    capabilities: z.array(z.string().min(1)).default([]),
     repositoryIds: z.array(z.string().min(1)).default([]),
     busy: z.boolean(),
   }),
@@ -227,7 +225,6 @@ export const AdminAddWorkerRequestSchema = z.object({
   workerId: z
     .string()
     .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "use letters, digits, '.', '_' or '-' (max 64)"),
-  allowedCapabilities: z.array(z.string().min(1)).default([]),
   allowedRepositoryIds: z.array(z.string().min(1)).min(1),
   providerId: z.string().min(1).optional(),
 });

@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { IssueSnapshot, PlanningContext } from "../contracts/envelope.js";
 import type { JobKind } from "../contracts/protocol.js";
+import type { QualityContext } from "../contracts/quality.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import { JiraApiError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
@@ -19,6 +20,7 @@ import {
   readPlanTaskMetadata,
 } from "../pm/metadata.js";
 import { planTaskIds } from "../pm/plan-render.js";
+import { PlanTaskSchema } from "../pm/plan.js";
 import {
   computeApprovalId,
   computeDelegationApprovalIds,
@@ -31,16 +33,20 @@ import type { JobRow } from "./db/jobs.js";
 import {
   type PlanDeploymentRow,
   getActivePlanDeployment,
+  getPlanReview,
   getReviewedPlan,
   listPlannedReviews,
 } from "./db/plan-delegation.js";
-import { taskApprovalId } from "./report-journal.js";
-import { approvalStatusFor } from "./workflow-mode.js";
+import { listBatchReportSteps } from "./db/report-steps.js";
+import { lifecycleVersion } from "./lifecycle.js";
 import {
-  syncPlanningRequest,
   latestPlanningRequest,
   planningDecision,
+  planningFingerprint,
+  syncPlanningRequest,
 } from "./planning-requests.js";
+import { taskApprovalId } from "./report-journal.js";
+import { approvalStatusFor } from "./workflow-mode.js";
 
 /** An issue's approval as Jira and Router's plan records show it right now. */
 export interface IssueApproval {
@@ -141,12 +147,35 @@ async function readApproved(
       );
     }
     const parent = await jira.getIssue(planTask.parentKey);
-    if (parent.statusName !== inProgressStatus) {
+    const parentReview = getPlanReview(db, deployment.planReviewId);
+    const version = parentReview ? lifecycleVersion(db, parentReview) : 1;
+    if (
+      version === 2 &&
+      kind !== "implementation" &&
+      (latestPlanningRequest(db, parent.key)?.input_hash !== planningFingerprint(parent) ||
+        latestPlanningRequest(db, parent.key)?.id !== parentReview?.requestApprovalId)
+    ) {
+      throw new NotDelegatedError(
+        "parent requirements changed; reconcile the plan before starting more work",
+      );
+    }
+    if (parent.statusName !== (version === 2 ? requestStatus : inProgressStatus)) {
       throw new NotDelegatedError(
         `${issue.key}'s parent ${parent.key} left "${inProgressStatus}", withdrawing the plan`,
       );
     }
     const entry = await computeApprovalId(jira, issue, inProgressStatus);
+    if (version === 2) {
+      const baseline = db
+        .prepare(
+          "SELECT entry_id FROM child_approval_baselines WHERE parent_key=? AND plan_version=? AND task_id=?",
+        )
+        .get(parent.key, planTask.planVersion, planTask.taskId) as { entry_id: string } | undefined;
+      if (!baseline || baseline.entry_id === entry)
+        throw new NotDelegatedError(
+          "move the child into in-progress after its complete contract is published",
+        );
+    }
     return {
       kind: "implementation",
       approvalId: taskApprovalId(deployment.approvalId, planTask.taskId, entry),
@@ -197,6 +226,26 @@ function taskContract(
   issueKey: string,
   planTask: PlanTaskMetadata,
 ): IssueRequirements {
+  const extension = db
+    .prepare("SELECT task FROM plan_extensions WHERE parent_key = ? AND task_id = ?")
+    .get(planTask.parentKey, planTask.taskId) as { task: string } | undefined;
+  if (extension) {
+    const decision = db
+      .prepare(
+        "SELECT d.batch_id FROM quality_decisions d JOIN plan_extensions e ON e.cycle_id=d.cycle_id AND e.finding_id=d.finding_id WHERE e.parent_key=? AND e.task_id=? AND d.action=1 ORDER BY d.rowid DESC LIMIT 1",
+      )
+      .get(planTask.parentKey, planTask.taskId) as { batch_id: string } | undefined;
+    if (
+      !decision ||
+      !listBatchReportSteps(db, decision.batch_id).length ||
+      !listBatchReportSteps(db, decision.batch_id).every((step) => step.status === "applied")
+    )
+      throw new NotDelegatedError("improvement contract is not fully published yet");
+    return planTaskRequirements(
+      PlanTaskSchema.parse(JSON.parse(extension.task)),
+      planTask.dependencies,
+    );
+  }
   for (const review of listPlannedReviews(db, planTask.parentKey)) {
     const plan = getReviewedPlan(db, review.id);
     if (!plan) continue;
@@ -258,10 +307,24 @@ export async function collectPlanningContext(
     jira.getIssueProperty(issue.key, PLAN_PROPERTY_KEY),
   ]);
   const plan = PlanMetadataSchema.safeParse(planProperty);
+  const taskContracts = db
+    ? await Promise.all(
+        subtasks.map(async (subtask) => {
+          const metadata = await readPlanTaskMetadata(jira, subtask.key);
+          return metadata
+            ? { issueKey: subtask.key, taskId: metadata.taskId, planVersion: metadata.planVersion }
+            : undefined;
+        }),
+      )
+    : [];
   const humanDecision = db
     ? planningDecision(latestPlanningRequest(db, issue.key))
     : findHumanDecision(comments, routerAccountId, issue.assigneeAccountId);
   return {
+    ...(db ? { existingTaskContracts: taskContracts.flatMap((task) => (task ? [task] : [])) } : {}),
+    ...(db
+      ? { lifecycleVersion: latestPlanningRequest(db, issue.key)?.lifecycle_version ?? 1 }
+      : {}),
     ...(plan.success ? { planVersion: plan.data.version } : {}),
     comments: comments.map((comment: JiraComment) => ({
       id: comment.id,
@@ -280,6 +343,8 @@ export interface ApprovalSnapshot {
   requirements: IssueRequirements;
   planTask: PlanTaskMetadata | null;
   planning?: PlanningContext;
+  quality?: QualityContext;
+  integration?: QualityContext["integration"];
 }
 
 /**
@@ -302,6 +367,8 @@ export function storeApproval(
     requirements: approval.requirements,
     planTask: approval.planTask,
     ...(keptPlanning ? { planning: keptPlanning } : {}),
+    ...(previous?.quality ? { quality: previous.quality } : {}),
+    ...(previous?.integration ? { integration: previous.integration } : {}),
   };
   upsertApproval(db, {
     issueKey: approval.issue.key,
@@ -325,7 +392,7 @@ export type JobCheck =
 /**
  * Re-reads an open job's issue from Jira and decides whether its approval still stands
  * (§2 "실행 중 승인 철회, 책임자 제거, 실행 대상 변경, 계획 버전 변경은 취소 사유다 / 실행 중 작업
- * 설명·요구 capability·의존성 변경도 취소하고 새 승인을 요구한다"). Comments are not part of the
+ * 설명·의존성 변경도 취소하고 새 승인을 요구한다"). Comments are not part of the
  * input hash, so Router's own report comments never revoke anything.
  *
  * Throws on a transient Jira failure: the caller must not treat "couldn't ask" as "revoked".
@@ -350,6 +417,37 @@ export async function checkJobAgainstJira(
   }
 
   // A run never moves its issue on start, so it may only be where it runs (ADR 0044).
+  if (job.kind === "quality_review") {
+    const cycle = db
+      .prepare(
+        "SELECT q.state, d.state AS deployment_state FROM quality_cycles q JOIN plan_deployments d ON d.id=q.deployment_id WHERE q.job_id=?",
+      )
+      .get(job.id) as { state: string; deployment_state: string } | undefined;
+    const stored = getApproval(db, issue.key);
+    const request = latestPlanningRequest(db, issue.key);
+    if (
+      !cycle ||
+      cycle.state !== "running" ||
+      cycle.deployment_state !== "active" ||
+      issue.statusName !== workspace.workflow.requestStatus ||
+      !issue.assigneeAccountId ||
+      request?.input_hash !== planningFingerprint(issue) ||
+      stored?.approvalId !== job.approvalId
+    )
+      return { verdict: "revoked", reason: "quality review target or parent authority changed" };
+    const snapshot = stored.inputSnapshot as ApprovalSnapshot;
+    return {
+      verdict: "current",
+      approval: {
+        issue,
+        kind: job.kind,
+        requirements: snapshot.requirements,
+        planTask: null,
+        approvalId: job.approvalId,
+        inputHash: stored.inputHash,
+      },
+    };
+  }
   if (issue.statusName !== approvalStatusFor(job.kind, workspace)) {
     return { verdict: "revoked", reason: `${issue.key} moved to "${issue.statusName}"` };
   }

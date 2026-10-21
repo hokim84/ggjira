@@ -11,7 +11,7 @@ export const INPUT_HASH_V2_PREFIX = "v2:";
  * assignee (checked on their own, with their own messages).
  */
 export interface ExecutionInput {
-  kind: "planning" | "implementation";
+  kind: "planning" | "implementation" | "quality_review";
   summary: string;
   description: string | null;
   requirements: IssueRequirements;
@@ -55,7 +55,7 @@ function sortedTexts(values: readonly string[]): string[] {
  * human writes outside the GGJIRA sections is covered too; the parsed requirements are listed
  * as well so the canonical form says plainly which contract fields count. Acceptance criteria,
  * verification and the other contract lists keep their order (it is how a human reads them);
- * dependencies and capabilities are sorted.
+ * dependencies are sorted.
  */
 export function canonicalExecutionInput(input: ExecutionInput): Record<string, unknown> {
   const { requirements } = input;
@@ -75,7 +75,6 @@ export function canonicalExecutionInput(input: ExecutionInput): Record<string, u
       allowedPaths: texts(requirements.allowedPaths),
       constraints: texts(requirements.constraints),
       dependencies: sortedTexts(requirements.dependencies),
-      requiredCapabilities: sortedTexts(requirements.requiredCapabilities),
     },
     planTask: input.planTask
       ? {

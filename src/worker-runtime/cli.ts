@@ -25,6 +25,7 @@ import { pairWorker, pruneWorktrees, runWorkerCheck, writeWorkerConfigTemplate }
 import { WorkerRunner } from "./runner.js";
 import { prepareWorkerStart } from "./start.js";
 import { ResultSpool } from "./spool.js";
+import { formatWorkerProgress } from "./progress.js";
 
 export const WORKER_USAGE = `ggjira worker <command>
 
@@ -48,7 +49,7 @@ function configPath(parsed: ParsedArgs, io: CliIo): string {
   return stringOption(parsed, "config") ?? io.env.GGJIRA_WORKER_CONFIG ?? DEFAULT_CONFIG;
 }
 
-function workerRunner(config: WorkerConfig): WorkerRunner {
+function workerRunner(config: WorkerConfig, io?: CliIo): WorkerRunner {
   const credential = loadWorkerCredential(config.credentialPath);
   const logger = rootLogger.child({ layer: "worker-runtime", workerId: credential.workerId });
   return new WorkerRunner({
@@ -59,6 +60,7 @@ function workerRunner(config: WorkerConfig): WorkerRunner {
     createProvider: (provider) => createProviderFromConfig(provider, logger),
     worktreesRoot: workerWorktreesRoot(config),
     logger,
+    ...(io ? { onProgress: (event) => io.out(formatWorkerProgress(event)) } : {}),
   });
 }
 
@@ -84,7 +86,7 @@ async function setup(parsed: ParsedArgs, io: CliIo): Promise<number> {
   io.out(`Paired as worker "${credential.workerId}"; credential saved to ${credentialPath}`);
   if (!existing) {
     writeWorkerConfigTemplate(target, { routerUrl, credentialPath });
-    io.out(`Wrote a starter ${target}: set repositories[].path, providers and capabilities.`);
+    io.out(`Wrote a starter ${target}: set repositories[].path, providers.`);
   }
   io.out(`Next: ggjira worker check --config ${target}, then ggjira worker run --config ${target}`);
   return 0;
@@ -117,7 +119,7 @@ async function run(parsed: ParsedArgs, io: CliIo): Promise<number> {
 }
 
 async function runWithConfig(config: WorkerConfig, io: CliIo): Promise<number> {
-  const runner = workerRunner(config);
+  const runner = workerRunner(config, io);
   const controller = new AbortController();
   const stop = (signal: string) => {
     if (controller.signal.aborted) {

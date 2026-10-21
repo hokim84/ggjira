@@ -179,7 +179,7 @@ export function renderSetup(root) {
         h(
           "p",
           { class: "muted full-row" },
-          "AI 검토에서 계획·질문·승인을 기다립니다. 완성된 계획을 확인하고 작업 중으로 옮기면 실행합니다.",
+          "부모는 AI 검토에 유지하고, 실행할 자식을 작업 중으로 옮깁니다. 필수 자식 완료·통합 후 자동 평가하여 부모를 결과 검토로 옮깁니다.",
         ),
         field(ws, "workflow.requestStatus", "AI 검토 상태 (계획·질문·승인 대기)", {
           kind,
@@ -264,7 +264,6 @@ export function renderSetup(root) {
     if (!cfg.workers.length) {
       cfg.workers.push({
         workerId: "worker-1",
-        allowedCapabilities: ["programming", "testing"],
         allowedRepositoryIds: [],
         providerId: "default",
       });
@@ -276,10 +275,6 @@ export function renderSetup(root) {
       "div",
       { class: "grid" },
       field(worker, "workerId", "workerId", { hint: "워커 머신을 구분하는 이름" }),
-      field(worker, "allowedCapabilities", "허용 capabilities", {
-        kind: "list",
-        hint: "쉼표로 구분",
-      }),
       field(worker, "providerId", "providerId", { optional: true, placeholder: "default" }),
     );
     skip.addEventListener("change", () => {
