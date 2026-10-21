@@ -44,6 +44,13 @@ import type {
   TransitionParams,
 } from "./report-journal.js";
 import { parseTaskApprovalId } from "./report-journal.js";
+import { getJob } from "./db/jobs.js";
+import {
+  latestPlanningRequest,
+  planningFingerprint,
+  markReadyPlans,
+  syncPlanningRequest,
+} from "./planning-requests.js";
 
 /**
  * Executes the report journal (src/router/report-journal.ts) against Jira
@@ -464,6 +471,7 @@ export async function processReportJournal(deps: ReportProcessorDeps): Promise<R
   const report: ReportPassReport = { applied: [], skipped: [], blocked: [], deferred: [] };
   try {
     await runReportJournal(deps, report);
+    await markReadyPlans(deps.db, deps.jira);
   } finally {
     for (const entry of report.blocked) {
       const step = getReportStep(deps.db, entry.stepId);
@@ -492,6 +500,38 @@ async function runReportJournal(
       const ctx = batchContext(listJobReportSteps(deps.db, jobId), step.batchId);
       let outcome: StepOutcome;
       try {
+        const job = getJob(deps.db, jobId);
+        if (
+          job?.kind === "planning" &&
+          job.approvalId.startsWith("planning:") &&
+          (step.resultId !== null || step.batchId.startsWith("start:"))
+        ) {
+          const issue = await deps.jira.getIssue(job.issueKey);
+          const previous = latestPlanningRequest(deps.db, job.issueKey);
+          const requestStatus = previous
+            ? (JSON.parse(previous.input_snapshot) as { statusName?: string }).statusName
+            : null;
+          const request =
+            requestStatus && issue.statusName === requestStatus
+              ? await syncPlanningRequest(deps.db, deps.jira, issue, requestStatus, deps.now())
+              : undefined;
+          if (
+            !request ||
+            request.id !== job.approvalId ||
+            request.input_hash !== planningFingerprint(issue)
+          ) {
+            updateReportStep(deps.db, step.id, {
+              status: "skipped",
+              error: "superseded or withdrawn planning request",
+              now: deps.now(),
+            });
+            report.skipped.push({
+              stepId: step.id,
+              reason: "superseded or withdrawn planning request",
+            });
+            continue;
+          }
+        }
         outcome = await runStep(deps.jira, step, ctx);
       } catch (error) {
         const message = errorMessage(error);

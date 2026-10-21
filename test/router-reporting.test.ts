@@ -430,7 +430,10 @@ describe("Router Jira reporting journal", () => {
         body.includes("[GGJIRA:DECISION-REQUEST]"),
       );
       expect(comment).toContain(`planVersion: plan-${envelope.attemptId}`);
-      expect(comment).toContain(`"${REQUEST_STATUS}" 상태로 다시 옮기세요`);
+      expect(comment).toContain("1. SQL");
+      expect(comment).toContain("2. NoSQL");
+      expect(comment).toContain("선택지 번호만 댓글로 남기세요(예: 2)");
+      expect(comment).toContain(`"${REQUEST_STATUS}" 상태에서 자동으로 다시 계획합니다`);
       expect(await status("KAN-9")).toBe(PLAN_REVIEW_STATUS);
       expect(router.jira.createdIssues).toEqual([]);
     });

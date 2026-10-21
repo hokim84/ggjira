@@ -9,7 +9,7 @@ import type { MessageLanguage } from "./comment-text.js";
  */
 
 /** The status whose entry approves a job of `kind`: a plan is requested from `requestStatus`; an
- *  implementation runs in `inProgressStatus`, approved by the move there from `planReviewStatus`
+ *  implementation runs in `inProgressStatus`, approved by the move there from `requestStatus`
  *  (src/router/delegation.ts). */
 export function approvalStatusFor(kind: JobKind, workspace: WorkspaceConfig): string {
   const { requestStatus, inProgressStatus } = workspace.workflow;
@@ -19,7 +19,7 @@ export function approvalStatusFor(kind: JobKind, workspace: WorkspaceConfig): st
 /** Where a result asking for a human decision moves the issue: a planning question waits with the
  *  plans for review; an implementation stop stays in progress (`null`). */
 export function decisionTransitionTarget(workspace: WorkspaceConfig, kind: JobKind): string | null {
-  return kind === "planning" ? workspace.workflow.planReviewStatus : null;
+  return null;
 }
 
 /** How a human approves a request of `kind` again (a new approval id), for held-request reasons
@@ -29,15 +29,15 @@ export function reRequestHint(
   kind: JobKind = "implementation",
   language: MessageLanguage = "en",
 ): string {
-  const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
+  const { requestStatus, inProgressStatus } = workspace.workflow;
   if (language === "ko") {
     return kind === "implementation"
-      ? `이슈를 "${planReviewStatus}" 상태로 옮겼다가 "${inProgressStatus}" 상태로 옮겨 승인된 계획을 다시 실행하거나, "${requestStatus}" 상태로 옮겨 다시 계획하세요`
-      : `이슈를 "${requestStatus}" 상태 밖으로 옮겼다가 다시 넣으세요`;
+      ? `이슈를 "${requestStatus}" 상태로 옮겨 다시 계획한 뒤, 완성된 계획을 확인하고 "${inProgressStatus}" 상태로 옮기세요`
+      : `담당자가 "재시도" 댓글을 남기거나 제목·설명을 수정하세요`;
   }
   return kind === "implementation"
-    ? `move the issue to "${planReviewStatus}" and then to "${inProgressStatus}" to run the approved plan again, or to "${requestStatus}" to plan it again`
-    : `move the issue out of "${requestStatus}" and back into it`;
+    ? `move the issue to "${requestStatus}", wait for the new plan, then approve it by moving to "${inProgressStatus}"`
+    : 'ask the assignee to comment "재시도" or edit the title or description';
 }
 
 /** Whether a dependency no longer blocks the issue that names it: only `doneStatus`, or a result a

@@ -67,14 +67,14 @@ describe("router check", () => {
   it("checks the transitions Router needs on a sample issue", async () => {
     const jira = jiraWithProject(ALL_STATUSES);
     jira.seedIssue({ key: "KAN-1", statusName: REQUEST_STATUS, projectKey: "KAN" }, [
-      { id: "1", name: "Planned", toStatusName: PLAN_REVIEW_STATUS },
+      { id: "1", name: "Approve", toStatusName: IN_PROGRESS_STATUS },
     ]);
     jira.seedIssue({ key: "KAN-2", statusName: IN_PROGRESS_STATUS, projectKey: "KAN" }, []);
 
     const ok = await runRouterCheck(jira, config, { issueKey: "KAN-1" });
     expect(ok).toContainEqual({
       level: "ok",
-      message: expect.stringContaining(`→ "${PLAN_REVIEW_STATUS}"`),
+      message: expect.stringContaining(`→ "${IN_PROGRESS_STATUS}"`),
     });
 
     const missing = await runRouterCheck(jira, config, { issueKey: "KAN-2" });

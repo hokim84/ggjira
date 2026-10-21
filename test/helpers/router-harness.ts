@@ -148,7 +148,7 @@ export class RouterHarness {
   reapprove(key = "KAN-1"): Promise<void> {
     const workspace = this.config.workspaces[0];
     if (!workspace) throw new Error("reapprove needs a workspace");
-    return reapprove(this.jira, workspace, key);
+    return reapprove(this.jira, workspace, key, this.db);
   }
 
   /** Seeds an approved issue and runs a reconcile so it has a `queued` implementation job. */

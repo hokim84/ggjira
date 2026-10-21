@@ -179,13 +179,12 @@ export function renderSetup(root) {
         h(
           "p",
           { class: "muted full-row" },
-          "요청 상태로 옮기면 계획부터 시작하고, 계획 검토 → 작업 중으로 옮기면 승인된 계획을 실행합니다.",
+          "AI 검토에서 계획·질문·승인을 기다립니다. 완성된 계획을 확인하고 작업 중으로 옮기면 실행합니다.",
         ),
-        field(ws, "workflow.requestStatus", "AI 계획 요청 상태 (사람이 AI에게 맡김)", {
+        field(ws, "workflow.requestStatus", "AI 검토 상태 (계획·질문·승인 대기)", {
           kind,
           options,
         }),
-        field(ws, "workflow.planReviewStatus", "계획 검토 상태 (승인 대기)", { kind, options }),
         field(ws, "workflow.inProgressStatus", "작업 중 상태", { kind, options }),
         field(ws, "workflow.reviewStatus", "결과 검토 상태", { kind, options }),
       );
@@ -248,7 +247,7 @@ export function renderSetup(root) {
       const missing = [];
       if (!ws.projectKeys?.length)
         missing.push({ path: "workspaces.0.projectKeys", message: "프로젝트를 선택하세요" });
-      for (const key of ["requestStatus", "planReviewStatus", "inProgressStatus", "reviewStatus"]) {
+      for (const key of ["requestStatus", "inProgressStatus", "reviewStatus"]) {
         if (!ws.workflow[key]) missing.push({ path: `workflow.${key}`, message: "필수입니다" });
       }
       if (missing.length) {

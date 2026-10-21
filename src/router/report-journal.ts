@@ -55,7 +55,7 @@ export interface TransitionParams {
  * How an implementation's transition re-derives the approval it was journaled under:
  *
  * - `plan-approval`: the plan's approval — the latest move of `issueKey` (the plan's parent) from
- *   `planReviewStatus` to `inProgressStatus` after its latest request.
+ *   `requestStatus` to `inProgressStatus` after its latest request.
  * - `plan-task`: a task run — the latest entry of the task into `inProgressStatus`, which is the
  *   part of the run's approval id after `@` (`taskApprovalId`).
  */
@@ -64,7 +64,6 @@ export type ApprovalRule =
       kind: "plan-approval";
       issueKey: string;
       requestStatus: string;
-      planReviewStatus: string;
       inProgressStatus: string;
     }
   | { kind: "plan-task"; inProgressStatus: string };
@@ -257,12 +256,11 @@ function delegatedApprovalRule(job: JobRow, workspace: WorkspaceConfig): Approva
 
 /** The `plan-approval` rule for the plan whose parent is `issueKey`. */
 export function planApprovalRule(workspace: WorkspaceConfig, issueKey: string): ApprovalRule {
-  const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
+  const { requestStatus, inProgressStatus } = workspace.workflow;
   return {
     kind: "plan-approval",
     issueKey,
     requestStatus,
-    planReviewStatus,
     inProgressStatus,
   };
 }
@@ -739,7 +737,6 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
       },
     },
     { kind: "remove-label", params: { label: config.reporting.failureLabel } },
-    finishTransition(input, workspace.workflow.planReviewStatus),
   );
   return steps;
 }
@@ -750,11 +747,11 @@ function planReviewNext(
   hasTasks: boolean,
   language: MessageLanguage,
 ): string[] {
-  const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
+  const { requestStatus, inProgressStatus } = workspace.workflow;
   const text = COMMENT_TEXT[language].plan;
   return [
     text.nothingRunsYet(hasTasks),
-    text.toApprove(planReviewStatus, inProgressStatus),
+    text.toApprove(requestStatus, inProgressStatus),
     text.toChange(requestStatus),
   ];
 }

@@ -147,8 +147,7 @@ export function routerConfigTemplate(): Record<string, unknown> {
         repositoryId: "main-repo",
         projectKeys: ["PROJ"],
         workflow: {
-          requestStatus: "AI 계획 요청",
-          planReviewStatus: "계획 검토 대기",
+          requestStatus: "AI 검토",
           inProgressStatus: "작업 중",
           reviewStatus: "결과 검토",
         },

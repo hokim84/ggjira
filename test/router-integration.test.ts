@@ -162,6 +162,15 @@ describe("Router with two workers over HTTP", () => {
       async () => {
         for (const key of ["KAN-1", "KAN-2", "KAN-3"]) {
           expect((await jira.getIssue(key)).statusName).toBe(PLAN_REVIEW_STATUS);
+          expect(
+            (
+              db
+                .prepare(
+                  "SELECT ready_history FROM planning_requests WHERE issue_key = ? ORDER BY rowid DESC LIMIT 1",
+                )
+                .get(key) as { ready_history: string | null } | undefined
+            )?.ready_history,
+          ).toBeTruthy();
         }
       },
       { timeout: 20_000, interval: 100 },

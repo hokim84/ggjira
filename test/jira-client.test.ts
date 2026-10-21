@@ -305,6 +305,25 @@ describe("JiraClient", () => {
     ]);
   });
 
+  it("getComments follows pages so recent decision replies are not lost", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        total: 2,
+        comments: [{ id: "old", body: "Question", created: "2026-01-01T00:00:00Z" }],
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        total: 2,
+        comments: [{ id: "new", body: "2", created: "2026-01-02T00:00:00Z" }],
+      }),
+    );
+    expect(
+      (await new JiraClient(secrets).getComments("KAN-1")).map((comment) => comment.body),
+    ).toEqual(["Question", "2"]);
+    expect(fetchMock.mock.calls[1]?.[0]).toContain("?startAt=1");
+  });
+
   it("getComments fetches and maps a comment list", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(200, {

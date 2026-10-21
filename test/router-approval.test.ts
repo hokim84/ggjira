@@ -64,7 +64,6 @@ describe("computeApprovalId", () => {
 describe("computeDelegationApprovalIds (ADR 0044)", () => {
   const STATUSES = {
     requestStatus: "AI 계획 요청",
-    planReviewStatus: "계획 검토 대기",
     inProgressStatus: "작업 중",
   };
 
@@ -93,25 +92,24 @@ describe("computeDelegationApprovalIds (ADR 0044)", () => {
   it("is the move from plan review to in progress after the latest request", async () => {
     const jira = seeded();
     await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
-    await jira.transitionIssueToStatus("KAN-1", STATUSES.planReviewStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
     await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
     const changelog = await jira.getIssueChangelog("KAN-1");
     expect(await idsOf(jira)).toEqual({
       requestApprovalId: changelog[0]?.id,
-      planApprovalId: changelog[2]?.id,
+      planApprovalId: changelog[1]?.id,
     });
   });
 
   it("forgets an approval once the issue is requested again", async () => {
     const jira = seeded();
     await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
-    await jira.transitionIssueToStatus("KAN-1", STATUSES.planReviewStatus);
-    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
     await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
     await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
     const changelog = await jira.getIssueChangelog("KAN-1");
     expect(await idsOf(jira)).toEqual({
-      requestApprovalId: changelog[3]?.id,
+      requestApprovalId: changelog[2]?.id,
       planApprovalId: null,
     });
   });

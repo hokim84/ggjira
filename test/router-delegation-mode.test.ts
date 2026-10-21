@@ -239,7 +239,7 @@ describe("delegation mode (ADR 0044)", () => {
     expect(issue.statusName).toBe(REQUEST_STATUS);
     expect(issue.labels).toEqual(["ggjira-failed"]);
     expect(commentsOn("KAN-1").join("\n")).toContain(
-      `실행 실패 [GGJ-999]: 분류되지 않은 오류: no idea.\n다음: 원인을 고친 뒤 이슈를 "${REQUEST_STATUS}" 상태 밖으로 옮겼다가 다시 넣으세요.`,
+      '실행 실패 [GGJ-999]: 분류되지 않은 오류: no idea.\n다음: 원인을 고친 뒤 담당자가 "재시도" 댓글을 남기거나 제목·설명을 수정하세요.',
     );
     expect((await router.reconcile()).jobsCreated).toEqual([]);
     expect((await router.reconcile()).jobsCreated).toEqual([]);
@@ -340,11 +340,26 @@ describe("delegation mode (ADR 0044)", () => {
     expect((await router.reconcile()).jobsCreated).toEqual([]);
   });
 
+  it("carries a numbered decision into the next planning envelope", async () => {
+    seed("KAN-1");
+    await planned("KAN-1", DECISION_PLAN);
+    router.jira.seedComment("KAN-1", { body: "2", authorAccountId: "user-1" });
+    await move("KAN-1", REQUEST_STATUS);
+    const next = await startJob();
+    expect(next.kind).toBe("planning");
+    expect(next.planningContext?.humanDecision).toMatchObject({ raw: "2", optionId: "B" });
+    expect(
+      next.planningContext?.comments.some((comment) => comment.body.includes("2. NoSQL")),
+    ).toBe(true);
+  });
+
   it("does not approve a plan that waits for a decision (6)", async () => {
     seed("KAN-1");
     await planned("KAN-1", DECISION_PLAN);
     expect(await status("KAN-1")).toBe(PLAN_REVIEW_STATUS);
-    expect(commentsOn("KAN-1").join("\n")).toContain(`"${REQUEST_STATUS}" 상태로 다시 옮기세요`);
+    expect(commentsOn("KAN-1").join("\n")).toContain(
+      `"${REQUEST_STATUS}" 상태에서 자동으로 다시 계획합니다`,
+    );
 
     await move("KAN-1", IN_PROGRESS_STATUS);
     await router.reconcile();
@@ -367,6 +382,7 @@ describe("delegation mode (ADR 0044)", () => {
     seed("KAN-1");
     await planned("KAN-1", SINGLE_PLAN);
     // Requested again, then dragged on before the new plan exists.
+    await move("KAN-1", TODO_STATUS);
     await move("KAN-1", REQUEST_STATUS);
     await router.reconcile();
     await move("KAN-1", PLAN_REVIEW_STATUS);
@@ -379,7 +395,7 @@ describe("delegation mode (ADR 0044)", () => {
     expect(commentsOn("KAN-1").join("\n")).toContain("이전 요청에 대한 계획입니다");
   });
 
-  it("waits for a plan still being applied, then deploys it once, through restarts (7)", async () => {
+  it("refuses an early approval and never applies it to a later plan (7)", async () => {
     seed("KAN-1");
     await move("KAN-1", REQUEST_STATUS);
     const envelope = await startJob();
@@ -388,8 +404,8 @@ describe("delegation mode (ADR 0044)", () => {
     await move("KAN-1", PLAN_REVIEW_STATUS);
     await move("KAN-1", IN_PROGRESS_STATUS);
     const early = await router.reconcile();
-    expect(early.held.map((held) => held.reason).join("\n")).toContain("not fully applied");
-    expect(listPlanDeployments(router.db, "KAN-1")[0]?.state).toBe("waiting_plan_apply");
+    expect(early.held.map((held) => held.reason).join("\n")).toContain("could not be applied");
+    expect(listPlanDeployments(router.db, "KAN-1")).toEqual([]);
 
     await process();
     // The plan's own move to plan review gave way to the human's move.
@@ -399,13 +415,12 @@ describe("delegation mode (ADR 0044)", () => {
     await router.reconcile();
     await process();
 
-    expect(listPlanDeployments(router.db, "KAN-1")).toHaveLength(1);
-    expect(listPlanDeployments(router.db, "KAN-1")[0]?.state).toBe("active");
-    expect(router.jira.createdIssues).toHaveLength(2);
+    expect(listPlanDeployments(router.db, "KAN-1")).toEqual([]);
+    expect(router.jira.createdIssues).toHaveLength(0);
     const approvals = commentsOn("KAN-1").filter((body) =>
       body.includes("이동을 승인으로 기록했습니다"),
     );
-    expect(approvals).toHaveLength(1);
+    expect(approvals).toHaveLength(0);
   });
 
   it("runs the tasks of an approved plan without planning them again, and finishes the parent (7, 8)", async () => {
@@ -534,13 +549,13 @@ describe("delegation mode (ADR 0044)", () => {
     );
     expect(failure).toContain("실행 실패 [GGJ-999]: 분류되지 않은 오류: tests red.");
     expect(failure).toContain(
-      `다음: 원인을 고친 뒤 이슈를 "${PLAN_REVIEW_STATUS}" 상태로 옮겼다가 "${IN_PROGRESS_STATUS}" 상태로 옮겨 승인된 계획을 다시 실행하거나`,
+      `다음: 원인을 고친 뒤 이슈를 "${REQUEST_STATUS}" 상태로 옮겨 다시 계획한 뒤`,
     );
     await router.jira.removeLabel("KAN-1", "ggjira-failed");
     expect((await router.reconcile()).jobsCreated).toEqual([]);
 
-    // Re-approving the same plan is a new, in-scope run of it.
-    await move("KAN-1", PLAN_REVIEW_STATUS);
+    // A new implementation must follow a completed replan.
+    await planned("KAN-1", SINGLE_PLAN);
     await approve("KAN-1");
     await router.reconcile();
     const retry = getOpenJobForIssue(router.db, "KAN-1");

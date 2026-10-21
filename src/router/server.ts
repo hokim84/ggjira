@@ -467,7 +467,6 @@ function registerAdminRoutes(
         const body = parseBody(AdminWorkflowCheckRequestSchema, request.body);
         return admin.checkWorkflow(body.projectKey, {
           requestStatus: body.workflow.requestStatus,
-          planReviewStatus: body.workflow.planReviewStatus,
           inProgressStatus: body.workflow.inProgressStatus,
           reviewStatus: body.workflow.reviewStatus,
           ...(body.workflow.doneStatus ? { doneStatus: body.workflow.doneStatus } : {}),

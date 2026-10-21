@@ -33,8 +33,7 @@ const nfc = (value: string) => value.normalize("NFC");
  *  between is a human's move, but it has to exist in the workflow all the same. */
 export function routerWorkflowHops(workflow: WorkflowStatus): WorkflowHop[] {
   const hops: WorkflowHop[] = [
-    { label: "계획 완료", from: workflow.requestStatus, to: workflow.planReviewStatus },
-    { label: "계획 승인(사람)", from: workflow.planReviewStatus, to: workflow.inProgressStatus },
+    { label: "계획 승인(사람)", from: workflow.requestStatus, to: workflow.inProgressStatus },
     { label: "작업 완료", from: workflow.inProgressStatus, to: workflow.reviewStatus },
   ];
   if (workflow.doneStatus) {

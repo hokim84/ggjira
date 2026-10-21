@@ -24,11 +24,10 @@ const FORM_KEYS = new Set([
 
 /** The workflow's statuses (ADR 0044, ADR 0047): delegated by status, always planned first. */
 const STATUS_FIELDS = [
-  ["requestStatus", "요청 상태", "사람이 AI에게 맡길 때 옮기는 상태. 항상 계획부터 시작"],
   [
-    "planReviewStatus",
-    "계획 검토 상태",
-    "계획이 사람의 검토를 기다리는 상태. 여기서 진행 상태로 옮기면 그 계획을 승인",
+    "requestStatus",
+    "AI 검토 상태",
+    "계획·질문·승인 대기 상태. 완성된 계획을 확인하고 작업 중으로 옮기면 실행",
   ],
   ["inProgressStatus", "진행 상태", "사람과 AI가 함께 쓰는 작업 상태"],
   ["reviewStatus", "검토 상태", "작업이 끝나면 Router가 옮김. 사람이 확인 후 완료 처리"],
@@ -468,7 +467,6 @@ export async function renderConfig(root, ctx) {
     if (
       !projectKey ||
       !workflow.requestStatus ||
-      !workflow.planReviewStatus ||
       !workflow.inProgressStatus ||
       !workflow.reviewStatus
     ) {

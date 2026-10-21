@@ -42,6 +42,10 @@ export function buildPlanningPrompt(ctx: PlanningPromptInput): string {
   }
 
   if (ctx.humanDecision) {
+    const request = [...ctx.comments]
+      .reverse()
+      .find((comment) => comment.body.includes(DECISION_REQUEST_MARKER));
+    if (request) parts.push("", "Previous decision request:", request.body);
     parts.push(
       "",
       "A human has replied to a previous decision request. Use this as the deciding input for this plan; do not ask the same question again:",

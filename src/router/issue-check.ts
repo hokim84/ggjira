@@ -36,6 +36,11 @@ import {
 } from "./db/plan-delegation.js";
 import { taskApprovalId } from "./report-journal.js";
 import { approvalStatusFor } from "./workflow-mode.js";
+import {
+  syncPlanningRequest,
+  latestPlanningRequest,
+  planningDecision,
+} from "./planning-requests.js";
 
 /** An issue's approval as Jira and Router's plan records show it right now. */
 export interface IssueApproval {
@@ -73,10 +78,11 @@ export async function readIssueApproval(
   issue: JiraIssue,
   workspace: WorkspaceConfig,
   kind?: JobKind,
+  now?: string,
 ): Promise<IssueApproval> {
   const planTask = await readPlanTaskMetadata(jira, issue.key);
   if (planTask) await assertPlanTaskCurrent(jira, issue.key, planTask);
-  const approved = await readApproved(jira, db, issue, workspace, planTask, kind);
+  const approved = await readApproved(jira, db, issue, workspace, planTask, kind, now);
   return {
     issue,
     planTask,
@@ -97,15 +103,21 @@ async function readApproved(
   workspace: WorkspaceConfig,
   planTask: PlanTaskMetadata | null,
   kind: JobKind | undefined,
+  now?: string,
 ): Promise<{ kind: JobKind; approvalId: string; requirements: IssueRequirements }> {
-  const { requestStatus, inProgressStatus, planReviewStatus } = workspace.workflow;
+  const { requestStatus, inProgressStatus } = workspace.workflow;
   if (issue.statusName === requestStatus) {
     if (kind === "implementation") {
       throw new NotDelegatedError(`${issue.key} was requested again, to be planned`);
     }
+    const request = await syncPlanningRequest(db, jira, issue, requestStatus, now);
+    if (!request)
+      throw new NotDelegatedError(
+        "request changed concurrently or predates upgrade; reconcile again or delegate again after upgrade",
+      );
     return {
       kind: "planning",
-      approvalId: await computeApprovalId(jira, issue, requestStatus),
+      approvalId: request.id,
       requirements: planningRequirements(issue.summary),
     };
   }
@@ -151,7 +163,6 @@ async function readApproved(
   }
   const { planApprovalId } = await computeDelegationApprovalIds(jira, issue, {
     requestStatus,
-    planReviewStatus,
     inProgressStatus,
   });
   if (planApprovalId !== deployment.approvalId) {
@@ -239,6 +250,7 @@ export async function collectPlanningContext(
   jira: JiraGateway,
   issue: JiraIssue,
   routerAccountId: string,
+  db?: Database.Database,
 ): Promise<PlanningContext> {
   const [comments, subtasks, planProperty] = await Promise.all([
     jira.getComments(issue.key),
@@ -246,7 +258,9 @@ export async function collectPlanningContext(
     jira.getIssueProperty(issue.key, PLAN_PROPERTY_KEY),
   ]);
   const plan = PlanMetadataSchema.safeParse(planProperty);
-  const humanDecision = findHumanDecision(comments, routerAccountId, issue.assigneeAccountId);
+  const humanDecision = db
+    ? planningDecision(latestPlanningRequest(db, issue.key))
+    : findHumanDecision(comments, routerAccountId, issue.assigneeAccountId);
   return {
     ...(plan.success ? { planVersion: plan.data.version } : {}),
     comments: comments.map((comment: JiraComment) => ({

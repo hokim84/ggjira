@@ -188,7 +188,7 @@ async function reconcileIssue(
 ): Promise<void> {
   let approval: IssueApproval;
   try {
-    approval = await readIssueApproval(deps.jira, deps.db, issue, workspace);
+    approval = await readIssueApproval(deps.jira, deps.db, issue, workspace, undefined, deps.now());
   } catch (error) {
     if (error instanceof PlanMetadataError || error instanceof NotDelegatedError) {
       report.skipped.push({ issueKey: issue.key, reason: error.message });
@@ -215,7 +215,7 @@ async function reconcileIssue(
   // any DB transaction, so `jobs/next` can build the envelope from SQLite alone.
   const planning =
     kind === "planning"
-      ? await collectPlanningContext(deps.jira, issue, await routerAccountId())
+      ? await collectPlanningContext(deps.jira, issue, await routerAccountId(), deps.db)
       : undefined;
   const now = deps.now();
   storeApproval(deps.db, approval, now, planning);

@@ -21,14 +21,14 @@ describe("workflow rules (ADR 0044, ADR 0047)", () => {
   });
 
   it("keeps planning questions in plan review and implementation stops in progress", () => {
-    expect(decisionTransitionTarget(testWorkspace, "planning")).toBe(PLAN_REVIEW_STATUS);
+    expect(decisionTransitionTarget(testWorkspace, "planning")).toBeNull();
     expect(decisionTransitionTarget(testWorkspace, "implementation")).toBeNull();
   });
 
   it("asks for a new approval the way each kind is approved", () => {
     expect(reRequestHint(testWorkspace)).toContain(PLAN_REVIEW_STATUS);
     expect(reRequestHint(testWorkspace, "planning")).toBe(
-      `move the issue out of "${REQUEST_STATUS}" and back into it`,
+      'ask the assignee to comment "재시도" or edit the title or description',
     );
   });
 

@@ -53,14 +53,15 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 
 워크플로는 하나다(ADR 0044, 0047). 사람이 상태를 옮겨 위임하고, 모든 위임은 계획부터 하며, 사람이 승인한 계획만
 실행한다. 라벨은 위임·승인·철회에 쓰이지 않는다(ADR 0046). 예전 `workflow.mode`·`planningStatus`·
-`needsDecisionStatus` 설정은 검증 오류다.
+`needsDecisionStatus`·`planReviewStatus` 설정은 검증 오류다.
 
 1. 후보: workspace의 요청 상태만 조회한다. 승인된 계획의 구현은 Router의 계획·배포 기록으로 찾는다
    (아래 "위임과 계획 승인"). v4 메타 이슈 라벨은 제외한다.
-2. 승인 id: 요청 상태 진입(계획), 또는 계획 승인 전이 사건(구현)이다.
+2. 승인 id: 영속 계획 요청 ID(상태 진입·입력 수정·유효한 답변·명시적 재시도), 또는 계획 승인 전이 사건(구현)이다.
    입력 hash(v2, ADR 0035)는 job 종류·제목·설명·실행 계약·plan-task 위치로 만든다. 댓글·라벨·상태·Assignee는
-   포함하지 않는다. v1 해시로 찍힌 job은 입력이 바뀐 것으로 본다. 같은 승인에서 입력이 바뀌면 열린 job을 취소하고
-   그 승인을 보류한다(`admin_holds`).
+   포함하지 않는다. 계획은 GGJIRA 관리 블록을 제외한다. 번호 답변은 해시 대신 별도 새 요청으로 식별한다.
+   v1 해시로 찍힌 job은 입력이 바뀐 것으로 본다. 구현 중 입력 변경은 취소·승인 보류(`admin_holds`)이며,
+   AI 검토 중 입력 변경은 이전 계획 작업을 취소한 뒤 새 요청으로 다시 계획한다.
 3. 실행 계약(ADR 0047): 구현이 따르는 완료 조건·검증·범위·허용 경로·capability·의존성은 사람이 승인한 계획에서
    온다(`src/pm/contract.ts`). Router가 저장한 계획 결과(`plan_reviews` → `results`)를 읽고, 설명에 렌더링한 절은
    다시 파싱하지 않는다. 하위 작업은 그 작업을 정의한 계획에서, 의존성은 Router가 생성 시 기록한
@@ -79,13 +80,15 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 
 ### 위임과 계획 승인 (ADR 0044, `src/router/delegation.ts`)
 
-1. 위임: `requestStatus`(AI 계획 요청) 진입이 위임 사건이다. 그 상태의 이슈는 언제나 planning job 하나가 된다.
-   계획은 요청 상태에서 진행되고, 결과는 `planReviewStatus`로 간다. 결과를 저장하는 트랜잭션에서 `plan_reviews`에
+1. 위임: `requestStatus`(AI 검토) 진입, 제목·설명 변경, 담당자의 선택지 번호 답변 또는 실패 후 `재시도` 댓글이
+   새 계획 요청이다(ADR 0050). migration 16의 `planning_requests`에 진입 ID·입력 해시·원문 스냅샷·답변·소스 댓글을
+   영속화하고 동일 요청을 한 번만 실행한다. 계획·질문·승인 대기는 모두 요청 상태에 남는다. `plan_reviews`에
    계획 버전·요청 승인 id·outcome·task id를 남긴다(migration 14). 실행 단위(하위 작업, 없으면 부모)마다 완료
    조건과 검증이 없는 계획은 적용하지 않고 실패로 보고한다(ADR 0047).
 2. 승인: reconcile이 Router가 아는 열린 계획의 이슈만 다시 읽는다. 공용 '작업 중'을 검색하지 않는다. 최신 요청
-   이후의 마지막 `planReviewStatus → inProgressStatus` 이동이 최신 `planned` 계획에 대한 것이고, 관리자 hold가
-   없으며, 계획이 Jira에 다 반영됐고 버전이 같으면 `plan_deployments`에 한 번 기록한다. 그 뒤에야 실행을 허용한다.
+   이후의 마지막 `requestStatus → inProgressStatus` 이동이 최신 `planned` 계획에 대한 것이고, 관리자 hold가
+   없으며, 이동 전에 계획 반영이 완료됐고 입력·버전이 같으면 `plan_deployments`에 한 번 기록한다. 반영 완료 시
+   관찰한 changelog ID를 보존해 조기 이동이 나중에 도착한 계획의 승인이 되는 것을 차단한다. 댓글은 구현을 승인하지 않는다.
    승인이 아닌 이동은 댓글 1회와 `plan_approval_refused` 주의 항목만 남긴다.
    담당자가 없는 이슈는 요청이든 승인이든 실행하지 않는다. 승인 id마다 한 번 댓글을 달고 `unassigned` 주의
    항목을 남기며, 담당자가 생겨 job이 만들어지면 해소한다(`src/router/scheduler.ts` `holdUnassigned`).
@@ -144,10 +147,10 @@ PR 머지는 그 머지의 head가 최신 대상의 head와 같을 때만(또는
 start 허가 ──▶ [start:<attempt>]   계획: "계획 시작" 댓글 (상태는 옮기지 않는다)
 result 저장 ─▶ [<resultId>]         구현 성공: 댓글 → 실패 라벨 제거 → reviewStatus
                                     실패: 댓글 + ggjira-failed (실행하던 상태 유지)
-                                    결정 요청: 계획은 댓글 → planReviewStatus, 구현은 댓글만(작업 중 유지)
+                                    결정 요청: 계획은 댓글만(AI 검토 유지), 구현은 댓글만(작업 중 유지)
                                       (계획: plan.decision / 구현: 이탈·결정·증거 위치, ADR 0036)
                                     계획: 부모 계획 블록 → 하위 이슈 생성(마커) → plan-task
-                                          → ggjira.plan → superseded → 댓글 → planReviewStatus
+                                          → ggjira.plan → superseded → 댓글(AI 검토 유지)
 계획 승인 ───▶ [deploy:<id>]        승인 댓글 → 하위 작업을 inProgressStatus로
 하위 작업 완료 ▶ [deploy-done:<id>]  부모 → reviewStatus
 중단 확인 ───▶ [recovered:<attempt>] "적용된 것 없음" 댓글
@@ -248,6 +251,14 @@ PATH·PATHEXT로 찾고, npm `.cmd` 셰임이면 그 Node 스크립트를 직접
   loopback만 예외다.
 - `docker compose -f docker-compose.test.yml run --rm --build check`는 Linux에서 check 전체를
   돌린다. 여기에는 Router 하나와 Fake 워커 둘의 통합 시나리오가 포함된다.
+
+## 계획 결정 답변 (ADR 0049)
+
+계획의 결정 요청은 선택지를 1부터 번호로 표시한다(ADR 0049, 0050). 담당자는 번호만 댓글로 남긴다.
+Router는 최신 미응답 질문의 `decisionOptions:` 매핑으로 원래 optionId를 복원하고, 범위 밖 번호는 무시한다.
+현재 담당자의 첫 유효 답변만 자동 재계획을 시작한다. 일반 댓글은 자동 실행 신호가 아니다. 댓글 이벤트는
+재평가를 깨우며, 누락은 polling으로 복구한다. Router 댓글은 보고 마커로 제외해 공유 Jira 계정에서도 반복 실행을 막는다.
+PM 입력에는 답과 함께 최신 질문·선택지를 전달한다. 이전 ID 답과 자유 서술 답은 유지한다.
 
 ## 기본 프롬프트 조회
 

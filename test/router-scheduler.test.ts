@@ -359,7 +359,7 @@ describe("reconcileCandidates", () => {
     expect(edited.jobsCancelled).toContain(first?.id);
     expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
 
-    await reapprove(jira, testWorkspace, "KAN-1");
+    await reapprove(jira, testWorkspace, "KAN-1", db);
     const reapproved = await reconcileCandidates(deps, []);
     expect(reapproved.jobsCreated).toHaveLength(1);
     expect(getOpenJobForIssue(db, "KAN-1")?.approvalId).not.toBe(first?.approvalId);

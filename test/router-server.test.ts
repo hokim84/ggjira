@@ -140,12 +140,12 @@ describe("Router server", () => {
       });
     });
 
-    it("records comment events and other projects' events without waking a reconcile", async () => {
+    it("wakes a reconcile on comment events but ignores other projects", async () => {
       const comment = { webhookEvent: "comment_created", issue: { key: "KAN-7" } };
-      expect((await deliver(comment, "d-1")).json()).toEqual({ status: "ignored" });
+      expect((await deliver(comment, "d-1")).json()).toEqual({ status: "accepted" });
       expect((await deliver(issueUpdated("OPS-1"), "d-2")).json()).toEqual({ status: "ignored" });
       expect((await deliver(comment, "d-1")).json()).toEqual({ status: "duplicate" });
-      expect(listUnprocessedEvents(db)).toEqual([]);
+      expect(listUnprocessedEvents(db)).toHaveLength(1);
     });
 
     it("answers 413 to an oversized body and stores nothing", async () => {

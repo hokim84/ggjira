@@ -137,6 +137,30 @@ const MIGRATIONS: readonly Migration[] = [
       for (const statement of READINESS_HOLD_CLOSE_STATEMENTS) db.exec(statement);
     },
   },
+  {
+    version: 16,
+    description: "single AI review: durable planning requests and upgrade baseline",
+    up(db) {
+      db.exec(`CREATE TABLE planning_requests (
+        id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, entry_id TEXT NOT NULL,
+        input_hash TEXT NOT NULL, input_snapshot TEXT NOT NULL DEFAULT '{}',
+        source_comment_id TEXT, decision TEXT,
+        created_at TEXT NOT NULL, ready_history TEXT,
+        UNIQUE(issue_key, source_comment_id));
+        CREATE INDEX planning_requests_issue ON planning_requests(issue_key);
+        CREATE TABLE planning_baselines (issue_key TEXT PRIMARY KEY, cutoff TEXT NOT NULL);`);
+      const cutoff = new Date().toISOString();
+      db.prepare("INSERT INTO planning_baselines SELECT DISTINCT issue_key, ? FROM jobs").run(
+        cutoff,
+      );
+      db.prepare(
+        "UPDATE plan_reviews SET closed_at = ?, closed_reason = 'single AI review upgrade; delegate again' WHERE closed_at IS NULL",
+      ).run(cutoff);
+      db.prepare(
+        "UPDATE plan_deployments SET state = 'revoked', reason = 'single AI review upgrade; delegate again', updated_at = ? WHERE state IN ('active','waiting_plan_apply')",
+      ).run(cutoff);
+    },
+  },
 ];
 
 interface MigrationRow {

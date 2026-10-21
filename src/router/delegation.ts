@@ -38,6 +38,7 @@ import {
 } from "./report-journal.js";
 import type { SchedulerDeps, SchedulerReport } from "./scheduler.js";
 import { isDependencyResolved } from "./workflow-mode.js";
+import { latestPlanningRequest, planningFingerprint } from "./planning-requests.js";
 
 /**
  * The plan half of the reconcile pass (ADR 0044). A plan Router applied waits for a
@@ -67,7 +68,7 @@ async function reconcilePlan(
   reconcile: (issue: JiraIssue) => Promise<void>,
 ): Promise<void> {
   const { db } = deps;
-  const { requestStatus, planReviewStatus, inProgressStatus, doneStatus } = workspace.workflow;
+  const { requestStatus, inProgressStatus, doneStatus } = workspace.workflow;
   const now = deps.now();
   let issue: JiraIssue;
   try {
@@ -95,7 +96,6 @@ async function reconcilePlan(
 
   const ids = await computeDelegationApprovalIds(deps.jira, issue, {
     requestStatus,
-    planReviewStatus,
     inProgressStatus,
   });
   for (const live of listLivePlanDeployments(db, issue.key)) {
@@ -116,7 +116,15 @@ async function reconcilePlan(
       });
       return;
     }
-    const refusal = refusalOf(review, ids.requestApprovalId);
+    const request = latestPlanningRequest(db, issue.key);
+    const refusal =
+      refusalOf(review, request?.id ?? ids.requestApprovalId) ??
+      (!request?.ready_history ||
+      request.entry_id !== ids.requestApprovalId ||
+      request.input_hash !== planningFingerprint(issue) ||
+      (JSON.parse(request.ready_history) as string[]).includes(ids.planApprovalId)
+        ? { kind: "not_applied" as const, planVersion: review.planVersion }
+        : undefined);
     if (refusal) {
       refuse(deps, workspace, review, ids.planApprovalId, refusal, report);
       return;

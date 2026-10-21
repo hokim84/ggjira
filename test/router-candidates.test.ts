@@ -9,7 +9,6 @@ const workspace: WorkspaceConfig = {
   projectKeys: ["KAN"],
   workflow: {
     requestStatus: "AI 작업 요청",
-    planReviewStatus: "계획 검토 대기",
     inProgressStatus: "작업 중",
     reviewStatus: "AI 작업 완료",
   },

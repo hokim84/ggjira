@@ -140,6 +140,7 @@ interface RawComment {
 
 interface RawCommentsResponse {
   comments: RawComment[];
+  total?: number;
 }
 
 interface RawCreateIssueResponse {
@@ -336,15 +337,22 @@ export class JiraClient implements JiraGateway {
   }
 
   async getComments(key: string): Promise<JiraComment[]> {
-    const response = await withRetry(
-      () =>
-        this.request<RawCommentsResponse>(
-          "GET",
-          `/rest/api/2/issue/${encodeURIComponent(key)}/comment`,
-        ),
-      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
-    );
-    return response.comments.map(mapRawComment);
+    const comments: JiraComment[] = [];
+    let startAt = 0;
+    for (;;) {
+      const response = await withRetry(
+        () =>
+          this.request<RawCommentsResponse>(
+            "GET",
+            `/rest/api/2/issue/${encodeURIComponent(key)}/comment${startAt ? `?startAt=${startAt}` : ""}`,
+          ),
+        { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+      );
+      comments.push(...response.comments.map(mapRawComment));
+      startAt += response.comments.length;
+      if (!response.comments.length || response.total === undefined || startAt >= response.total)
+        return comments;
+    }
   }
 
   async getTransitions(key: string): Promise<JiraTransition[]> {

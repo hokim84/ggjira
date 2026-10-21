@@ -246,13 +246,14 @@ export const AdminJiraProjectRequestSchema = z.object({ projectKey: z.string().m
  *  project's real transitions. */
 export const AdminWorkflowCheckRequestSchema = z.object({
   projectKey: z.string().min(1),
-  workflow: z.object({
-    requestStatus: z.string().min(1),
-    planReviewStatus: z.string().min(1),
-    inProgressStatus: z.string().min(1),
-    reviewStatus: z.string().min(1),
-    doneStatus: z.string().min(1).optional(),
-  }),
+  workflow: z
+    .object({
+      requestStatus: z.string().min(1),
+      inProgressStatus: z.string().min(1),
+      reviewStatus: z.string().min(1),
+      doneStatus: z.string().min(1).optional(),
+    })
+    .strict(),
 });
 
 /** `POST /api/v1/admin/reviews/:targetId/judgments` (F01, ADR 0043). A record only; a hold or a

@@ -13,6 +13,8 @@ import {
   type PlanReviewOutcome,
 } from "./db/plan-delegation.js";
 import { parseTaskApprovalId } from "./report-journal.js";
+import { latestPlanningRequest } from "./planning-requests.js";
+import { listBatchReportSteps } from "./db/report-steps.js";
 
 /**
  * Where an issue stands (ADR 0044), for the admin API and the web UI. Read-only:
@@ -33,6 +35,8 @@ export type DelegationStage =
   | "planning"
   | "plan_review"
   | "plan_needs_decision"
+  | "plan_failed"
+  | "plan_held"
   | "approved_waiting"
   | "running"
   | "coordinating"
@@ -44,7 +48,6 @@ export interface IssueDelegationView {
   stage: DelegationStage;
   statuses: {
     request: string;
-    planReview: string;
     inProgress: string;
     review: string;
     done: string | null;
@@ -74,18 +77,37 @@ export async function readIssueDelegation(
   issue: JiraIssue,
 ): Promise<IssueDelegationView> {
   const { db } = deps;
-  const { requestStatus, planReviewStatus, inProgressStatus, reviewStatus, doneStatus } =
-    workspace.workflow;
+  const { requestStatus, inProgressStatus, reviewStatus, doneStatus } = workspace.workflow;
   const review = getLatestPlanReview(db, issue.key);
   const deployment = listPlanDeployments(db, issue.key)[0];
   const job = getOpenJobForIssue(db, issue.key);
+  const request = latestPlanningRequest(db, issue.key);
   let parentKey: string | null = null;
   let stage: DelegationStage = "not_delegated";
 
   if (issue.statusName === requestStatus) {
-    stage = job?.kind === "planning" && job.state !== "queued" ? "planning" : "plan_requested";
-  } else if (issue.statusName === planReviewStatus && review && !review.closedAt) {
-    stage = review.outcome === "needs_decision" ? "plan_needs_decision" : "plan_review";
+    stage =
+      job?.kind === "planning"
+        ? ["failed", "timed_out"].includes(job.state)
+          ? "plan_failed"
+          : ["recovery_required", "cancel_requested"].includes(job.state)
+            ? "plan_held"
+            : job.state === "queued" || job.state === "waiting"
+              ? "plan_requested"
+              : "planning"
+        : review && !review.closedAt && review.requestApprovalId === request?.id
+          ? review.outcome === "needs_decision"
+            ? "plan_needs_decision"
+            : review.outcome === "not_applied"
+              ? "plan_failed"
+              : request.ready_history
+                ? "plan_review"
+                : listBatchReportSteps(db, review.id).some((step) =>
+                      ["failed", "recovery_required"].includes(step.status),
+                    )
+                  ? "plan_held"
+                  : "planning"
+          : "plan_requested";
   } else if (issue.statusName === inProgressStatus) {
     if (deployment?.state === "waiting_plan_apply") {
       stage = "approved_waiting";
@@ -116,14 +138,17 @@ export async function readIssueDelegation(
     ? (parseTaskApprovalId(runApproval)?.planApprovalId ?? runApproval)
     : deployment?.approvalId;
   const heldBy =
+    (request ? getApprovalHoldActor(db, issue.key, request.id) : undefined) ??
     (runApproval ? getApprovalHoldActor(db, issue.key, runApproval) : undefined) ??
     (planApproval ? getApprovalHoldActor(db, issue.key, planApproval) : undefined) ??
-    null;
+    (!request && db.prepare("SELECT 1 FROM planning_baselines LIMIT 1").get()
+      ? "migration:single-review"
+      : null);
+  if (heldBy && issue.statusName === requestStatus) stage = "plan_held";
   return {
     stage,
     statuses: {
       request: requestStatus,
-      planReview: planReviewStatus,
       inProgress: inProgressStatus,
       review: reviewStatus,
       done: doneStatus ?? null,

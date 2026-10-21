@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import { type RenderSection, renderSections } from "../issue/description.js";
+import { normalizeExecutionText } from "../issue/input-hash.js";
 import type { Plan, PlanTaskSchema } from "./plan.js";
 
 /**
@@ -94,6 +95,16 @@ export function planTaskIds(plan: Plan): string[] {
 
 export const PLAN_START = "{noformat}[GGJIRA:PLAN:START]{noformat}";
 export const PLAN_END = "{noformat}[GGJIRA:PLAN:END]{noformat}";
+
+/** Router's display block is not a human requirement edit (ADR 0050). */
+export function requirementDescription(description: string | null): string {
+  const text = description ?? "";
+  const start = text.indexOf(PLAN_START);
+  const end = text.indexOf(PLAN_END, start);
+  return normalizeExecutionText(
+    start >= 0 && end >= start ? text.slice(0, start) + text.slice(end + PLAN_END.length) : text,
+  );
+}
 
 /** The parent's description with its GGJIRA-managed plan block replaced (or appended), leaving
  *  whatever the human wrote around it untouched. */

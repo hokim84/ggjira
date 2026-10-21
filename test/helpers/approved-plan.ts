@@ -5,13 +5,19 @@ import { PLAN_PROPERTY_KEY } from "../../src/pm/metadata.js";
 import { computeDelegationApprovalIds } from "../../src/router/approval.js";
 import type { WorkspaceConfig } from "../../src/router/config.js";
 import { createJob } from "../../src/router/db/jobs.js";
-import { recordPlanDeployment, recordPlanReview } from "../../src/router/db/plan-delegation.js";
+import {
+  recordPlanDeployment,
+  recordPlanReview,
+  getLatestPlanReview,
+  getReviewedPlan,
+} from "../../src/router/db/plan-delegation.js";
 import {
   insertReportBatch,
   listBatchReportSteps,
   updateReportStep,
 } from "../../src/router/db/report-steps.js";
 import { recordResult } from "../../src/router/db/results.js";
+import { planningFingerprint, syncPlanningRequest } from "../../src/router/planning-requests.js";
 import {
   issueDescription,
   singlePlan,
@@ -41,7 +47,7 @@ export async function seedApprovedIssue(
   opts: ApprovedIssueOptions = {},
 ): Promise<void> {
   const { db, jira, workspace, now } = deps;
-  const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
+  const { requestStatus, inProgressStatus } = workspace.workflow;
   jira.seedIssue(
     {
       key,
@@ -55,7 +61,7 @@ export async function seedApprovedIssue(
     WORKFLOW_TRANSITIONS,
   );
   await jira.transitionIssueToStatus(key, requestStatus);
-  await jira.transitionIssueToStatus(key, planReviewStatus);
+  await jira.transitionIssueToStatus(key, requestStatus);
   await jira.transitionIssueToStatus(key, inProgressStatus);
   const ids = await computeDelegationApprovalIds(
     jira,
@@ -74,6 +80,16 @@ export async function seedApprovedIssue(
   );
   // The plan was written well before the test's own jobs (and outside Jev's look-back window).
   const plannedAt = new Date(Date.parse(now) - 2 * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare(
+    "INSERT INTO planning_requests (id,issue_key,entry_id,input_hash,created_at,ready_history) VALUES (?,?,?,?,?,?)",
+  ).run(
+    ids.requestApprovalId,
+    key,
+    ids.requestApprovalId,
+    planningFingerprint(await jira.getIssue(key)),
+    plannedAt,
+    "[]",
+  );
   createJob(db, {
     id: jobId,
     issueKey: key,
@@ -135,7 +151,53 @@ export async function reapprove(
   jira: FakeJiraGateway,
   workspace: WorkspaceConfig,
   key: string,
+  db: Database.Database,
 ): Promise<void> {
-  await jira.transitionIssueToStatus(key, workspace.workflow.planReviewStatus);
+  await jira.transitionIssueToStatus(key, workspace.workflow.requestStatus);
+  const request = await syncPlanningRequest(
+    db,
+    jira,
+    await jira.getIssue(key),
+    workspace.workflow.requestStatus,
+  );
+  const old = getLatestPlanReview(db, key);
+  if (!request || !old) throw new Error("reapprove needs a previous plan");
+  const plan = getReviewedPlan(db, old.id);
+  const id = `replanned-${request.id}`;
+  const now = new Date().toISOString();
+  // Seed a completed replan before the human approves, as seedApprovedIssue does initially.
+  recordResult(db, {
+    resultId: id,
+    jobId: old.jobId,
+    attemptId: id,
+    payload: JSON.stringify({ status: "planned", plan }),
+    applied: true,
+    now,
+  });
+  recordPlanReview(db, {
+    id,
+    issueKey: key,
+    workspaceId: workspace.id,
+    jobId: old.jobId,
+    attemptId: id,
+    requestApprovalId: request.id,
+    planVersion: id,
+    outcome: "planned",
+    taskIds: old.taskIds,
+    now,
+  });
+  await jira.setIssueProperty(key, PLAN_PROPERTY_KEY, { version: id, taskIds: old.taskIds });
+  insertReportBatch(db, {
+    batchId: id,
+    resultId: id,
+    jobId: old.jobId,
+    attemptId: id,
+    issueKey: key,
+    steps: [{ kind: "plan-property", params: { version: id, taskIds: old.taskIds } }],
+    now,
+  });
+  for (const step of listBatchReportSteps(db, id))
+    updateReportStep(db, step.id, { status: "applied", now });
+  db.prepare("UPDATE planning_requests SET ready_history = '[]' WHERE id = ?").run(request.id);
   await jira.transitionIssueToStatus(key, workspace.workflow.inProgressStatus);
 }

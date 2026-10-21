@@ -4,7 +4,7 @@ Jira를 인간과 AI가 함께 쓰는 작업 인터페이스로 삼는 경량 �
 configVersion 5는 **Router 한 대**와 **Worker 여러 대**로 구성된다.
 
 ```text
-Jira ──Webhook──▶ Router ──▶ SQLite          사람: 이슈를 "AI 계획 요청"으로 옮긴다 (= 위임)
+Jira ──Webhook──▶ Router ──▶ SQLite          사람: 이슈를 "AI 검토"로 옮긴다 (= 위임)
                    ▲                         Router: 계획 → 사람의 승인 확인 → 구현 → Jira에 보고
                    │ HTTPS long polling      Worker: 받은 job을 Claude Code / Codex CLI로 실행
           ┌────────┴────────┐
@@ -18,7 +18,9 @@ Jira ──Webhook──▶ Router ──▶ SQLite          사람: 이슈를 "
   Router는 `repositoryId`와 `providerId`만 보내고, 실제 경로·명령은 워커 설정이 정한다.
 - **Jira Assignee는 결과에 책임지는 사람**이다. AI 실행 중에도 바꾸지 않는다.
 - **모든 위임은 계획부터 시작한다**(ADR 0044, 0047). 워커가 계획을 세우면 Router가 부모 이슈에 계획을
-  기록하고 하위 이슈를 만든다. 사람이 계획을 "계획 검토 대기"에서 "작업 중"으로 옮겨야 실행된다.
+  기록하고 하위 이슈를 만든다. 계획·질문·승인 대기는 모두 "AI 검토"에 머문다. 담당자의 번호 댓글로
+  질문에 답하거나 제목·설명을 수정하면 자동으로 다시 계획한다. 실패한 계획은 담당자의 `재시도` 댓글로
+  다시 실행한다. 완성된 계획을 확인하고 사람이 "작업 중"으로 옮겨야 구현이 시작된다(ADR 0050).
   실행은 승인된 계획의 완료 조건·검증 방법·범위를 지킨다. 이슈 설명의 특정 절 이름은 읽지 않는다.
 
 구조와 동작은 [`docs/architecture.md`](./docs/architecture.md), 운영·장애 대응은
@@ -47,15 +49,14 @@ nvm use && npm install        # 워커 머신은 npm run build 후 `node dist/cl
 
 | 설정 키 | 예 | 의미 |
 |---|---|---|
-| `requestStatus` | AI 계획 요청 | 사람이 이 상태로 옮기면 AI에 위임. 항상 계획부터 한다 |
-| `planReviewStatus` | 계획 검토 대기 | 계획이 끝나면 Router가 옮김. 사람이 계획을 검토한다 |
-| `inProgressStatus` | 작업 중 | 사람과 AI가 함께 쓰는 상태. 계획 검토 대기에서 여기로 옮기면 그 계획을 승인 |
+| `requestStatus` | AI 검토 | 계획·질문·승인 대기. 담당자의 번호 답변과 제목·설명 수정은 자동 재계획 |
+| `inProgressStatus` | 작업 중 | 사람이 AI 검토에서 옮기면 최신 완성 계획을 승인 |
 | `reviewStatus` | 결과 검토 | 구현이 끝나면 Router가 옮김 |
 | `doneStatus` (선택) | 완료 | 워커가 연 PR이 머지되면 Router가 옮김. 의존성은 여기에 와야 풀린다 |
 
-요청 → 계획 검토 대기 → 작업 중 → 결과 검토(→ 완료)로 가는 전이가 있어야 한다. 필요한 capability는
-계획이 정한다(`requiredCapabilities`). 예전 `planningStatus`·`needsDecisionStatus`·`mode` 설정은 오류로
-거절한다(runbook §34).
+AI 검토 → 작업 중 → 결과 검토(→ 완료)로 가는 전이가 있어야 한다. 필요한 capability는
+계획이 정한다(`requiredCapabilities`). 예전 `planReviewStatus`·`planningStatus`·`needsDecisionStatus`·`mode` 설정은 오류로
+거절한다(runbook §36).
 
 ## 2. Router 띄우기
 

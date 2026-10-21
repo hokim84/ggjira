@@ -47,13 +47,13 @@ describe("Router SQLite store", () => {
     });
 
     it("applies every migration and records it in schema_migrations", () => {
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(16);
     });
 
     it("is idempotent: reopening an existing database does not re-run migrations", () => {
       db.close();
       const reopened = openRouterDb(dbPath);
-      expect(currentSchemaVersion(reopened)).toBe(15);
+      expect(currentSchemaVersion(reopened)).toBe(16);
       reopened.close();
       // Reopen once more so the outer afterEach's db.close() has a live handle.
       db = openRouterDb(dbPath);
@@ -77,7 +77,7 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(16);
       expect(getJob(db, "job-v9")?.inputHash).toBe("legacy-hash");
       expect(db.prepare("SELECT COUNT(*) AS n FROM readiness_holds").get()).toEqual({ n: 0 });
     });
@@ -112,12 +112,18 @@ describe("Router SQLite store", () => {
         "INSERT INTO results (id, job_id, attempt_id, payload, received_at, applied) VALUES (?, ?, ?, ?, ?, 1)",
       ).run("result-m3", "job-m3", "attempt-m3", '{"status":"succeeded"}', "2026-10-01T00:00:00Z");
       // Roll the file back to what the M3 Router left behind.
-      for (const table of [...DELEGATION_TABLES, ...M4_TABLES]) db.exec(`DROP TABLE ${table}`);
+      for (const table of [
+        "planning_requests",
+        "planning_baselines",
+        ...DELEGATION_TABLES,
+        ...M4_TABLES,
+      ])
+        db.exec(`DROP TABLE ${table}`);
       db.prepare("DELETE FROM schema_migrations WHERE version > 10").run();
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(16);
       expect(tables()).toEqual(expect.arrayContaining(M4_TABLES));
       expect(getJob(db, "job-m3")).toMatchObject({ state: "succeeded", inputHash: "v2:abc" });
       expect(db.prepare("SELECT COUNT(*) AS n FROM results").get()).toEqual({ n: 1 });
@@ -129,7 +135,7 @@ describe("Router SQLite store", () => {
       // Re-running the migrations (another restart) changes nothing.
       db.close();
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(16);
     });
 
     it("upgrades an M4 (version 13) database to the delegation tables without touching its rows", () => {
@@ -143,12 +149,13 @@ describe("Router SQLite store", () => {
         state: "succeeded",
         now: "2026-10-01T00:00:00.000Z",
       });
-      for (const table of DELEGATION_TABLES) db.exec(`DROP TABLE ${table}`);
+      for (const table of ["planning_requests", "planning_baselines", ...DELEGATION_TABLES])
+        db.exec(`DROP TABLE ${table}`);
       db.prepare("DELETE FROM schema_migrations WHERE version > 13").run();
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(16);
       expect(tables()).toEqual(expect.arrayContaining([...M4_TABLES, ...DELEGATION_TABLES]));
       expect(getJob(db, "job-m4")).toMatchObject({ state: "succeeded", kind: "planning" });
       // No plan or approval is made up for work done before delegation existed.
@@ -169,11 +176,12 @@ describe("Router SQLite store", () => {
            'acceptance', 'immediate', 'r', 't', 't', 'open'),
            ('i2', 'k2', 'KAN-36', 'failed', 'x', 'immediate', 'r', 't', 't', 'open')`,
       ).run();
+      db.exec("DROP TABLE planning_requests; DROP TABLE planning_baselines");
       db.prepare("DELETE FROM schema_migrations WHERE version > 14").run();
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(16);
       expect(
         db.prepare("SELECT resolved_at IS NOT NULL AS closed FROM readiness_holds").get(),
       ).toEqual({ closed: 1 });

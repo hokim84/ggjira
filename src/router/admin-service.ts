@@ -257,11 +257,9 @@ const MAX_PAGE_SIZE = 200;
 function approvalRules(workspace: WorkspaceConfig) {
   // ADR 0044: the plan-review status is where approvals come from, and a run's own moves to
   // review/done are re-checked against it.
-  const { requestStatus, planReviewStatus, inProgressStatus, reviewStatus, doneStatus } =
-    workspace.workflow;
+  const { requestStatus, inProgressStatus, reviewStatus, doneStatus } = workspace.workflow;
   return {
     requestStatus,
-    planReviewStatus,
     inProgressStatus,
     reviewStatus,
     doneStatus: doneStatus ?? null,

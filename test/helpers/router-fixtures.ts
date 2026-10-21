@@ -6,8 +6,9 @@ import type { RouterConfig, WorkerPolicyConfig, WorkspaceConfig } from "../../sr
 
 /** The workspace workflow (ADR 0044, ADR 0047): delegated by status, always planned first. */
 export const TODO_STATUS = "할 일";
-export const REQUEST_STATUS = "AI 계획 요청";
-export const PLAN_REVIEW_STATUS = "계획 검토 대기";
+export const REQUEST_STATUS = "AI 검토";
+/** Planning and review share one Jira state. */
+export const PLAN_REVIEW_STATUS = REQUEST_STATUS;
 export const IN_PROGRESS_STATUS = "작업 중";
 export const REVIEW_STATUS = "결과 검토";
 export const DONE_STATUS = "완료";
@@ -18,7 +19,6 @@ export const testWorkspace: WorkspaceConfig = {
   projectKeys: ["KAN"],
   workflow: {
     requestStatus: REQUEST_STATUS,
-    planReviewStatus: PLAN_REVIEW_STATUS,
     inProgressStatus: IN_PROGRESS_STATUS,
     reviewStatus: REVIEW_STATUS,
     doneStatus: DONE_STATUS,

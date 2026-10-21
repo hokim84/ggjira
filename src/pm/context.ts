@@ -11,9 +11,9 @@ export interface HumanDecision {
 /**
  * Finds the human's reply to the most recent decision-request comment: the
  * first comment by someone other than this agent, after the last
- * DECISION-REQUEST comment. Looks for "Decision: <id>" (case-insensitive) to
- * extract a structured option id; falls back to the raw text otherwise so a
- * free-text reply is never silently dropped.
+ * DECISION-REQUEST comment. A displayed option number maps to its original id using
+ * the request's decisionOptions line. Out-of-range numbers are not decisions.
+ * Older "Decision: <id>" and free-text replies remain readable.
  */
 export function findHumanDecision(
   comments: JiraComment[],
@@ -37,6 +37,7 @@ export function findHumanDecision(
       comment.authorAccountId !== selfAccountId ||
       (ownerAccountId !== null && comment.authorAccountId === ownerAccountId);
     if (!isHuman) return false;
+    if (!validNumberReply(comment.body, requestBody)) return false;
     if (!expectedDecisionId) return true;
     // A plain "Decision: A" reply with no decisionId line is still accepted -- it's already
     // scoped to comments after the latest request, so nothing else could be answering. Only an
@@ -48,11 +49,39 @@ export function findHumanDecision(
   if (!reply) return undefined;
 
   const match = reply.body.match(/decision\s*:\s*([A-Za-z0-9._-]+)/i);
-  const optionId = match?.[1];
+  const number = replyNumber(reply.body);
+  const optionId = number === undefined ? match?.[1] : numberedOptions(requestBody)?.[number - 1];
   return {
     raw: reply.body,
     ...(optionId ? { optionId } : {}),
     ...(expectedDecisionId ? { decisionId: expectedDecisionId } : {}),
     ...(planVersion ? { planVersion } : {}),
   };
+}
+
+function replyNumber(body: string): number | undefined {
+  const match = body.trim().match(/^([+-]?\d+)\s*(?:번)?$/u);
+  return match ? Number(match[1]) : undefined;
+}
+
+function numberedOptions(requestBody: string): string[] | undefined {
+  const json = requestBody.match(/^decisionOptions: (.+)$/m)?.[1];
+  if (!json) return undefined;
+  try {
+    const options: unknown = JSON.parse(json);
+    return Array.isArray(options) && options.every((id) => typeof id === "string" && id.length > 0)
+      ? options
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function validNumberReply(body: string, requestBody: string): boolean {
+  const number = replyNumber(body);
+  if (number === undefined) return true;
+  const options = numberedOptions(requestBody);
+  // Old requests did not number their options. Preserve their free-text behavior.
+  if (!requestBody.includes("\ndecisionOptions:")) return true;
+  return options?.[number - 1] !== undefined;
 }

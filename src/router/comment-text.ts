@@ -9,7 +9,7 @@ import type { ReviewAssessment, ReviewReason } from "./review-gate.js";
  * src/router/failure-codes.ts.
  *
  * Lines other code reads back stay the same in every language: the decision request's
- * `planVersion:`/`decisionId:` lines, the reply format `Decision: <id>`, and the signature lines
+ * `planVersion:`/`decisionId:`/`decisionOptions:` lines and the signature lines
  * (`ggjira job:`, `attempt:`, `approval:`).
  */
 
@@ -93,7 +93,7 @@ export interface CommentText {
     summary: string;
     createdSubtasks: string;
     nothingRunsYet: (hasTasks: boolean) => string;
-    toApprove: (planReviewStatus: string, inProgressStatus: string) => string;
+    toApprove: (requestStatus: string, inProgressStatus: string) => string;
     toChange: (requestStatus: string) => string;
     approved: (planVersion: string, inProgressStatus: string) => string;
     tasksRun: (count: number, inProgressStatus: string, keys: string) => string;
@@ -227,10 +227,10 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       createdSubtasks: "만든 하위 작업:",
       nothingRunsYet: (hasTasks) =>
         `아직 아무것도 실행하지 않습니다${hasTasks ? ". 하위 작업도 승인을 기다립니다" : ""}.`,
-      toApprove: (planReviewStatus, inProgressStatus) =>
-        `이 계획을 승인하려면: 이슈를 "${planReviewStatus}"에서 "${inProgressStatus}" 상태로 옮기세요.`,
+      toApprove: (requestStatus, inProgressStatus) =>
+        `이 계획을 승인하려면: 이슈를 "${requestStatus}"에서 "${inProgressStatus}" 상태로 옮기세요.`,
       toChange: (requestStatus) =>
-        `바꾸려면: 요청을 고친 뒤 이슈를 "${requestStatus}" 상태로 옮겨 다시 계획하세요.`,
+        `바꾸려면: "${requestStatus}" 상태에서 제목이나 설명을 수정하세요. 자동으로 다시 계획합니다.`,
       approved: (planVersion, inProgressStatus) =>
         `계획 ${planVersion} 승인: "${inProgressStatus}" 상태로의 이동을 승인으로 기록했습니다.`,
       tasksRun: (count, inProgressStatus, keys) =>
@@ -269,7 +269,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       recommendation: "추천:",
       impact: "영향:",
       respond: (replyStatus) =>
-        `답하려면: 이 이슈에 "Decision: <선택지 id>" 댓글을 남기고 "${replyStatus}" 상태로 다시 옮기세요.`,
+        `답하려면: 담당자가 이 이슈에 선택지 번호만 댓글로 남기세요(예: 2). "${replyStatus}" 상태에서 자동으로 다시 계획합니다.`,
     },
     implementationDecision: {
       stopped: "GGJIRA가 이 구현을 커밋·push 전에 멈췄습니다: 사람의 결정이 필요합니다.",
@@ -384,10 +384,10 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       createdSubtasks: "Created subtasks:",
       nothingRunsYet: (hasTasks) =>
         `Nothing runs yet${hasTasks ? "; the subtasks wait for the approval too" : ""}.`,
-      toApprove: (planReviewStatus, inProgressStatus) =>
-        `To approve this plan: move the issue from "${planReviewStatus}" to "${inProgressStatus}".`,
+      toApprove: (requestStatus, inProgressStatus) =>
+        `To approve this plan: move the issue from "${requestStatus}" to "${inProgressStatus}".`,
       toChange: (requestStatus) =>
-        `To change it: edit the request and move the issue to "${requestStatus}" to plan it again.`,
+        `To change it: edit the title or description in "${requestStatus}"; planning restarts automatically.`,
       approved: (planVersion, inProgressStatus) =>
         `Plan ${planVersion} approved: GGJIRA recorded the move to "${inProgressStatus}" as its approval.`,
       tasksRun: (count, inProgressStatus, keys) =>
@@ -426,7 +426,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       recommendation: "Recommendation:",
       impact: "Impact:",
       respond: (replyStatus) =>
-        `To respond: comment "Decision: <option id>" on this issue and move it back to "${replyStatus}".`,
+        `To respond: the assignee comments only the option number (for example, 2). Planning resumes automatically in "${replyStatus}".`,
     },
     implementationDecision: {
       stopped:

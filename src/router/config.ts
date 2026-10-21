@@ -12,20 +12,17 @@ const nfcString = z.string().min(1).transform(nfc);
 /**
  * A workspace's statuses (ADR 0044, ADR 0047). People delegate by moving issues on the board:
  *
- *   human -> requestStatus -> [Router plans] planReviewStatus
- *         -> human approves: planReviewStatus -> inProgressStatus (shared with people)
+ *   human -> requestStatus [planning / awaiting answer / awaiting approval]
+ *         -> human approves: requestStatus -> inProgressStatus (shared with people)
  *         -> [Router runs the approved plan] reviewStatus -> [merge] doneStatus
  *
- * Every request is planned first; only a human's move from `planReviewStatus` to
+ * Every request is planned first; only a human's move from `requestStatus` to
  * `inProgressStatus` approves a plan. Labels play no part. Keys of the removed workflows (`mode`,
- * `planningStatus`, `needsDecisionStatus`, `optInLabel`) are rejected, never reinterpreted.
+ * `planReviewStatus`, `planningStatus`, `needsDecisionStatus`, `optInLabel`) are rejected, never reinterpreted.
  */
 const WorkflowStatusSchema = z
   .object({
     requestStatus: nfcString,
-    /** Where a plan waits for a human. Moving the issue from here to `inProgressStatus` approves
-     *  the plan. */
-    planReviewStatus: nfcString,
     inProgressStatus: nfcString,
     reviewStatus: nfcString,
     /** Where Router moves an issue from `reviewStatus` once the worker's GitHub pull request is
@@ -38,7 +35,6 @@ const WorkflowStatusSchema = z
     const seen = new Map<string, string>();
     for (const field of [
       "requestStatus",
-      "planReviewStatus",
       "inProgressStatus",
       "reviewStatus",
       "doneStatus",

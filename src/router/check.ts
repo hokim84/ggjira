@@ -25,7 +25,6 @@ function configuredStatuses(workspace: WorkspaceConfig): Array<[label: string, s
   const { workflow } = workspace;
   return [
     ["requestStatus", workflow.requestStatus],
-    ["planReviewStatus", workflow.planReviewStatus],
     ["inProgressStatus", workflow.inProgressStatus],
     ["reviewStatus", workflow.reviewStatus],
     ...(workflow.doneStatus ? [["doneStatus", workflow.doneStatus] as [string, string]] : []),
@@ -111,8 +110,7 @@ async function checkProject(
 function expectedNextStatuses(workspace: WorkspaceConfig, current: string): string[] {
   const { workflow } = workspace;
   const next = new Map<string, string[]>([
-    [workflow.requestStatus, [workflow.planReviewStatus]],
-    [workflow.planReviewStatus, [workflow.inProgressStatus]],
+    [workflow.requestStatus, [workflow.inProgressStatus]],
     [workflow.inProgressStatus, [workflow.reviewStatus]],
     ...(workflow.doneStatus
       ? [[workflow.reviewStatus, [workflow.doneStatus]] as [string, string[]]]
