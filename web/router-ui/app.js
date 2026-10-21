@@ -4,6 +4,7 @@ import { admin, getToken, health, setToken } from "./api.js";
 import { clear, errorNotice, fill, h, notice } from "./dom.js";
 import { renderCheck, renderConfig } from "./views-config.js";
 import { renderIssues } from "./views-issues.js";
+import { renderGuide } from "./views-guide.js";
 import { renderPrompts } from "./views-prompts.js";
 import { renderReviews } from "./views-reviews.js";
 import { renderSetup } from "./views-setup.js";
@@ -17,6 +18,7 @@ const ROUTES = {
   "#/prompts": { label: "프롬프트", render: renderPrompts },
   "#/config": { label: "설정", render: renderConfig },
   "#/check": { label: "점검", render: renderCheck },
+  "#/guide": { label: "사용 가이드", render: renderGuide },
 };
 
 const app = document.getElementById("app");
