@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { CloneUrlSchema } from "../contracts/api.js";
+import { RolePromptsSchema } from "../contracts/prompts.js";
 
 /** See src/config.ts's `nfc` for why status/transition names get normalized. */
 function nfc(value: string): string {
@@ -198,6 +199,7 @@ const JevConfigSchema = z.object({
 export const RouterConfigSchema = z
   .object({
     configVersion: z.literal(6),
+    prompts: RolePromptsSchema.default({}),
     jira: z.object({ baseUrl: z.string().url() }),
     repositories: z.array(RepositorySchema).min(1),
     workspaces: z.array(WorkspaceSchema).min(1),

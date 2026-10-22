@@ -1,5 +1,10 @@
 {
   "configVersion": 6,
+  "prompts": {
+    "planning": { "additionalInstructions": "" },
+    "implementation": { "additionalInstructions": "" },
+    "quality_review": { "additionalInstructions": "" }
+  },
   "jira": {
     "baseUrl": "https://your-site.atlassian.net"
   },

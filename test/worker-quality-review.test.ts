@@ -97,6 +97,7 @@ describe("Git-pinned quality review worker", () => {
       run: async (request) => {
         calls++;
         expect(request.readOnly).toBe(true);
+        expect(request.systemPrompt).toBe(envelope.systemPrompt);
         expect(git(request.cwd, "rev-parse", "HEAD")).toBe(targetSha);
         hook?.(request.cwd);
         return fakeSuccessResult({

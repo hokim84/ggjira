@@ -258,6 +258,15 @@ const MIGRATIONS: readonly Migration[] = [
         throw new Error("board workflow migration foreign key check failed");
     },
   },
+  {
+    version: 20,
+    description: "Freeze role system prompts per execution attempt",
+    up(db) {
+      db.exec(`CREATE TABLE attempt_prompts (
+        attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), system_prompt TEXT NOT NULL
+      )`);
+    },
+  },
 ];
 
 interface MigrationRow {

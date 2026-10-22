@@ -3,6 +3,7 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 import type { AdminAddWorkerRequest, ProviderUsage } from "../contracts/api.js";
 import type { JobState } from "../contracts/job-state.js";
+import type { AiRole } from "../contracts/prompts.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import { isWorkerDispatchable } from "./availability.js";
 import { type CheckItem, githubRepositoriesToCheck, runRouterCheck } from "./check.js";
@@ -78,6 +79,7 @@ import {
   type IssueViewErrorCode,
   readIssueView,
 } from "./issue-view.js";
+import { getPromptCatalog } from "./prompt-catalog.js";
 import { resolveRecoveryJob, retryJob, retryReportBatch } from "./recovery.js";
 import { JudgmentError, judgeReviewTarget } from "./review-judgment.js";
 import { type SchedulerReport, cancelStaleJob } from "./scheduler.js";
@@ -577,6 +579,34 @@ export class AdminService {
       github: this.githubInfo(),
       jev: this.secretInfo("jev"),
     };
+  }
+
+  prompts() {
+    return { ...getPromptCatalog(this.config.prompts), editable: Boolean(this.deps.configPath) };
+  }
+
+  async updatePrompt(role: AiRole, additionalInstructions: string, actor: string) {
+    const configPath = this.requireConfigPath();
+    let raw: unknown;
+    try {
+      raw = readRawRouterConfig(configPath);
+    } catch (error) {
+      throw new AdminError(409, "config_unreadable", (error as Error).message);
+    }
+    const validation = validateRouterConfig(raw);
+    if (!validation.ok) {
+      throw new AdminError(400, "invalid_config", "config is invalid", validation.issues);
+    }
+    const next = {
+      ...(raw as Record<string, unknown>),
+      prompts: {
+        ...validation.config.prompts,
+        [role]: { additionalInstructions },
+      },
+    };
+    await this.updateConfig(next, actor);
+    appendAudit(this.db, { at: this.now(), actor, action: "prompt.updated", subject: role });
+    return this.prompts();
   }
 
   /** Validates, saves (keeping `.bak`) and applies to the running Router at once. */

@@ -7,6 +7,7 @@ import {
   QualityReportSchema,
 } from "../contracts/quality.js";
 import type { UsageReading, WorkerProvider } from "../worker/provider.js";
+import { buildReviewPrompt } from "../worker/review-prompt.js";
 import { runValidateCommand } from "../worker/validate.js";
 import {
   createWorktree,
@@ -87,14 +88,8 @@ export async function executeQualityEnvelope(
           readOnly: true,
           timeoutMs: envelope.timeoutMs,
           outputSchema: QUALITY_REPORT_JSON_SCHEMA,
-          systemPrompt:
-            "Review the integrated result read-only. Never edit, commit, push or merge. Report evidence and uncertainties. Do not use numerical debt scores. Distinguish defects, new debt, directly relevant existing debt, environment failures and missing evidence. Each finding needs a complete, independently executable remediation contract. Recheck previous findings and affected integration; do not recursively invent repository-wide cleanup.",
-          prompt: JSON.stringify({
-            ...context,
-            targetSha,
-            baselineSha,
-            trustedValidation: validation,
-          }),
+          systemPrompt: envelope.systemPrompt,
+          prompt: buildReviewPrompt(context, targetSha, baselineSha, validation),
         },
         {
           signal: deps.signal,

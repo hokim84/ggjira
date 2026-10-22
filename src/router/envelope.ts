@@ -8,13 +8,12 @@ import {
 } from "../contracts/envelope.js";
 import { type ExecutionContract, ExecutionContractSchema } from "../contracts/implementation.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
-import { buildPmSystemPrompt } from "../pm/prompt.js";
-import { buildImplementSystemPrompt } from "../worker/prompt.js";
 import { inputHashMatches } from "./approval.js";
 import type { RouterConfig } from "./config.js";
 import { getApproval } from "./db/approvals.js";
 import type { AttemptRow } from "./db/attempts.js";
 import type { JobRow } from "./db/jobs.js";
+import { roleSystemPrompt } from "./prompt-catalog.js";
 
 export class EnvelopeUnavailableError extends Error {
   constructor(
@@ -132,7 +131,10 @@ export function buildJobEnvelope(
             executionContract: toExecutionContract(job.id, approval.inputSnapshot),
             ...(snapshot.integration ? { integration: snapshot.integration } : {}),
           }),
-    systemPrompt: job.kind === "planning" ? buildPmSystemPrompt() : buildImplementSystemPrompt(),
+    systemPrompt:
+      job.kind === "integration_check"
+        ? "Run trusted integration validation without an AI call."
+        : roleSystemPrompt(job.kind, config.prompts),
     timeoutMs: config.execution.timeoutMs,
   };
 }

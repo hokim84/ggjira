@@ -21,6 +21,7 @@ import {
   WorkerUsageReportRequestSchema,
 } from "../contracts/api.js";
 import { JOB_STATES } from "../contracts/job-state.js";
+import { AiRoleSchema, UpdateRolePromptSchema } from "../contracts/prompts.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import { AdminError, type AdminService } from "./admin-service.js";
 import { recordGithubDelivery } from "./db/pull-requests.js";
@@ -329,10 +330,21 @@ function registerAdminRoutes(
         });
       }
       scope.get("/prompts", async (_request, reply) =>
-        reply.header("cache-control", "no-store").send(getPromptCatalog()),
+        reply
+          .header("cache-control", "no-store")
+          .send(admin?.prompts() ?? { ...getPromptCatalog(), editable: false }),
       );
 
       if (!admin) return;
+
+      scope.put<{ Params: { role: string } }>("/prompts/:role", async (request, reply) => {
+        const role = AiRoleSchema.safeParse(request.params.role);
+        if (!role.success) throw new AdminError(400, "invalid_role", "unknown AI role");
+        const body = parseBody(UpdateRolePromptSchema, request.body);
+        return reply
+          .header("cache-control", "no-store")
+          .send(await admin.updatePrompt(role.data, body.additionalInstructions, actorOf(request)));
+      });
 
       type IdParams = { Params: { id: string } };
       scope.get("/status", async () => admin.status());

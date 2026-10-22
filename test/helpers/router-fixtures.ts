@@ -64,6 +64,11 @@ export function singlePlan(overrides: Record<string, unknown> = {}): Record<stri
 export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): RouterConfig {
   return {
     configVersion: 6,
+    prompts: {
+      planning: { additionalInstructions: "" },
+      implementation: { additionalInstructions: "" },
+      quality_review: { additionalInstructions: "" },
+    },
     jira: { baseUrl: "https://example.atlassian.net" },
     repositories: [{ id: "repo1" }],
     workspaces: [testWorkspace],

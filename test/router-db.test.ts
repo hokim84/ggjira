@@ -41,7 +41,7 @@ describe("Router SQLite store", () => {
 
   function removeQualityMigration() {
     db.exec(
-      "DROP TABLE IF EXISTS workflow_checks; DROP TABLE IF EXISTS parent_progress_entries; DROP TABLE IF EXISTS workflow_retry_comments; DROP TABLE IF EXISTS job_inputs",
+      "DROP TABLE IF EXISTS attempt_prompts; DELETE FROM schema_migrations WHERE version=20; DROP TABLE IF EXISTS workflow_checks; DROP TABLE IF EXISTS parent_progress_entries; DROP TABLE IF EXISTS workflow_retry_comments; DROP TABLE IF EXISTS job_inputs",
     );
     db.exec(
       "ALTER TABLE jobs ADD COLUMN required_capabilities TEXT NOT NULL DEFAULT '[]'; ALTER TABLE workers ADD COLUMN reported_capabilities TEXT NOT NULL DEFAULT '[]'; DELETE FROM schema_migrations WHERE version=18;",
@@ -122,13 +122,13 @@ describe("Router SQLite store", () => {
     });
 
     it("applies every migration and records it in schema_migrations", () => {
-      expect(currentSchemaVersion(db)).toBe(19);
+      expect(currentSchemaVersion(db)).toBe(20);
     });
 
     it("is idempotent: reopening an existing database does not re-run migrations", () => {
       db.close();
       const reopened = openRouterDb(dbPath);
-      expect(currentSchemaVersion(reopened)).toBe(19);
+      expect(currentSchemaVersion(reopened)).toBe(20);
       reopened.close();
       // Reopen once more so the outer afterEach's db.close() has a live handle.
       db = openRouterDb(dbPath);
@@ -152,7 +152,7 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(19);
+      expect(currentSchemaVersion(db)).toBe(20);
       expect(getJob(db, "job-v9")?.inputHash).toBe("legacy-hash");
       expect(db.prepare("SELECT COUNT(*) AS n FROM readiness_holds").get()).toEqual({ n: 0 });
     });
@@ -199,7 +199,7 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(19);
+      expect(currentSchemaVersion(db)).toBe(20);
       expect(tables()).toEqual(expect.arrayContaining(M4_TABLES));
       expect(getJob(db, "job-m3")).toMatchObject({ state: "succeeded", inputHash: "v2:abc" });
       expect(db.prepare("SELECT COUNT(*) AS n FROM results").get()).toEqual({ n: 1 });
@@ -211,7 +211,7 @@ describe("Router SQLite store", () => {
       // Re-running the migrations (another restart) changes nothing.
       db.close();
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(19);
+      expect(currentSchemaVersion(db)).toBe(20);
     });
 
     it("upgrades an M4 (version 13) database to the delegation tables without touching its rows", () => {
@@ -232,7 +232,7 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(19);
+      expect(currentSchemaVersion(db)).toBe(20);
       expect(tables()).toEqual(expect.arrayContaining([...M4_TABLES, ...DELEGATION_TABLES]));
       expect(getJob(db, "job-m4")).toMatchObject({ state: "succeeded", kind: "planning" });
       // No plan or approval is made up for work done before delegation existed.
@@ -259,7 +259,7 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(19);
+      expect(currentSchemaVersion(db)).toBe(20);
       expect(
         db.prepare("SELECT resolved_at IS NOT NULL AS closed FROM readiness_holds").get(),
       ).toEqual({ closed: 1 });

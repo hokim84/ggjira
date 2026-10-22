@@ -363,7 +363,14 @@ export class WorkerService {
   private envelopeFor(attempt: AttemptRow): JobEnvelope {
     const job = getJob(this.db, attempt.jobId);
     if (!job) throw new Error(`attempt ${attempt.id} references missing job ${attempt.jobId}`);
-    return buildJobEnvelope(this.db, this.config, job, attempt);
+    const envelope = buildJobEnvelope(this.db, this.config, job, attempt);
+    this.db
+      .prepare("INSERT OR IGNORE INTO attempt_prompts (attempt_id, system_prompt) VALUES (?, ?)")
+      .run(attempt.id, envelope.systemPrompt);
+    const frozen = this.db
+      .prepare("SELECT system_prompt FROM attempt_prompts WHERE attempt_id=?")
+      .get(attempt.id) as { system_prompt: string };
+    return { ...envelope, systemPrompt: frozen.system_prompt };
   }
 
   // --- jobs/{id}/* ---------------------------------------------------------------------
