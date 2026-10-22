@@ -105,13 +105,8 @@ async function readApproved(
   kind: JobKind | undefined,
   now?: string,
 ): Promise<{ kind: JobKind; approvalId: string; requirements: IssueRequirements }> {
-  const {
-    requestStatus,
-    planningInProgressStatus,
-    inProgressStatus,
-    reviewStatus,
-    integrationPendingStatus,
-  } = workspace.workflow;
+  const { requestStatus, planningInProgressStatus, inProgressStatus, integrationPendingStatus } =
+    workspace.workflow;
   if ([requestStatus, planningInProgressStatus].includes(issue.statusName)) {
     if (kind && kind !== "planning") {
       throw new NotDelegatedError(`${issue.key} was requested again, to be planned`);
@@ -139,8 +134,8 @@ async function readApproved(
   if (kind === "planning") {
     throw new NotDelegatedError(`${issue.key} left "${requestStatus}"`);
   }
-  if ([reviewStatus, integrationPendingStatus].includes(issue.statusName)) {
-    const checkKind = issue.statusName === reviewStatus ? "quality_review" : "integration_check";
+  if (issue.statusName === integrationPendingStatus) {
+    const checkKind = "integration_check";
     if (kind && kind !== checkKind) throw new NotDelegatedError("workflow stage changed");
     const entry = await computeApprovalId(jira, issue, issue.statusName);
     const generation = db
@@ -231,7 +226,7 @@ async function readApproved(
         (item) =>
           item.field === "status" &&
           [
-            workspace.workflow.reviewStatus,
+            workspace.workflow.implementationCompleteStatus,
             workspace.workflow.implementationCompleteStatus,
             workspace.workflow.doneStatus,
           ].includes(item.fromString ?? ""),
@@ -271,20 +266,7 @@ function withLatestReview(
   issue: JiraIssue,
   requirements: IssueRequirements,
 ): IssueRequirements {
-  const row = db
-    .prepare(
-      "SELECT c.report FROM workflow_checks c JOIN jobs j ON j.id=c.job_id WHERE c.issue_key=? AND j.kind='quality_review' AND c.report IS NOT NULL ORDER BY j.rowid DESC LIMIT 1",
-    )
-    .get(issue.key) as { report: string } | undefined;
-  return row
-    ? {
-        ...requirements,
-        inScope: [
-          ...requirements.inScope,
-          `Latest advisory review (apply relevant fixes within the issue requirements): ${row.report}`,
-        ],
-      }
-    : requirements;
+  return requirements;
 }
 
 /** A retry comment after a settled failure creates a new durable approval, never an automatic replay. */

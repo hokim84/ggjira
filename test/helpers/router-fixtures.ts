@@ -23,7 +23,6 @@ export const testWorkspace: WorkspaceConfig = {
     integrationPendingStatus: "AI 통합 대기",
     implementationCompleteStatus: "AI 구현 완료",
     inProgressStatus: IN_PROGRESS_STATUS,
-    reviewStatus: REVIEW_STATUS,
     doneStatus: DONE_STATUS,
   },
 };
@@ -63,11 +62,11 @@ export function singlePlan(overrides: Record<string, unknown> = {}): Record<stri
 
 export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): RouterConfig {
   return {
-    configVersion: 6,
+    configVersion: 7,
     prompts: {
       planning: { additionalInstructions: "" },
       implementation: { additionalInstructions: "" },
-      quality_review: { additionalInstructions: "" },
+      fci_analysis: { additionalInstructions: "" },
     },
     jira: { baseUrl: "https://example.atlassian.net" },
     repositories: [{ id: "repo1" }],

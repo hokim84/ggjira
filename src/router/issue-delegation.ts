@@ -45,7 +45,6 @@ export type DelegationStage =
   | "task"
   | "integration_pending"
   | "implementation_complete"
-  | "result_review"
   | "done";
 
 export interface IssueDelegationView {
@@ -63,7 +62,6 @@ export interface IssueDelegationView {
     inProgress: string;
     integrationPending: string;
     implementationComplete: string;
-    review: string;
     done: string | null;
   };
   plan: {
@@ -91,7 +89,8 @@ export async function readIssueDelegation(
   issue: JiraIssue,
 ): Promise<IssueDelegationView> {
   const { db } = deps;
-  const { requestStatus, inProgressStatus, reviewStatus, doneStatus } = workspace.workflow;
+  const { requestStatus, inProgressStatus, implementationCompleteStatus, doneStatus } =
+    workspace.workflow;
   const review = getLatestPlanReview(db, issue.key);
   const deployment = listPlanDeployments(db, issue.key)[0];
   const job = getOpenJobForIssue(db, issue.key);
@@ -145,8 +144,6 @@ export async function readIssueDelegation(
     stage = "integration_pending";
   } else if (issue.statusName === workspace.workflow.implementationCompleteStatus) {
     stage = "implementation_complete";
-  } else if (issue.statusName === reviewStatus) {
-    stage = "result_review";
   } else if (doneStatus && issue.statusName === doneStatus) {
     stage = "done";
   }
@@ -203,7 +200,6 @@ export async function readIssueDelegation(
       inProgress: inProgressStatus,
       integrationPending: workspace.workflow.integrationPendingStatus,
       implementationComplete: workspace.workflow.implementationCompleteStatus,
-      review: reviewStatus,
       done: doneStatus ?? null,
     },
     plan: review

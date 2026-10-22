@@ -267,6 +267,24 @@ const MIGRATIONS: readonly Migration[] = [
       )`);
     },
   },
+  {
+    version: 21,
+    description: "Independent versioned FCI analysis, immutable snapshots and reporting outbox",
+    up(db) {
+      db.exec(`
+        CREATE TABLE fci_series (id TEXT PRIMARY KEY, repository_id TEXT NOT NULL, baseline_sha TEXT NOT NULL, profile_key TEXT NOT NULL, profile TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(repository_id,baseline_sha,profile_key));
+        CREATE TABLE fci_tasks (id TEXT PRIMARY KEY, request_key TEXT NOT NULL UNIQUE, series_id TEXT NOT NULL REFERENCES fci_series(id), purpose TEXT NOT NULL, before_sha TEXT NOT NULL, after_sha TEXT NOT NULL, pr_repo TEXT, pr_number INTEGER, issue_key TEXT, job_id TEXT, source_attempt_id TEXT, merge_sha TEXT, pr_commits TEXT NOT NULL DEFAULT '[]', original_base_sha TEXT, revision INTEGER NOT NULL DEFAULT 0, supersedes TEXT, status TEXT NOT NULL DEFAULT 'queued', worker_id TEXT, session_id TEXT, attempt_id TEXT, lease_token TEXT, lease_expires_at TEXT, envelope TEXT, result_id TEXT UNIQUE, outcome TEXT, error TEXT, boundary TEXT, superseded INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE UNIQUE INDEX fci_worker_active ON fci_tasks(worker_id) WHERE status='running';
+        CREATE TABLE fci_snapshots (series_id TEXT NOT NULL REFERENCES fci_series(id), sha TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL, raw_score REAL, PRIMARY KEY(series_id,sha,revision));
+        CREATE TABLE fci_snapshot_claims (series_id TEXT NOT NULL, sha TEXT NOT NULL, revision INTEGER NOT NULL, task_id TEXT NOT NULL, token TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(series_id,sha,revision));
+        CREATE TABLE fci_reports (task_id TEXT PRIMARY KEY REFERENCES fci_tasks(id), status TEXT NOT NULL DEFAULT 'pending', error TEXT, updated_at TEXT NOT NULL);
+        CREATE TABLE fci_sources (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), sha TEXT NOT NULL, observed_at TEXT NOT NULL);
+        CREATE TABLE fci_attempts (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES fci_tasks(id), worker_id TEXT NOT NULL, lease_token TEXT NOT NULL, envelope TEXT NOT NULL, result_id TEXT UNIQUE, outcome TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE fci_poll_errors (repo TEXT NOT NULL, number INTEGER NOT NULL, error TEXT NOT NULL, observed_at TEXT NOT NULL, PRIMARY KEY(repo,number));
+        CREATE TABLE fci_pr_observations (repo TEXT NOT NULL, number INTEGER NOT NULL, head_sha TEXT, base_sha TEXT, base_branch TEXT, merge_sha TEXT, state TEXT NOT NULL, commits TEXT NOT NULL DEFAULT '[]', observed_at TEXT NOT NULL, PRIMARY KEY(repo,number));
+      `);
+    },
+  },
 ];
 
 interface MigrationRow {

@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { z as schema } from "zod";
 import {
   type ApiErrorResponse,
   ApiErrorResponseSchema,
@@ -30,6 +31,13 @@ import {
   type WorkerUsageReportResponse,
   WorkerUsageReportResponseSchema,
 } from "../contracts/api.js";
+import {
+  type FciOutcome,
+  FciSnapshotSchema,
+  type FciTask,
+  FciTaskSchema,
+} from "../contracts/fci.js";
+import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 
 /** A non-2xx answer from Router, with the `/api/v1` error body when there was one. */
 export class RouterApiError extends Error {
@@ -80,6 +88,73 @@ export class RouterClient {
 
   register(body: WorkerRegisterRequest): Promise<WorkerRegisterResponse> {
     return this.call("/api/v1/workers/register", body, WorkerRegisterResponseSchema);
+  }
+  fciNext(body: {
+    workerId: string;
+    sessionId: string;
+    requestId: string;
+    providers: Array<{ id: string; type: string; model?: string }>;
+  }): Promise<FciTask | null> {
+    return this.call(
+      "/api/v1/fci/next",
+      { protocolVersion: PROTOCOL_VERSION, ...body },
+      FciTaskSchema,
+      { allowEmpty: true },
+    );
+  }
+  fciBeat(id: string, body: { sessionId: string; leaseToken: string }) {
+    return this.call(
+      `/api/v1/fci/${encodeURIComponent(id)}/heartbeat`,
+      { protocolVersion: PROTOCOL_VERSION, ...body },
+      schema.object({ cancel: schema.boolean() }),
+    );
+  }
+  fciLookup(id: string, body: { sessionId: string; leaseToken: string; sha: string }) {
+    return this.call(
+      `/api/v1/fci/${encodeURIComponent(id)}/lookup`,
+      { protocolVersion: PROTOCOL_VERSION, ...body },
+      schema.object({ snapshot: FciSnapshotSchema.nullable() }),
+    );
+  }
+  fciResult(
+    id: string,
+    body: { sessionId: string; leaseToken: string; resultId: string; outcome: FciOutcome },
+  ) {
+    return this.call(
+      `/api/v1/fci/${encodeURIComponent(id)}/result`,
+      { protocolVersion: PROTOCOL_VERSION, ...body },
+      schema.object({ accepted: schema.boolean() }),
+    );
+  }
+  fciPublish(
+    id: string,
+    body: {
+      sessionId: string;
+      leaseToken: string;
+      snapshot: import("../contracts/fci.js").FciSnapshot;
+    },
+  ) {
+    return this.call(
+      `/api/v1/fci/${encodeURIComponent(id)}/snapshot`,
+      { protocolVersion: PROTOCOL_VERSION, ...body },
+      schema.object({ accepted: schema.boolean() }),
+    );
+  }
+  source(
+    id: string,
+    body: {
+      sessionId: string;
+      attemptId: string;
+      leaseToken: string;
+      sha: string;
+      observedAt: string;
+    },
+  ) {
+    return this.call(
+      `/api/v1/jobs/${encodeURIComponent(id)}/source`,
+      body,
+      schema.object({ accepted: schema.boolean() }),
+    );
   }
 
   openSession(body: WorkerSessionRequest): Promise<WorkerSessionResponse> {

@@ -233,10 +233,79 @@ export async function pollPullRequests(deps: {
 }): Promise<PullRequestPollReport> {
   const fetchImpl = deps.fetch ?? ((input, init) => fetch(input, init));
   const report: PullRequestPollReport = { checked: 0, closed: [], errors: [] };
-  for (const pr of listOpenPullRequests(deps.db)) {
+  const tracked = listOpenPullRequests(deps.db);
+  for (const row of deps.db
+    .prepare(
+      "SELECT p.repo,p.number,j.repository_id FROM pull_requests p JOIN jobs j ON j.id=p.job_id LEFT JOIN fci_pr_observations o ON o.repo=p.repo AND o.number=p.number WHERE p.state IN ('merged','closed') AND (o.state IS NULL OR o.state<>p.state)",
+    )
+    .all()) {
+    const p = row as { repo: string; number: number; repository_id: string };
+    if (deps.config.repositories.find((r) => r.id === p.repository_id)?.fci?.enabled) {
+      const pr = getPullRequest(deps.db, p.repo, p.number);
+      if (pr) tracked.push(pr);
+    }
+  }
+  for (const pr of tracked) {
     report.checked += 1;
     try {
       const state = await fetchPullRequestState(fetchImpl, pr, deps.token);
+      const sourceJob = getJob(deps.db, pr.jobId);
+      const fciEnabled = deps.config.repositories.find((r) => r.id === sourceJob?.repositoryId)?.fci
+        ?.enabled;
+      if (fciEnabled)
+        try {
+          if (!state.headSha || !state.baseSha)
+            throw new Error("FCI PR head/base SHA is unavailable");
+          const prior = deps.db
+            .prepare("SELECT head_sha,commits FROM fci_pr_observations WHERE repo=? AND number=?")
+            .get(pr.repo, pr.number) as { head_sha: string; commits: string } | undefined;
+          const commits: string[] =
+            prior?.head_sha === state.headSha ? JSON.parse(prior.commits) : [];
+          if (!commits.length) {
+            for (let page = 1; page <= 100; page++) {
+              const response = await fetchImpl(
+                `https://api.github.com/repos/${pr.repo}/pulls/${pr.number}/commits?per_page=100&page=${page}`,
+                {
+                  method: "GET",
+                  headers: {
+                    accept: "application/vnd.github+json",
+                    "user-agent": "ggjira-router",
+                    ...(deps.token ? { authorization: `Bearer ${deps.token}` } : {}),
+                  },
+                },
+              );
+              if (!response.ok) throw new Error(`FCI PR commit list: ${response.status}`);
+              const items = (await response.json()) as { sha: string }[];
+              commits.push(...items.map((c) => c.sha));
+              if (items.length < 100) break;
+            }
+          }
+          deps.db
+            .prepare("INSERT OR REPLACE INTO fci_pr_observations VALUES (?,?,?,?,?,?,?,?,?)")
+            .run(
+              pr.repo,
+              pr.number,
+              state.headSha,
+              state.baseSha,
+              state.targetBranch ?? null,
+              state.mergeSha ?? null,
+              state.merged ? "merged" : state.closed ? "closed" : "open",
+              JSON.stringify(commits),
+              deps.now(),
+            );
+          deps.db
+            .prepare("DELETE FROM fci_poll_errors WHERE repo=? AND number=?")
+            .run(pr.repo, pr.number);
+        } catch (error) {
+          deps.db
+            .prepare("INSERT OR REPLACE INTO fci_poll_errors VALUES (?,?,?,?)")
+            .run(
+              pr.repo,
+              pr.number,
+              error instanceof Error ? error.message : String(error),
+              deps.now(),
+            );
+        }
       recordPullRequestCheck(deps.db, {
         repo: pr.repo,
         number: pr.number,
@@ -323,6 +392,7 @@ async function fetchPullRequestState(
   pr: PullRequestRow,
   token: string | undefined,
 ): Promise<{
+  baseSha: string | null;
   closed: boolean;
   merged: boolean;
   by: string | null;
@@ -330,6 +400,7 @@ async function fetchPullRequestState(
   mergeSha?: string | null;
   targetBranch?: string | null;
 }> {
+  // FCI also records the observed target SHA; regular lifecycle logic still uses its existing fields.
   const response = await fetchImpl(`https://api.github.com/repos/${pr.repo}/pulls/${pr.number}`, {
     method: "GET",
     headers: {
@@ -347,7 +418,7 @@ async function fetchPullRequestState(
     merged_by?: { login?: string } | null;
     head?: { sha?: string } | null;
     merge_commit_sha?: string | null;
-    base?: { ref?: string } | null;
+    base?: { ref?: string; sha?: string } | null;
   };
   const merged = body.merged === true || Boolean(body.merged_at);
   return {
@@ -357,5 +428,6 @@ async function fetchPullRequestState(
     headSha: body.head?.sha ?? null,
     mergeSha: body.merge_commit_sha ?? null,
     targetBranch: body.base?.ref ?? null,
+    baseSha: body.base?.sha ?? null,
   };
 }

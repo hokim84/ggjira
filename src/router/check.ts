@@ -29,8 +29,7 @@ function configuredStatuses(workspace: WorkspaceConfig): Array<[label: string, s
     ["integrationPendingStatus", workflow.integrationPendingStatus],
     ["implementationCompleteStatus", workflow.implementationCompleteStatus],
     ["inProgressStatus", workflow.inProgressStatus],
-    ["reviewStatus", workflow.reviewStatus],
-    ...(workflow.doneStatus ? [["doneStatus", workflow.doneStatus] as [string, string]] : []),
+    ["doneStatus", workflow.doneStatus],
   ];
 }
 
@@ -120,9 +119,9 @@ function expectedNextStatuses(workspace: WorkspaceConfig, current: string): stri
       [workflow.integrationPendingStatus, workflow.implementationCompleteStatus],
     ],
     [workflow.integrationPendingStatus, [workflow.implementationCompleteStatus]],
-    [workflow.implementationCompleteStatus, [workflow.reviewStatus, workflow.doneStatus]],
+    [workflow.implementationCompleteStatus, [workflow.doneStatus]],
     ...(workflow.doneStatus
-      ? [[workflow.reviewStatus, [workflow.doneStatus]] as [string, string[]]]
+      ? [[workflow.implementationCompleteStatus, [workflow.doneStatus]] as [string, string[]]]
       : []),
   ]);
   return next.get(current) ?? [];

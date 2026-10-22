@@ -58,12 +58,12 @@ describe("router check", () => {
 
   it("fails on a status the project does not have", async () => {
     const items = await runRouterCheck(
-      jiraWithProject(ALL_STATUSES.filter((s) => s !== REVIEW_STATUS)),
+      jiraWithProject(ALL_STATUSES.filter((s) => s !== "AI 구현 완료")),
       config,
     );
     expect(items).toContainEqual({
       level: "fail",
-      message: expect.stringContaining(`reviewStatus "${REVIEW_STATUS}"`),
+      message: expect.stringContaining('implementationCompleteStatus "AI 구현 완료"'),
     });
   });
 

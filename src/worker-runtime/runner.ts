@@ -9,8 +9,9 @@ import type { UsageReading, WorkerProvider } from "../worker/provider.js";
 import { RouterApiError, type RouterClient } from "./client.js";
 import type { WorkerConfig } from "./config.js";
 import { type ExecutionOutcome, executeEnvelope } from "./executor.js";
-import type { ResultSpool } from "./spool.js";
+import { flushFciSpool, recordFciSource, runFciTask } from "./fci-runner.js";
 import type { ExecutionStage, WorkerProgress } from "./progress.js";
+import type { ResultSpool } from "./spool.js";
 
 /** §3 "heartbeat: 5초". */
 export const HEARTBEAT_INTERVAL_MS = 5_000;
@@ -173,6 +174,7 @@ export class WorkerRunner {
   async pollOnce(): Promise<PollOutcome> {
     const sessionId = this.requireSession();
     const { config, client, workerId } = this.deps;
+    await flushFciSpool(config, client);
     await client.heartbeat({
       sessionId,
       workerId,
@@ -187,6 +189,26 @@ export class WorkerRunner {
     // One requestId per poll; a retry of this same poll after a lost response would reuse it.
     const envelope = await client.next({ sessionId, workerId, requestId: this.genId() });
     if (!envelope) {
+      const task = await client.fciNext({
+        sessionId,
+        workerId,
+        requestId: this.genId(),
+        providers: config.providers.map((p) => ({
+          id: p.id,
+          type: p.type,
+          ...(p.model ? { model: p.model } : {}),
+        })),
+      });
+      if (task) {
+        await runFciTask(task, {
+          config,
+          client,
+          sessionId,
+          createProvider: this.deps.createProvider,
+          worktreesRoot: this.deps.worktreesRoot,
+        });
+        return "executed";
+      }
       this.waitForWork();
       return "idle";
     }
@@ -272,6 +294,8 @@ export class WorkerRunner {
           stage = next;
           jobProgress("progress");
         },
+        onSource: async (sha, observedAt) =>
+          recordFciSource(this.deps.config, client, envelope.jobId, { ...lease, sha, observedAt }),
         authorize: async (stage) => {
           try {
             const answer = await client.authorize(envelope.jobId, { ...lease, stage });

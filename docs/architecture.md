@@ -1,4 +1,4 @@
-# 아키텍처 (configVersion 5)
+# 아키텍처 (configVersion 7)
 
 Router가 Jira 접근과 배정 판단을 모두 맡는다. 워커는 Router에만 연결한다. 배경과 단계별 기록은
 [`router-service-implementation-plan.md`](./router-service-implementation-plan.md)와 ADR
@@ -276,7 +276,7 @@ PM 입력에는 답과 함께 최신 질문·선택지를 전달한다. 이전 I
 
 ## 기능별 AI 프롬프트
 
-관리자 API `GET /api/v1/admin/prompts`와 `설정 → 프롬프트`는 플랜·구현·리뷰의 기본 지침, 추가 지침, 합성 입력 예시, 출력 스키마를 제공한다. `PUT /api/v1/admin/prompts/:role`은 역할별 추가 지침만 Router 설정에 저장하고 실시간 반영한다. 실행과 화면은 같은 builder를 사용하며, 최초 전달한 시스템 지침은 `attempt_prompts`에 고정하여 재전송이나 재시작 후에도 유지한다. 통합 검증은 AI를 호출하지 않는다(ADR 0054, 기존 읽기 전용 정책 ADR 0045 대체).
+관리자 API `GET /api/v1/admin/prompts`와 `설정 → 프롬프트`는 플랜·구현·FCI 분석의 기본 지침, 추가 지침, 합성 입력 예시, 출력 스키마를 제공한다. `PUT /api/v1/admin/prompts/:role`은 역할별 추가 지침만 Router 설정에 저장하고 실시간 반영한다. 실행과 화면은 같은 builder를 사용하며, 최초 전달한 시스템 지침은 `attempt_prompts`에 고정하여 재전송이나 재시작 후에도 유지한다. 통합 검증은 AI를 호출하지 않는다(ADR 0054, 기존 읽기 전용 정책 ADR 0045 대체).
 
 ## 상태 기반 위임만 지원 (ADR 0046, 0047)
 
@@ -285,3 +285,8 @@ PM 입력에는 답과 함께 최신 질문·선택지를 전달한다. 이전 I
 이슈 진단은 `GET /api/v1/admin/issues/:key`로 위임 단계만 읽는다. 과거 opt-in 승인 정보가 포함된 미완료 상태
 전이는 재실행하지 않고 skipped로 남겨 운영자가 대조한다. 구현 요청 준비 보류(ADR 0034의 보류)는 없어졌고,
 migration 15가 열려 있던 보류와 그 주의 항목을 닫는다. 일반 실패·대체·메타 라벨은 위임 기능과 별개로 유지한다.
+
+
+## FCI 분석과 시계열
+
+FCI는 일반 Jira job과 분리된 큐·attempt·커밋 캐시·보고 outbox를 사용한다. Worker만 저장소와 AI를 읽고 Router만 Jira에 보고한다. 기존 AI 리뷰 상태와 일반 리뷰 dispatch는 제거했으며, 승인·통합 검증·Done 정책은 유지한다. 자세한 데이터·계산·언어 범위·실패 정책은 [FCI 문서](./fci.md)와 [ADR 0055](./decisions/0055-fci-and-pr-history.md)를 따른다. 이전 절의 과거 리뷰 생명주기 설명보다 ADR 0055가 우선한다.

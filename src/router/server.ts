@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type { z } from "zod";
+import { z as schema } from "zod";
 import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
@@ -20,6 +21,14 @@ import {
   WorkerSessionRequestSchema,
   WorkerUsageReportRequestSchema,
 } from "../contracts/api.js";
+import {
+  FciConfigSchema,
+  FciLeaseRequestSchema,
+  FciNextRequestSchema,
+  FciResultRequestSchema,
+  FciSnapshotSchema,
+  ShaSchema,
+} from "../contracts/fci.js";
 import { JOB_STATES } from "../contracts/job-state.js";
 import { AiRoleSchema, UpdateRolePromptSchema } from "../contracts/prompts.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
@@ -227,6 +236,79 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
 
 function registerWorkerRoutes(app: FastifyInstance, service: WorkerService): void {
   const worker = (request: FastifyRequest) => service.authenticate(bearerToken(request));
+  app.post("/api/v1/fci/next", async (request, reply) => {
+    const w = worker(request);
+    const body = parseBody(FciNextRequestSchema, request.body);
+    service.fciSession(w, body.sessionId);
+    if (body.workerId !== w.id)
+      throw new WorkerApiError(403, "worker_mismatch", "worker ID differs");
+    const task = service.fci.next(w.id, body.sessionId, body.requestId, body.providers);
+    return task ?? reply.code(204).send();
+  });
+  app.post<{ Params: { id: string } }>("/api/v1/fci/:id/heartbeat", async (request) => {
+    const w = worker(request);
+    const body = parseBody(FciLeaseRequestSchema, request.body);
+    service.fciSession(w, body.sessionId);
+    return service.fci.beat(w.id, request.params.id, body.leaseToken, body.sessionId);
+  });
+  app.post<{ Params: { id: string } }>("/api/v1/fci/:id/lookup", async (request) => {
+    const w = worker(request);
+    const body = parseBody(FciLeaseRequestSchema.extend({ sha: ShaSchema }), request.body);
+    service.fciSession(w, body.sessionId);
+    return {
+      snapshot: service.fci.lookup(
+        w.id,
+        request.params.id,
+        body.leaseToken,
+        body.sessionId,
+        body.sha,
+      ),
+    };
+  });
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/fci/:id/result",
+    { bodyLimit: 16 * 1024 * 1024 },
+    async (request) => {
+      const w = worker(request);
+      const body = parseBody(FciResultRequestSchema, request.body);
+      return service.fci.finish(
+        w.id,
+        request.params.id,
+        body.leaseToken,
+        body.resultId,
+        body.outcome,
+      );
+    },
+  );
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/fci/:id/snapshot",
+    { bodyLimit: 16 * 1024 * 1024 },
+    async (request) => {
+      const w = worker(request);
+      const body = parseBody(
+        FciLeaseRequestSchema.extend({ snapshot: FciSnapshotSchema }),
+        request.body,
+      );
+      service.fciSession(w, body.sessionId);
+      return service.fci.publish(
+        w.id,
+        request.params.id,
+        body.leaseToken,
+        body.sessionId,
+        body.snapshot,
+      );
+    },
+  );
+  app.post<{ Params: { id: string } }>("/api/v1/jobs/:id/source", async (request) =>
+    service.source(
+      worker(request),
+      request.params.id,
+      parseBody(
+        JobStartRequestSchema.extend({ sha: ShaSchema, observedAt: schema.string().datetime() }),
+        request.body,
+      ),
+    ),
+  );
 
   app.post("/api/v1/workers/register", async (request) =>
     service.register(parseBody(WorkerRegisterRequestSchema, request.body)),
@@ -336,6 +418,26 @@ function registerAdminRoutes(
       );
 
       if (!admin) return;
+      scope.get("/fci", async () => admin.fci().view());
+      scope.get<{ Params: { id: string } }>("/fci/:id", async (request) =>
+        admin.fci().detail(request.params.id),
+      );
+      scope.post<{ Params: { id: string } }>("/fci/:id/retry", async (request) =>
+        admin.fci().retry(request.params.id),
+      );
+      scope.post<{ Params: { id: string } }>("/fci/:id/reanalyze", async (request) =>
+        admin.fci().retry(request.params.id, true),
+      );
+      scope.post<{ Params: { id: string } }>("/fci/:id/report-retry", async (request) =>
+        admin.fci().retryReport(request.params.id),
+      );
+      scope.put<{ Params: { id: string } }>("/repositories/:id/fci", async (request) =>
+        admin.configureFci(
+          request.params.id,
+          parseBody(FciConfigSchema, request.body),
+          actorOf(request),
+        ),
+      );
 
       scope.put<{ Params: { role: string } }>("/prompts/:role", async (request, reply) => {
         const role = AiRoleSchema.safeParse(request.params.role);
@@ -483,7 +585,6 @@ function registerAdminRoutes(
           integrationPendingStatus: body.workflow.integrationPendingStatus,
           implementationCompleteStatus: body.workflow.implementationCompleteStatus,
           inProgressStatus: body.workflow.inProgressStatus,
-          reviewStatus: body.workflow.reviewStatus,
           doneStatus: body.workflow.doneStatus,
         });
       });

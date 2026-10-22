@@ -14,21 +14,20 @@ const workspace: WorkspaceConfig = {
     implementationCompleteStatus: "AI 구현 완료",
     doneStatus: "Done",
     inProgressStatus: "작업 중",
-    reviewStatus: "AI 작업 완료",
   },
 };
 
 describe("buildWorkspaceJql", () => {
-  it("queries planning, implementation, integration and advisory review stages", () => {
+  it("queries planning, implementation, integration and completed stages", () => {
     expect(buildWorkspaceJql(workspace)).toBe(
-      'project in ("KAN") AND status in ("AI 작업 요청", "AI 계획중", "작업 중", "AI 통합 대기", "AI 작업 완료") ORDER BY created ASC',
+      'project in ("KAN") AND status in ("AI 작업 요청", "AI 계획중", "작업 중", "AI 통합 대기", "AI 구현 완료") ORDER BY created ASC',
     );
   });
 
   it("lists every project key configured for the workspace", () => {
     const multiProject: WorkspaceConfig = { ...workspace, projectKeys: ["KAN", "OPS"] };
     expect(buildWorkspaceJql(multiProject)).toBe(
-      'project in ("KAN", "OPS") AND status in ("AI 작업 요청", "AI 계획중", "작업 중", "AI 통합 대기", "AI 작업 완료") ORDER BY created ASC',
+      'project in ("KAN", "OPS") AND status in ("AI 작업 요청", "AI 계획중", "작업 중", "AI 통합 대기", "AI 구현 완료") ORDER BY created ASC',
     );
   });
 });

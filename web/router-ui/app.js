@@ -3,6 +3,7 @@
 import { admin, getToken, health, setToken } from "./api.js";
 import { clear, errorNotice, fill, h, notice } from "./dom.js";
 import { renderCheck, renderConfig } from "./views-config.js";
+import { renderFci } from "./views-fci.js";
 import { renderGuide } from "./views-guide.js";
 import { renderIssues } from "./views-issues.js";
 import { renderPrompts } from "./views-prompts.js";
@@ -13,6 +14,7 @@ import { renderDashboard, renderWorkers } from "./views-status.js";
 const ROUTES = {
   "#/": { label: "대시보드", render: renderDashboard, poll: true },
   "#/workers": { label: "워커", render: renderWorkers },
+  "#/repositories": { label: "저장소 FCI", render: renderFci },
   "#/reviews": { label: "검토", render: renderReviews },
   "#/issues": { label: "이슈", render: renderIssues },
   "#/config": { label: "설정", render: renderConfig },

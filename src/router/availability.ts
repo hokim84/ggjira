@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { RouterConfig } from "./config.js";
-import { listWorkers, type WorkerRow } from "./db/workers.js";
+import { type WorkerRow, listWorkers } from "./db/workers.js";
 import type { WorkerAvailability } from "./scheduler.js";
 
 /** A worker is offered work only while its general heartbeat is this fresh. Three missed 5s
@@ -43,6 +43,14 @@ export function buildWorkerAvailability(
   now: string,
 ): WorkerAvailability[] {
   return listWorkers(db)
-    .filter((worker) => isWorkerDispatchable(worker, config, now))
+    .filter(
+      (worker) =>
+        isWorkerDispatchable(worker, config, now) &&
+        !db
+          .prepare(
+            "SELECT 1 FROM fci_tasks WHERE worker_id=? AND status='running' AND lease_expires_at>?",
+          )
+          .get(worker.id, now),
+    )
     .map(toWorkerAvailability);
 }

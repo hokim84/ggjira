@@ -1,3 +1,4 @@
+import { FCI_OUTPUT_SCHEMA } from "../contracts/fci.js";
 import { IMPLEMENTATION_REPORT_JSON_SCHEMA } from "../contracts/implementation.js";
 import {
   type AiRole,
@@ -5,16 +6,15 @@ import {
   RolePromptsSchema,
   appendRoleInstructions,
 } from "../contracts/prompts.js";
-import { QUALITY_REPORT_JSON_SCHEMA } from "../contracts/quality.js";
 import { PLAN_JSON_SCHEMA } from "../pm/plan.js";
 import { buildPlanningPrompt, buildPmSystemPrompt } from "../pm/prompt.js";
+import { buildFciSystemPrompt } from "../worker/fci-prompt.js";
 import { buildImplementPrompt, buildImplementSystemPrompt } from "../worker/prompt.js";
-import { buildReviewPrompt, buildReviewSystemPrompt } from "../worker/review-prompt.js";
 
 const builders = {
   planning: buildPmSystemPrompt,
   implementation: buildImplementSystemPrompt,
-  quality_review: buildReviewSystemPrompt,
+  fci_analysis: buildFciSystemPrompt,
 };
 
 export function roleSystemPrompt(role: AiRole, prompts: RolePrompts): string {
@@ -64,29 +64,22 @@ export function getPromptCatalog(prompts = RolePromptsSchema.parse({})) {
         outputSchema: IMPLEMENTATION_REPORT_JSON_SCHEMA,
       },
       {
-        id: "quality_review",
-        title: "리뷰",
+        id: "fci_analysis",
+        title: "FCI 분석",
         description:
-          "통합된 구현 결과의 결함과 기술 부채를 읽기 전용으로 평가하고 의견을 남깁니다.",
-        source: "src/worker/review-prompt.ts",
-        systemPrompt: buildReviewSystemPrompt(),
-        examplePrompt: buildReviewPrompt(
+          "저장소의 미래 변경 난이도를 실험적 상대 지표로 평가합니다. 승인과 상태 전이를 차단하지 않습니다.",
+        source: "src/worker/fci-prompt.ts",
+        systemPrompt: buildFciSystemPrompt(),
+        examplePrompt: JSON.stringify(
           {
-            cycleId: "{{평가 ID}}",
-            planVersion: "{{계획 버전}}",
-            policyVersion: 1,
-            objective: "{{이슈 제목과 설명}}",
-            acceptance: ["{{완료 조건}}"],
-            verification: ["{{검증 방법}}"],
-            integration: { baseBranch: "{{기준 브랜치}}", mergeCommits: ["{{병합 커밋}}"] },
-            resultIds: ["{{구현 결과 ID}}"],
-            previousFindings: ["{{이전 리뷰 결과}}"],
+            snapshotSha: "{{평가 SHA}}",
+            facts: "{{결정적으로 수집한 관측값}}",
+            tests: "{{검증 여부·근거}}",
           },
-          "{{평가 커밋}}",
-          "{{비교 기준 커밋}}",
-          { ok: true, summary: "{{검증 명령 실행 결과}}" },
+          null,
+          2,
         ),
-        outputSchema: QUALITY_REPORT_JSON_SCHEMA,
+        outputSchema: FCI_OUTPUT_SCHEMA,
       },
     ].map((role) => ({
       ...role,

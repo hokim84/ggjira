@@ -37,7 +37,7 @@ export async function reconcileDelegatedPlans(
         w.inProgressStatus,
         w.integrationPendingStatus,
         w.implementationCompleteStatus,
-        w.reviewStatus,
+        w.implementationCompleteStatus,
       ].includes(issue.statusName)
     ) {
       if (prior?.state === "active")
@@ -93,7 +93,7 @@ export async function reconcileDelegatedPlans(
     const settled = [
       w.integrationPendingStatus,
       w.implementationCompleteStatus,
-      w.reviewStatus,
+      w.implementationCompleteStatus,
       w.doneStatus,
     ];
     const automatic = deps.db

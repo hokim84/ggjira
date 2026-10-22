@@ -13,7 +13,6 @@ import type { WorkspaceConfig } from "./config.js";
  *  (src/router/delegation.ts). */
 export function approvalStatusFor(kind: JobKind, workspace: WorkspaceConfig): string {
   const workflow = workspace.workflow;
-  if (kind === "quality_review") return workflow.reviewStatus;
   if (kind === "integration_check") return workflow.integrationPendingStatus;
   return kind === "planning" ? workflow.requestStatus : workflow.inProgressStatus;
 }

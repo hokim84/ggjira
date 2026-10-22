@@ -12,7 +12,7 @@ import { executeQualityEnvelope } from "../src/worker-runtime/quality.js";
 import { fakeSuccessResult } from "../src/worker/fake.js";
 import type { WorkerProvider } from "../src/worker/provider.js";
 
-describe("Git-pinned quality review worker", () => {
+describe("Git-pinned integration validation worker", () => {
   let dir: string;
   let source: string;
   let repository: WorkerRepositoryConfig;
@@ -58,7 +58,7 @@ describe("Git-pinned quality review worker", () => {
       leaseToken: "lease",
       workspaceId: "ws1",
       repositoryId: "repo1",
-      kind: "quality_review",
+      kind: "integration_check",
       providerId: "default",
       approvalId: "quality:cycle",
       inputHash: "v2:test",
@@ -194,7 +194,7 @@ describe("Git-pinned quality review worker", () => {
       quality: { targetSha, verificationPassed: true },
     });
     expect(git(repository.path, "rev-parse", "HEAD")).toBe(baselineSha);
-    expect(calls).toBe(1);
+    expect(calls).toBe(0);
   });
   it("refuses a dependency that is absent from the integrated target", async () => {
     context().integration.mergeCommits = ["f".repeat(40)];
@@ -205,13 +205,6 @@ describe("Git-pinned quality review worker", () => {
     context().expectedSha = baselineSha;
     expect((await execute()).failureReason).toContain("stale quality target");
     expect(calls).toBe(0);
-  });
-  it("rejects edits from an allegedly read-only provider", async () => {
-    const result = await execute(
-      provider((cwd) => writeFileSync(path.join(cwd, "feature.txt"), "modified")),
-    );
-    expect(result).toMatchObject({ status: "failed" });
-    expect(result.failureReason).toContain("modified");
   });
   it("marks failed trusted validation as not passed even when the agent says pass", async () => {
     repository.validateCommand = 'node -e "process.exit(1)"';
@@ -229,23 +222,14 @@ describe("Git-pinned quality review worker", () => {
     });
     expect(calls).toBe(0);
   });
-  it("still returns advisory findings without claiming validation when no trusted command is configured", async () => {
+
+  it("requires a trusted validation command", async () => {
     repository.validateCommand = null;
-    expect(await execute()).toMatchObject({
-      status: "succeeded",
-      quality: { verificationPassed: false },
-    });
-    expect(calls).toBe(1);
+    expect((await execute()).status).toBe("failed");
+    expect(calls).toBe(0);
   });
-  it("detects a target branch update during the assessment", async () => {
-    const result = await execute(
-      provider(() => {
-        writeFileSync(path.join(source, "feature.txt"), "newer\n");
-        git(source, "add", ".");
-        git(source, "commit", "-m", "newer");
-        git(source, "push", "origin", "main");
-      }),
-    );
-    expect(result.failureReason).toContain("stale quality target");
+  it("rejects tracked edits from the validation command", async () => {
+    repository.validateCommand = "node -e \"require('fs').writeFileSync('feature.txt','edited')\"";
+    expect((await execute()).failureReason).toContain("modified");
   });
 });

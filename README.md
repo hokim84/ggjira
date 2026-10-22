@@ -1,10 +1,10 @@
 # GGJIRA
 
 Jira를 인간과 AI가 함께 쓰는 작업 인터페이스로 삼는 경량 오케스트레이션 시스템이다.
-configVersion 6은 **Router 한 대**와 **Worker 여러 대**로 구성된다. Router와 Worker의 wire protocol은 5다.
+configVersion 7은 **Router 한 대**와 **Worker 여러 대**로 구성된다. Router와 Worker의 wire protocol은 6다.
 
 ```text
-Jira ──Webhook──▶ Router ──▶ SQLite          사람: AI 계획 / AI 구현 / 선택적 AI 리뷰 요청
+Jira ──Webhook──▶ Router ──▶ SQLite          사람: AI 계획 / AI 구현 / FCI 선택 활성화
                    ▲                         Router: 계획중 → 구현 → 통합 대기 → 구현 완료
                    │ HTTPS long polling      Worker: 받은 job을 Claude Code / Codex CLI로 실행
           ┌────────┴────────┐
@@ -25,9 +25,9 @@ Jira ──Webhook──▶ Router ──▶ SQLite          사람: AI 계획 /
 - **구현 완료는 통합·검증 완료다.** PR이 준비되면 `AI 통합 대기`로 이동하고, 사람이 머지한 뒤 워커의
   신뢰된 검증 명령이 통과하면 `AI 구현 완료`로 이동한다. 부모는 첫 자식 실행부터 진행을 표시하고 자식 전체의
   통합·검증을 집계한다. 코드 변경 없는 작업은 불필요한 이유와 검증 근거를 보고하여 바로 완료할 수 있다.
-- **AI 리뷰는 선택 사항이다.** `AI 리뷰`로 수동 이동하면 기술 부채·결함·수정 제안을 댓글로 남긴다.
-  지적 해결은 강제 조건이 아니며, `Done`은 항상 사람이 결정한다. 자세한 흐름과 초기 연결 자동 상태 추가는
-  [ADR 0053](./docs/decisions/0053-board-workflow-and-optional-review.md)와 runbook §39를 따른다.
+- **FCI는 선택 기능이다.** 저장소별 기본 비활성화 상태이며 작업·PR 변경·병합 결과를 별도 분석한다.
+  원점수와 기준 100 지수를 구분하고 근거·불확실성을 보존한다. 점수나 분석 실패는 승인·상태 전이를 막지 않는다.
+  기존 일반 AI 리뷰 상태는 제거했다. 설정·계산·제약은 [FCI 문서](./docs/fci.md)를 따른다.
 
 구조와 동작은 [`docs/architecture.md`](./docs/architecture.md), 운영·장애 대응은
 [`docs/runbook.md`](./docs/runbook.md), 설계 판단은 [`docs/decisions/`](./docs/decisions/)
@@ -52,19 +52,20 @@ nvm use && npm install        # 워커 머신은 npm run build 후 `node dist/cl
 
 ## 1. Jira 준비
 
-프로젝트 workflow에 다음 상태를 둔다(이름은 자유).
+프로젝트에서 다음 여섯 상태와 전이를 사용한다. 초기 연결 시 누락된 상태·전이를 안내와 함께 구성한다.
 
-| 설정 키 | 예 | 의미 |
+| 설정 키 | 기본 상태 | 진입 |
 |---|---|---|
-| `requestStatus` | AI 검토 | 부모의 계획·자식 실행·완료 평가 관리 |
-| `inProgressStatus` | 작업 중 | 사람이 실행할 자식을 옮기면 해당 계약만 승인 |
-| `reviewStatus` | 결과 검토 | 자식 구현 결과 또는 부모 품질 평가 통과 후 Router가 옮김 |
-| `doneStatus` (선택) | 완료 | 워커가 연 PR이 머지되면 Router가 옮김. 의존성은 여기에 와야 풀린다 |
+| requestStatus | AI 계획 | 사람이 계획 요청 |
+| planningInProgressStatus | AI 계획중 | 실제 계획 실행 시 자동 |
+| inProgressStatus | AI 구현 | 사람의 개별 구현 승인 |
+| integrationPendingStatus | AI 통합 대기 | 구현·작업 검증 성공 후 자동 |
+| implementationCompleteStatus | AI 구현 완료 | 실제 병합·신뢰된 통합 검증 성공 후 자동 |
+| doneStatus | Done | 사람이 최종 완료 |
 
-자식은 작업 중 → 결과 검토(→ 완료), 부모는 AI 검토 → 결과 검토 → 수동 완료 전이가 필요하다.
-프로토콜 4이므로 Router와 Worker를 함께 갱신한다. 기존 계획은 기존 생명주기로 마무리한다.
-새 흐름은 Git 통합 근거와 Worker의 `validateCommand`가 필요하다. 가용한 Worker는 계획·구현·완료 평가를 모두 수행한다. 예전 `planReviewStatus`·`planningStatus`·`needsDecisionStatus`·`mode` 설정은 오류로
-거절한다(runbook §36).
+FCI는 별도 Jira 상태를 사용하지 않는다. 분석과 보고는 구현·통합 검증과 독립적이다.
+업그레이드 시 실행·spool을 정리하고 Router와 Worker를 함께 갱신한다. v6 설정 전환은
+[FCI 운영 문서](./docs/fci.md)의 절차와 tools/migrate-fci-config.ts를 사용한다.
 
 ## 2. Router 띄우기
 
@@ -110,7 +111,7 @@ Git 저장소에서는 계획·구현·리뷰를 시작하기 전에 기준 브�
 
 ## 운영 명령
 
-`설정 → 프롬프트`에서 플랜·구현·리뷰의 기본 지침과 입력 예시를 확인하고, 역할별 추가 지침을
+`설정 → 프롬프트`에서 플랜·구현·FCI 분석의 기본 지침과 입력 예시를 확인하고, 역할별 추가 지침을
 편집·저장할 수 있다. 추가 지침은 Router 전체에 공통 적용되며 새로 Worker에 전달되는 실행부터
 사용한다. 실행 중인 작업의 지침은 유지된다. 초기화 후 저장하면 기본 지침만 적용된다.
 통합 검증은 AI를 호출하지 않는 자동 검사이므로 별도 프롬프트를 설정하지 않는다.

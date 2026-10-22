@@ -112,7 +112,7 @@ export async function checkContext(
       if (
         ![
           workspace.workflow.implementationCompleteStatus,
-          workspace.workflow.reviewStatus,
+          workspace.workflow.implementationCompleteStatus,
           workspace.workflow.doneStatus,
         ].includes(child.statusName)
       )
@@ -164,11 +164,6 @@ export async function checkContext(
     }
   } else if (!reviewOnly) return undefined;
   if (!results.length) results.push(`issue:${issue.key}`);
-  const prior = db
-    .prepare(
-      "SELECT report FROM workflow_checks c JOIN jobs j ON j.id=c.job_id WHERE c.issue_key=? AND j.kind='quality_review' AND report IS NOT NULL ORDER BY j.rowid DESC LIMIT 1",
-    )
-    .get(issue.key) as { report: string } | undefined;
   return {
     cycleId: sourceKey([issue.key, results, merges]),
     policyVersion: 1,
@@ -180,7 +175,7 @@ export async function checkContext(
       : ["Verify the integrated result against the issue requirements."],
     integration: { baseBranch, mergeCommits: merges },
     resultIds: results,
-    previousFindings: prior ? [prior.report] : [],
+    previousFindings: [],
     verificationOnly: !reviewOnly,
   };
 }

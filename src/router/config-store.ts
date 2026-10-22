@@ -138,7 +138,7 @@ export function randomSecret(): string {
 
 export function routerConfigTemplate(): Record<string, unknown> {
   return {
-    configVersion: 6,
+    configVersion: 7,
     jira: { baseUrl: "https://your-site.atlassian.net" },
     repositories: [{ id: "main-repo", displayName: "Main repository" }],
     workspaces: [
@@ -152,7 +152,6 @@ export function routerConfigTemplate(): Record<string, unknown> {
           integrationPendingStatus: "AI 통합 대기",
           implementationCompleteStatus: "AI 구현 완료",
           inProgressStatus: "AI 구현",
-          reviewStatus: "AI 리뷰",
           doneStatus: "Done",
         },
       },

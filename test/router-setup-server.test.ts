@@ -194,7 +194,6 @@ describe("setup server", () => {
         "AI 구현",
         "AI 통합 대기",
         "AI 구현 완료",
-        "AI 리뷰",
         "Done",
       ]),
       messages: [expect.stringContaining("자동 추가")],

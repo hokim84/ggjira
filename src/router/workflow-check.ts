@@ -59,18 +59,20 @@ export function routerWorkflowHops(workflow: WorkflowStatus): WorkflowHop[] {
       to: workflow.implementationCompleteStatus,
     },
     {
-      label: "선택적 리뷰(사람)",
-      from: workflow.implementationCompleteStatus,
-      to: workflow.reviewStatus,
-    },
-    {
-      label: "리뷰 생략·완료(사람)",
+      label: "최종 완료(사람)",
       from: workflow.implementationCompleteStatus,
       to: workflow.doneStatus,
     },
-    { label: "리뷰 후 완료(사람)", from: workflow.reviewStatus, to: workflow.doneStatus },
-    { label: "리뷰 후 수정(사람)", from: workflow.reviewStatus, to: workflow.inProgressStatus },
-    { label: "재계획(사람)", from: workflow.reviewStatus, to: workflow.requestStatus },
+    {
+      label: "완료 후 수정(사람)",
+      from: workflow.implementationCompleteStatus,
+      to: workflow.inProgressStatus,
+    },
+    {
+      label: "재계획(사람)",
+      from: workflow.implementationCompleteStatus,
+      to: workflow.requestStatus,
+    },
   ];
   return hops;
 }

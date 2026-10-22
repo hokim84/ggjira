@@ -349,6 +349,13 @@ export class JiraClient implements JiraGateway {
     });
   }
 
+  async updateComment(key: string, id: string, body: string): Promise<void> {
+    await this.request<unknown>(
+      "PUT",
+      `/rest/api/2/issue/${encodeURIComponent(key)}/comment/${encodeURIComponent(id)}`,
+      { body },
+    );
+  }
   async getComments(key: string): Promise<JiraComment[]> {
     const comments: JiraComment[] = [];
     let startAt = 0;

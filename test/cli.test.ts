@@ -65,7 +65,7 @@ describe("ggjira CLI", () => {
     const io = captureIo();
     expect(await main(["router", "setup", "--config", configPath], io)).toBe(0);
     const config = RouterConfigSchema.parse(JSON.parse(readFileSync(configPath, "utf-8")));
-    expect(config.configVersion).toBe(6);
+    expect(config.configVersion).toBe(7);
     expect(io.stdout.join("\n")).toMatch(/GGJIRA_WEBHOOK_SECRET=\S{32,}/);
     expect(io.stdout.join("\n")).toMatch(/GGJIRA_ADMIN_TOKEN=\S{32,}/);
 

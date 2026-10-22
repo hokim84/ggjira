@@ -9,8 +9,8 @@ import { getActiveAttemptForWorker } from "../src/router/db/attempts.js";
 import { listAudit } from "../src/router/db/audit.js";
 import { getJob } from "../src/router/db/jobs.js";
 import { buildJobEnvelope } from "../src/router/envelope.js";
+import { buildFciSystemPrompt } from "../src/worker/fci-prompt.js";
 import { buildImplementSystemPrompt } from "../src/worker/prompt.js";
-import { buildReviewSystemPrompt } from "../src/worker/review-prompt.js";
 
 import { ADMIN_TOKEN, RouterHarness } from "./helpers/router-harness.js";
 
@@ -31,9 +31,13 @@ it("serves current built-in prompts only to an authenticated administrator", asy
     expect(roles.map((role: { systemPrompt: string }) => role.systemPrompt)).toEqual([
       buildPmSystemPrompt(),
       buildImplementSystemPrompt(),
-      buildReviewSystemPrompt(),
+      buildFciSystemPrompt(),
     ]);
-    expect(roles.map((role: { title: string }) => role.title)).toEqual(["플랜", "구현", "리뷰"]);
+    expect(roles.map((role: { title: string }) => role.title)).toEqual([
+      "플랜",
+      "구현",
+      "FCI 분석",
+    ]);
     expect(roles[0].examplePrompt).toContain("EXAMPLE-1");
     expect(roles[0].outputSchema).toHaveProperty("properties");
     expect(roles[1].outputSchema).toHaveProperty("properties");
@@ -90,12 +94,12 @@ describe("role additional instructions", () => {
     for (const role of AI_ROLES)
       expect(raw.prompts[role].additionalInstructions).toBe(`Extra ${role}`);
     expect(
-      listAudit(router.db, "quality_review").some((entry) => entry.action === "prompt.updated"),
+      listAudit(router.db, "fci_analysis").some((entry) => entry.action === "prompt.updated"),
     ).toBe(true);
     await router.close();
     router = new RouterHarness({ configPath, config: RouterConfigSchema.parse(raw) });
     const loaded = (await router.adminCall("GET", "/prompts")).json().roles;
-    expect(loaded[2].additionalInstructions).toBe("Extra quality_review");
+    expect(loaded[2].additionalInstructions).toBe("Extra fci_analysis");
     // General config edits preserve all three prompt settings.
     expect(
       (await router.adminCall("PUT", "/config", { ...raw, execution: { timeoutMs: 120000 } }))
@@ -107,7 +111,7 @@ describe("role additional instructions", () => {
     const roles = reset.json().roles;
     expect(roles[1].effectiveSystemPrompt).toBe(buildImplementSystemPrompt());
     expect(roles[0].additionalInstructions).toBe("Extra planning");
-    expect(roles[2].additionalInstructions).toBe("Extra quality_review");
+    expect(roles[2].additionalInstructions).toBe("Extra fci_analysis");
   });
 
   it("uses the catalog's role instructions in envelopes and freezes an issued attempt", async () => {
@@ -131,7 +135,7 @@ describe("role additional instructions", () => {
     if (!attempt || !job) throw new Error("missing leased job");
     const config = RouterConfigSchema.parse(JSON.parse(readFileSync(configPath, "utf8")));
     const catalog = (await router.adminCall("GET", "/prompts")).json().roles;
-    for (const kind of AI_ROLES) {
+    for (const kind of ["planning", "implementation"] as const) {
       const envelope = buildJobEnvelope(router.db, config, { ...job, kind }, attempt);
       expect(envelope.systemPrompt).toBe(
         catalog.find((role: { id: string }) => role.id === kind).effectiveSystemPrompt,

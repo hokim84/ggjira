@@ -187,7 +187,6 @@ export function renderSetup(root) {
           ["inProgressStatus", "AI 구현"],
           ["integrationPendingStatus", "AI 통합 대기"],
           ["implementationCompleteStatus", "AI 구현 완료"],
-          ["reviewStatus", "AI 리뷰"],
           ["doneStatus", "Done"],
         ].map(([key, label]) => field(ws, `workflow.${key}`, label, { kind, options })),
       );
@@ -275,7 +274,6 @@ export function renderSetup(root) {
         "inProgressStatus",
         "integrationPendingStatus",
         "implementationCompleteStatus",
-        "reviewStatus",
         "doneStatus",
       ]) {
         if (!ws.workflow[key]) missing.push({ path: `workflow.${key}`, message: "필수입니다" });

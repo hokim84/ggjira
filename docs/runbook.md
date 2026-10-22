@@ -895,3 +895,10 @@ Jira 생성·보고 실패는 기존 `reports retry` 절차로 복구한다. 생
 
 연결된 테스트 프로젝트 상태 확인은 `npx tsx tools/router-workflow-admin.ts`, 명시적 자동 구성은
 `npx tsx tools/router-workflow-admin.ts --apply`로 수행할 수 있다. 이 도구는 자격 증명을 출력하지 않는다.
+
+
+## 40. FCI 선택 기능과 리뷰 상태 제거
+
+Router 설정 7 / Worker protocol 6 / DB migration 21을 함께 적용한다. 먼저 기존 실행·AI 리뷰·spool을 정리하고 DB와 설정을 백업한 다음 Router·Worker를 중지한다. `npx tsx tools/migrate-fci-config.ts`로 검증하고 `--apply`로 전환한다. 과거 리뷰 지침은 백업에 남고 FCI로 복사되지 않는다. 현재 6상태 정책은 README와 ADR 0055를 따른다. 기존 Jira AI 리뷰 상태에 남은 이슈를 올바른 상태로 옮긴 후 보드 열에서 제외하며 공유 상태를 임의 삭제하지 않는다.
+
+FCI는 기본 비활성화다. 저장소 FCI 화면에서 전체 기준 SHA와 모델 ID·provider 종류를 명시해 활성화한다. Worker의 명시된 provider 모델 ID가 일치해야 한다. 분석 실패, 보고 실패, 평가 불가를 구분하고 각각 분석 재시도·보고 재시도를 사용한다. 구현 재시도로 대체하지 않는다. 계산 규칙, 0기준 처리, 캐시, Unity 한계와 수동 검증 범위는 [FCI 문서](./fci.md)에 있다.

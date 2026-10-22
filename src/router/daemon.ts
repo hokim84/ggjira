@@ -8,21 +8,21 @@ import { buildWorkerAvailability } from "./availability.js";
 import type { RouterConfig } from "./config.js";
 import { listUnprocessedEvents, markEventProcessed } from "./db/events.js";
 import { RuleDecisionProvider } from "./decision.js";
-import { expireLeases, type LeaseExpiryReport } from "./leases.js";
-import { processReportJournal, type ReportPassReport } from "./report-processor.js";
-import {
-  reconcileCandidates,
-  type SchedulerDeps,
-  type SchedulerReport,
-  verifyActiveJobs,
-} from "./scheduler.js";
 import {
   type FetchLike,
-  handlePullRequestClosed,
   type PullRequestPollReport,
+  handlePullRequestClosed,
   pollPullRequests,
 } from "./github.js";
 import { JevClient } from "./jev.js";
+import { type LeaseExpiryReport, expireLeases } from "./leases.js";
+import { type ReportPassReport, processReportJournal } from "./report-processor.js";
+import {
+  type SchedulerDeps,
+  type SchedulerReport,
+  reconcileCandidates,
+  verifyActiveJobs,
+} from "./scheduler.js";
 import { GITHUB_TOKEN_ENV, JEV_API_KEY_ENV } from "./secrets.js";
 import { buildRouterServer } from "./server.js";
 import { WorkerService } from "./worker-service.js";
@@ -323,6 +323,15 @@ export class RouterDaemon {
   }
 
   async reportTick(): Promise<ReportPassReport> {
+    try {
+      this.workerService.fci.sync();
+      await this.workerService.fci.report(this.deps.jira);
+    } catch (error) {
+      this.deps.logger?.error(
+        { layer: "router", err: error },
+        "FCI analysis/report pass failed independently",
+      );
+    }
     const report = await processReportJournal({
       db: this.deps.db,
       jira: this.deps.jira,

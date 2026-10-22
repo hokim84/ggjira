@@ -1,7 +1,7 @@
 # GGJIRA — Claude Code 작업 규칙
 
 GGJIRA는 Jira를 인간/AI 공용 작업 인터페이스로 쓰는 경량 오케스트레이션 시스템이다.
-configVersion 5에서는 **Router**(`ggjira router serve`, 단일 서버 + SQLite)가 Jira 웹훅·보완 조회로
+configVersion 7에서는 **Router**(`ggjira router serve`, 단일 서버 + SQLite)가 Jira 웹훅·보완 조회로
 승인된 이슈를 찾아 job을 만들고, 저장소·가용성으로 **Worker**(`ggjira worker run`,
 각 머신)에 배정한다. 워커는 Router에만 HTTPS long polling으로 연결하며 Jira를 직접 호출하지 않는다.
 Jira Assignee는 인간 책임자로만 남는다. PM(계획) 실행도 같은 워커가 하고 계획만 반환하며, Jira에

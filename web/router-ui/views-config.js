@@ -29,7 +29,6 @@ const STATUS_FIELDS = [
   ["inProgressStatus", "AI 구현", "사람이 개별 작업을 승인. 첫 자식 실행 시 부모도 이동"],
   ["integrationPendingStatus", "AI 통합 대기", "PR을 사람이 머지하면 통합 검증"],
   ["implementationCompleteStatus", "AI 구현 완료", "통합·검증 성공 시 자동 이동"],
-  ["reviewStatus", "AI 리뷰", "사람이 요청하는 선택적 평가. 결과는 댓글로 게시"],
   ["doneStatus", "Done", "사람이 최종 완료로 이동"],
 ];
 
@@ -463,7 +462,7 @@ export async function renderConfig(root, ctx) {
       !projectKey ||
       !workflow.requestStatus ||
       !workflow.inProgressStatus ||
-      !workflow.reviewStatus
+      !workflow.implementationCompleteStatus
     ) {
       fill(
         el,

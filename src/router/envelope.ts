@@ -94,6 +94,8 @@ export function buildJobEnvelope(
   job: JobRow,
   attempt: AttemptRow,
 ): JobEnvelope {
+  if (job.kind === "quality_review")
+    throw new EnvelopeUnavailableError(job.id, "general AI review has been retired");
   const approval = getApproval(db, job.issueKey);
   if (!approval) throw new EnvelopeUnavailableError(job.id, "no approval row for its issue");
   // The snapshot below is the latest one reconcile stored, not the one the job was created from.
@@ -125,7 +127,7 @@ export function buildJobEnvelope(
     issueSnapshot: toIssueSnapshot(job.id, approval.inputSnapshot),
     ...(job.kind === "planning"
       ? { planningContext: toPlanningContext(job.id, approval.inputSnapshot) }
-      : job.kind === "quality_review" || job.kind === "integration_check"
+      : job.kind === "integration_check"
         ? { qualityContext: snapshot.quality }
         : {
             executionContract: toExecutionContract(job.id, approval.inputSnapshot),

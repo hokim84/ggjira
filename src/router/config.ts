@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { CloneUrlSchema } from "../contracts/api.js";
+import { FciConfigSchema } from "../contracts/fci.js";
 import { RolePromptsSchema } from "../contracts/prompts.js";
 
 /** See src/config.ts's `nfc` for why status/transition names get normalized. */
@@ -10,7 +11,7 @@ function nfc(value: string): string {
 
 const nfcString = z.string().min(1).transform(nfc);
 
-/** Seven board stages: manual requests, automatic progress and integration, optional review, manual Done. */
+/** Six board stages; FCI is independent analysis, not a workflow stage. */
 const WorkflowStatusSchema = z
   .object({
     requestStatus: nfcString,
@@ -18,7 +19,6 @@ const WorkflowStatusSchema = z
     inProgressStatus: nfcString,
     integrationPendingStatus: nfcString,
     implementationCompleteStatus: nfcString,
-    reviewStatus: nfcString,
     /** Final completion is always a human status move. */
     doneStatus: nfcString,
   })
@@ -32,7 +32,6 @@ const WorkflowStatusSchema = z
       "inProgressStatus",
       "integrationPendingStatus",
       "implementationCompleteStatus",
-      "reviewStatus",
       "doneStatus",
     ] as const) {
       const status = workflow[field];
@@ -57,6 +56,7 @@ const RepositorySchema = z.object({
   cloneUrl: CloneUrlSchema.optional(),
   /** Branch job worktrees start from; workers default to "main". */
   baseBranch: z.string().min(1).optional(),
+  fci: FciConfigSchema.optional(),
 });
 export type RepositoryConfig = z.infer<typeof RepositorySchema>;
 
@@ -198,7 +198,7 @@ const JevConfigSchema = z.object({
 
 export const RouterConfigSchema = z
   .object({
-    configVersion: z.literal(6),
+    configVersion: z.literal(7),
     prompts: RolePromptsSchema.default({}),
     jira: z.object({ baseUrl: z.string().url() }),
     repositories: z.array(RepositorySchema).min(1),

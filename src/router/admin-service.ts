@@ -1,7 +1,9 @@
 import { mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
+import type { z } from "zod";
 import type { AdminAddWorkerRequest, ProviderUsage } from "../contracts/api.js";
+import type { FciConfigSchema } from "../contracts/fci.js";
 import type { JobState } from "../contracts/job-state.js";
 import type { AiRole } from "../contracts/prompts.js";
 import type { JiraGateway } from "../jira/gateway.js";
@@ -72,6 +74,7 @@ import {
   listReviewTargets,
 } from "./db/review-targets.js";
 import { getWorker, listWorkers, revokeWorker, setWorkerEnabled } from "./db/workers.js";
+import { FciService } from "./fci-service.js";
 import type { PullRequestPollReport } from "./github.js";
 import {
   type IssueView,
@@ -137,6 +140,7 @@ export interface AdminWorkerView {
 }
 
 export interface AdminJobDetail {
+  fci: ReturnType<FciService["forJob"]>;
   job: JobRow;
   attempts: AttemptRow[];
   reportSteps: ReportStepRow[];
@@ -414,6 +418,7 @@ export class AdminService {
   showJob(jobId: string): AdminJobDetail {
     const job = this.requireJob(jobId);
     return {
+      fci: this.fci().forJob(jobId),
       job,
       attempts: listAttemptsForJob(this.db, jobId),
       reportSteps: listJobReportSteps(this.db, jobId),
@@ -583,6 +588,27 @@ export class AdminService {
 
   prompts() {
     return { ...getPromptCatalog(this.config.prompts), editable: Boolean(this.deps.configPath) };
+  }
+  fci() {
+    return new FciService(this.db, this.config, this.now);
+  }
+  async configureFci(repositoryId: string, fci: z.infer<typeof FciConfigSchema>, actor: string) {
+    const raw = readRawRouterConfig(this.requireConfigPath()) as RouterConfig;
+    if (!raw.repositories.some((r) => r.id === repositoryId))
+      throw new AdminError(404, "unknown_repository", "repository not configured");
+    const next = {
+      ...raw,
+      repositories: raw.repositories.map((r) => (r.id === repositoryId ? { ...r, fci } : r)),
+    };
+    await this.updateConfig(next, actor);
+    this.fci().sync();
+    appendAudit(this.db, {
+      at: this.now(),
+      actor,
+      action: "fci.configured",
+      subject: repositoryId,
+    });
+    return this.fci().view(repositoryId);
   }
 
   async updatePrompt(role: AiRole, additionalInstructions: string, actor: string) {
@@ -808,7 +834,11 @@ export class AdminService {
   /** The issue's status and what keeps Router from starting it (read-only). */
   async issueView(issueKey: string): Promise<IssueView> {
     try {
-      return await readIssueView(this.issueViewDeps(), issueKey);
+      const view = await readIssueView(this.issueViewDeps(), issueKey);
+      const tasks = this.db
+        .prepare("SELECT id FROM fci_tasks WHERE issue_key=? ORDER BY created_at DESC")
+        .all(view.issueKey) as { id: string }[];
+      return { ...view, fci: tasks.map((t) => this.fci().detail(t.id)) };
     } catch (error) {
       throw toAdminError(error);
     }

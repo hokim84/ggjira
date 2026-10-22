@@ -197,27 +197,6 @@ describe("board workflow", () => {
     await finish(check, quality());
     expect(await status()).toBe(w.implementationCompleteStatus);
   });
-  it("posts advisory review without forcing changes or completing the issue", async () => {
-    await router.jira.transitionIssueToStatus("KAN-1", w.inProgressStatus);
-    await finish(await start(), noChange);
-    await router.jira.transitionIssueToStatus("KAN-1", w.reviewStatus);
-    const review = await start();
-    expect(review.kind).toBe("quality_review");
-    await finish(review, quality(false));
-    expect(await status()).toBe(w.reviewStatus);
-    expect((await router.reconcile()).jobsCreated).toEqual([]);
-    await router.jira.transitionIssueToStatus("KAN-1", w.doneStatus);
-    expect(await status()).toBe(w.doneStatus);
-  });
-  it("uses the latest review when a human requests rework", async () => {
-    await router.jira.transitionIssueToStatus("KAN-1", w.inProgressStatus);
-    await finish(await start(), noChange);
-    await router.jira.transitionIssueToStatus("KAN-1", w.reviewStatus);
-    await finish(await start(), quality());
-    await router.jira.transitionIssueToStatus("KAN-1", w.inProgressStatus);
-    const rework = await start();
-    expect(rework.executionContract?.inScope.join(" ")).toContain("Latest advisory review");
-  });
   it("does not overwrite a human's Done with a late report", async () => {
     await router.jira.transitionIssueToStatus("KAN-1", w.inProgressStatus);
     const job = await start();
@@ -305,8 +284,6 @@ describe("board workflow", () => {
     await finish(await start(), noChange);
     await router.reconcile();
     await process();
-    await finish(await start(), quality());
-    await router.jira.transitionIssueToStatus("KAN-1", w.reviewStatus);
     await finish(await start(), quality());
     await router.jira.transitionIssueToStatus("KAN-1", w.inProgressStatus);
     const rework = await start();

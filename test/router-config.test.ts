@@ -23,7 +23,7 @@ describe("loadRouterConfig", () => {
 
   function validConfig(overrides: Record<string, unknown> = {}) {
     return {
-      configVersion: 6,
+      configVersion: 7,
       jira: { baseUrl: "https://example.atlassian.net" },
       repositories: [{ id: "repo-1" }],
       workspaces: [
@@ -37,7 +37,6 @@ describe("loadRouterConfig", () => {
             integrationPendingStatus: "AI 통합 대기",
             implementationCompleteStatus: "AI 구현 완료",
             inProgressStatus: "작업 중",
-            reviewStatus: "결과 검토",
             doneStatus: "Done",
           },
         },
@@ -72,7 +71,6 @@ describe("loadRouterConfig", () => {
                 integrationPendingStatus: "AI 통합 대기",
                 implementationCompleteStatus: "AI 구현 완료",
                 inProgressStatus: "작업 중",
-                reviewStatus: "완료",
                 doneStatus: "Done",
               },
             },
@@ -123,7 +121,6 @@ describe("loadRouterConfig", () => {
                   integrationPendingStatus: "AI 통합 대기",
                   implementationCompleteStatus: "AI 구현 완료",
                   inProgressStatus: "진행",
-                  reviewStatus: "검토",
                   doneStatus: "Done",
                 },
               },
@@ -151,7 +148,6 @@ describe("loadRouterConfig", () => {
                   integrationPendingStatus: "AI 통합 대기",
                   implementationCompleteStatus: "AI 구현 완료",
                   inProgressStatus: "진행",
-                  reviewStatus: "검토",
                   doneStatus: "Done",
                 },
               },
@@ -165,7 +161,6 @@ describe("loadRouterConfig", () => {
                   integrationPendingStatus: "AI 통합 대기",
                   implementationCompleteStatus: "AI 구현 완료",
                   inProgressStatus: "진행",
-                  reviewStatus: "검토",
                   doneStatus: "Done",
                 },
               },
@@ -242,7 +237,6 @@ describe("loadRouterConfig", () => {
               integrationPendingStatus: "AI 통합 대기",
               implementationCompleteStatus: "AI 구현 완료",
               inProgressStatus: "작업 중",
-              reviewStatus: "결과 검토",
               doneStatus: "완료",
               ...workflow,
             },
@@ -251,7 +245,7 @@ describe("loadRouterConfig", () => {
       });
     }
 
-    it("accepts a single AI review status with shared work and result statuses", () => {
+    it("accepts six distinct workflow stages without general AI review", () => {
       const config = loadRouterConfig(writeConfig(workflowConfig({})));
       expect(config.workspaces[0]?.workflow).toEqual({
         requestStatus: "AI 계획 요청",
@@ -259,7 +253,6 @@ describe("loadRouterConfig", () => {
         integrationPendingStatus: "AI 통합 대기",
         implementationCompleteStatus: "AI 구현 완료",
         inProgressStatus: "작업 중",
-        reviewStatus: "결과 검토",
         doneStatus: "완료",
       });
     });
@@ -281,9 +274,9 @@ describe("loadRouterConfig", () => {
         /inProgressStatus must differ from workflow.requestStatus/,
       ],
       [
-        "whose plan review is the result review",
-        { requestStatus: "결과 검토" },
-        /reviewStatus must differ from workflow.requestStatus/,
+        "whose integration stage is its request stage",
+        { integrationPendingStatus: "AI 계획 요청" },
+        /integrationPendingStatus must differ from workflow.requestStatus/,
       ],
       [
         "whose request is the done status",

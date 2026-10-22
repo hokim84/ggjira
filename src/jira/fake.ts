@@ -291,6 +291,11 @@ export class FakeJiraGateway implements JiraGateway {
   async getComments(key: string): Promise<JiraComment[]> {
     return this.commentsByKey.get(key) ?? [];
   }
+  async updateComment(key: string, id: string, body: string): Promise<void> {
+    const comment = this.commentsByKey.get(key)?.find((c) => c.id === id);
+    if (!comment) throw new Error("comment missing");
+    comment.body = body;
+  }
 
   async getTransitions(key: string): Promise<JiraTransition[]> {
     return this.transitionsByKey.get(key) ?? [];

@@ -10,7 +10,7 @@
  * 4 (ADR 0052): all workers execute every job kind; no capability fields.
  * 3 (ADR 0051): child-only lifecycle, Git integration inputs and quality_review results.
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 export const JOB_KINDS = [
   "planning",

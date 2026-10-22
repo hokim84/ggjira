@@ -23,6 +23,7 @@ import type {
 } from "../contracts/api.js";
 import type { AttemptState } from "../contracts/attempt-state.js";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
+import { type FciOutcome, ShaSchema } from "../contracts/fci.js";
 import type { JobState } from "../contracts/job-state.js";
 import { inputHashMatches } from "./approval.js";
 import { resultAttention } from "./attention.js";
@@ -64,6 +65,7 @@ import {
 } from "./db/workers.js";
 import { planDeploymentAuthorizes } from "./delegation.js";
 import { buildJobEnvelope } from "./envelope.js";
+import { FciService } from "./fci-service.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import { expireLeases } from "./leases.js";
 import { latestPlanningRequest } from "./planning-requests.js";
@@ -128,6 +130,7 @@ function defaultSleep(ms: number): Promise<void> {
  * wait happens outside a transaction (§3 "네트워크 호출을 DB 트랜잭션 안에서 기다리지 않는다").
  */
 export class WorkerService {
+  readonly fci: FciService;
   private readonly db: Database.Database;
   private config: RouterConfig;
   private readonly now: () => string;
@@ -138,6 +141,7 @@ export class WorkerService {
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(deps: WorkerServiceDeps) {
+    this.fci = new FciService(deps.db, deps.config, deps.now);
     this.db = deps.db;
     this.config = deps.config;
     this.now = deps.now ?? (() => new Date().toISOString());
@@ -151,6 +155,7 @@ export class WorkerService {
   /** Swaps in an applied config; calls already in flight finish on the one they read. */
   setConfig(config: RouterConfig): void {
     this.config = config;
+    this.fci.setConfig(config);
   }
 
   // --- admin ---------------------------------------------------------------------------
@@ -283,6 +288,45 @@ export class WorkerService {
 
   // --- jobs/next -----------------------------------------------------------------------
 
+  fciSession(worker: WorkerRow, sessionId: string) {
+    this.assertCurrentSession(worker.id, sessionId);
+  }
+
+  source(
+    worker: WorkerRow,
+    jobId: string,
+    request: {
+      sessionId: string;
+      attemptId: string;
+      leaseToken: string;
+      sha: string;
+      observedAt: string;
+    },
+  ) {
+    const attempt = getAttempt(this.db, request.attemptId);
+    if (
+      !attempt ||
+      attempt.jobId !== jobId ||
+      attempt.workerId !== worker.id ||
+      attempt.leaseToken !== request.leaseToken
+    )
+      throw new WorkerApiError(
+        409,
+        "source_mismatch",
+        "source observation does not match the worker attempt",
+      );
+    ShaSchema.parse(request.sha);
+    const prior = this.db
+      .prepare("SELECT sha FROM fci_sources WHERE attempt_id=?")
+      .get(attempt.id) as { sha: string } | undefined;
+    if (prior && prior.sha !== request.sha)
+      throw new WorkerApiError(409, "source_mismatch", "attempt start SHA is immutable");
+    this.db
+      .prepare("INSERT OR IGNORE INTO fci_sources VALUES (?,?,?)")
+      .run(attempt.id, request.sha, request.observedAt);
+    return { accepted: true };
+  }
+
   /**
    * Returns this worker's reservation, or `null` (→ 204) once `longPollMs` passes with nothing
    * to hand out. Resending the same `requestId` returns the same reservation, so a lost response
@@ -325,6 +369,7 @@ export class WorkerService {
       }
 
       const active = getActiveAttemptForWorker(this.db, workerId);
+      if (!active && this.fci.busy(workerId)) return null;
       if (active) {
         if (active.state !== "leased") {
           throw new WorkerApiError(

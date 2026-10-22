@@ -18,7 +18,7 @@ export async function renderPrompts(root) {
     h(
       "p",
       { class: "muted" },
-      "플랜·구현·리뷰의 기본 지침을 확인하고 역할별 추가 지침을 저장합니다. 모든 프로젝트와 Worker에 공통 적용됩니다.",
+      "플랜·구현·FCI 분석의 기본 지침을 확인하고 역할별 추가 지침을 저장합니다. 모든 프로젝트와 Worker에 공통 적용됩니다.",
     ),
     h(
       "p",

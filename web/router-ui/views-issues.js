@@ -99,11 +99,7 @@ const DELEGATION_STAGES = {
   ],
   implementation_complete: [
     "구현 완료",
-    () => "Done으로 마치거나 선택적으로 AI 리뷰를 요청하세요.",
-  ],
-  result_review: [
-    "AI 리뷰",
-    () => "평가 댓글을 확인하고 Done, AI 구현(수정), AI 계획(재계획)을 선택하세요.",
+    () => "Done으로 마치세요. 활성화한 저장소의 FCI 결과는 별도로 확인할 수 있습니다.",
   ],
   done: ["완료", () => "끝났습니다."],
 };
@@ -138,7 +134,7 @@ function delegationRows(view) {
         "div",
         { class: "hint" },
         d.quality
-          ? "실행할 자식을 AI 구현으로 옮기세요. 모든 자식과 부모의 통합 검증 후 AI 구현 완료로 이동합니다. AI 리뷰는 선택 사항입니다."
+          ? "실행할 자식을 AI 구현으로 옮기세요. 모든 자식과 부모의 통합 검증 후 AI 구현 완료로 이동합니다. FCI는 별도 상태 없이 분석합니다."
           : next(d.statuses),
       ),
     ),
@@ -393,6 +389,33 @@ export function renderIssues(root, ctx) {
         ),
       ),
     );
+    if (view.fci?.length)
+      resultEl.append(
+        h(
+          "section",
+          { class: "panel" },
+          h("h2", {}, "FCI 분석 결과"),
+          h(
+            "p",
+            { class: "muted" },
+            "실험적 상대 지표입니다. 개발 비용·시간·장애 확률이 아닙니다.",
+          ),
+          view.fci.map((a) =>
+            h(
+              "p",
+              {},
+              h(
+                "a",
+                {
+                  href: `#/repositories?repository=${encodeURIComponent(a.repository_id)}&series=${encodeURIComponent(a.series_id)}&analysis=${encodeURIComponent(a.id)}`,
+                },
+                `${a.purpose} / ${a.status}: ${a.beforeFci?.toFixed(2) ?? "평가 불가"} → ${a.afterFci?.toFixed(2) ?? "평가 불가"} / ΔFCI ${a.delta?.toFixed(2) ?? "평가 불가"}`,
+              ),
+              a.error ? ` · ${a.error}` : "",
+            ),
+          ),
+        ),
+      );
   }
 
   async function load(key) {

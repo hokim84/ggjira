@@ -51,7 +51,10 @@ describe("board workflow transition inspection", () => {
           from: WORKFLOW.implementationCompleteStatus,
           to: WORKFLOW.doneStatus,
         }),
-        expect.objectContaining({ from: WORKFLOW.reviewStatus, to: WORKFLOW.doneStatus }),
+        expect.objectContaining({
+          from: WORKFLOW.implementationCompleteStatus,
+          to: WORKFLOW.doneStatus,
+        }),
       ]),
     );
     expect(

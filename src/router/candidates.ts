@@ -17,7 +17,7 @@ export function buildWorkspaceJql(workspace: WorkspaceConfig): string {
     w.planningInProgressStatus,
     w.inProgressStatus,
     w.integrationPendingStatus,
-    w.reviewStatus,
+    w.implementationCompleteStatus,
   ];
   return `project in (${projects}) AND status in (${statuses.map((status) => `"${status.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}) ORDER BY created ASC`;
 }

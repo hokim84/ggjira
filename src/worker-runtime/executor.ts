@@ -45,6 +45,7 @@ export type ExecutionOutcome = Omit<
 >;
 
 export interface ExecutorDeps {
+  onSource?: (sha: string, observedAt: string) => Promise<void>;
   onProgress?: (stage: ExecutionStage) => void;
   config: WorkerConfig;
   /** Resolves a local provider entry to a runnable provider. Tests pass a Fake here. */
@@ -190,7 +191,9 @@ async function executeWithProvider(
     });
   }
 
-  if (envelope.kind === "quality_review" || envelope.kind === "integration_check")
+  if (envelope.kind === "quality_review")
+    return { status: "failed", summary: "General AI review has been retired; use FCI analysis." };
+  if (envelope.kind === "integration_check")
     return executeQualityEnvelope(envelope, {
       repository,
       provider,
@@ -238,6 +241,7 @@ async function executeWithProvider(
   // M4-11: the commit the branch starts from, so a review can name exactly what it looked at.
   // Unreadable → left out (the result then says "unknown", never a guessed commit).
   const baseSha = branch ? await revParse(cwd, "HEAD").catch(() => undefined) : undefined;
+  if (baseSha) await deps.onSource?.(baseSha, new Date().toISOString()).catch(() => undefined);
   const git = (headSha?: string): { git: ResultGit } => ({
     git: branch
       ? {

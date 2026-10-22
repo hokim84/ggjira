@@ -344,7 +344,7 @@ export function buildPullRequestClosedSteps(input: {
   return toNewSteps([
     { kind: "comment", params: { body: [...body, "", `ggjira job: ${job.id}`].join("\n") } },
     ...(input.merged && done
-      ? [transition(job, workspace, done, [workspace.workflow.reviewStatus])]
+      ? [transition(job, workspace, done, [workspace.workflow.implementationCompleteStatus])]
       : []),
   ]);
 }
@@ -639,7 +639,7 @@ function validatePlan(input: ResultJournalInput, plan: Plan): void {
       input.workspace.workflow.inProgressStatus,
       input.workspace.workflow.integrationPendingStatus,
       input.workspace.workflow.implementationCompleteStatus,
-      input.workspace.workflow.reviewStatus,
+      input.workspace.workflow.implementationCompleteStatus,
       input.workspace.workflow.doneStatus,
     ];
     if (
@@ -697,7 +697,7 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
     workspace.workflow.inProgressStatus,
     workspace.workflow.integrationPendingStatus,
     workspace.workflow.implementationCompleteStatus,
-    workspace.workflow.reviewStatus,
+    workspace.workflow.implementationCompleteStatus,
     workspace.workflow.doneStatus,
   ];
 

@@ -1,9 +1,9 @@
 {
-  "configVersion": 6,
+  "configVersion": 7,
   "prompts": {
     "planning": { "additionalInstructions": "" },
     "implementation": { "additionalInstructions": "" },
-    "quality_review": { "additionalInstructions": "" }
+    "fci_analysis": { "additionalInstructions": "" }
   },
   "jira": {
     "baseUrl": "https://your-site.atlassian.net"
@@ -25,7 +25,6 @@
         "inProgressStatus": "AI 구현",
         "integrationPendingStatus": "AI 통합 대기",
         "implementationCompleteStatus": "AI 구현 완료",
-        "reviewStatus": "AI 리뷰",
         "doneStatus": "Done"
       }
     }

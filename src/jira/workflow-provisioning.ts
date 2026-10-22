@@ -7,7 +7,6 @@ export const DEFAULT_AI_WORKFLOW = {
   inProgressStatus: "AI 구현",
   integrationPendingStatus: "AI 통합 대기",
   implementationCompleteStatus: "AI 구현 완료",
-  reviewStatus: "AI 리뷰",
   doneStatus: "Done",
 };
 export type DEFAULT_AI_WORKFLOW_TYPE = typeof DEFAULT_AI_WORKFLOW;
