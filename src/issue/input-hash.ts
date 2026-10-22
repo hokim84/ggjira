@@ -11,7 +11,7 @@ export const INPUT_HASH_V2_PREFIX = "v2:";
  * assignee (checked on their own, with their own messages).
  */
 export interface ExecutionInput {
-  kind: "planning" | "implementation" | "quality_review";
+  kind: "planning" | "implementation" | "quality_review" | "integration_check";
   summary: string;
   description: string | null;
   requirements: IssueRequirements;

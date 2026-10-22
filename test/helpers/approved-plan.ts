@@ -18,7 +18,6 @@ import {
 } from "../../src/router/db/report-steps.js";
 import { recordResult } from "../../src/router/db/results.js";
 import { planningFingerprint, syncPlanningRequest } from "../../src/router/planning-requests.js";
-import { legacyLifecycle } from "./legacy-lifecycle.js";
 import {
   TODO_STATUS,
   WORKFLOW_TRANSITIONS,
@@ -161,7 +160,7 @@ export async function reapprove(
     await jira.getIssue(key),
     workspace.workflow.requestStatus,
   );
-  legacyLifecycle(db);
+
   const old = getLatestPlanReview(db, key);
   if (!request || !old) throw new Error("reapprove needs a previous plan");
   const plan = getReviewedPlan(db, old.id);

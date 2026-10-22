@@ -8,17 +8,17 @@ import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { AdminService } from "../src/router/admin-service.js";
 import type { RouterConfig } from "../src/router/config.js";
+import { RouterDaemon, SYNC_FAILURE_BACKOFF_MS } from "../src/router/daemon.js";
 import { openRouterDb } from "../src/router/db/connection.js";
 import { listUnprocessedEvents, recordEvent } from "../src/router/db/events.js";
 import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { listJobReportSteps } from "../src/router/db/report-steps.js";
-import { RouterDaemon, SYNC_FAILURE_BACKOFF_MS } from "../src/router/daemon.js";
 import {
-  buildRouterConfig,
   IN_PROGRESS_STATUS,
-  issueDescription,
   ManualClock,
   REQUEST_STATUS,
+  buildRouterConfig,
+  issueDescription,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
@@ -62,6 +62,7 @@ describe("RouterDaemon", () => {
       },
       [
         { id: "start", name: "Start", toStatusName: IN_PROGRESS_STATUS },
+        { id: "planning", name: "Planning", toStatusName: "AI 계획중" },
         { id: "revoke", name: "Revoke", toStatusName: "To Do" },
       ],
     );
@@ -245,9 +246,9 @@ describe("RouterDaemon", () => {
 
     await daemon.reportTick();
     expect(jira.comments.map((comment) => comment.body)).toEqual([
-      expect.stringContaining("GGJIRA가 이 요청의 계획을 시작했습니다"),
+      expect.stringContaining("GGJIRA가 계획 실행을 시작"),
     ]);
-    expect((await jira.getIssue("KAN-1")).statusName).toBe(REQUEST_STATUS);
+    expect((await jira.getIssue("KAN-1")).statusName).toBe("AI 계획중");
     expect(listJobReportSteps(db, envelope.jobId).every((s) => s.status === "applied")).toBe(true);
 
     // The Router's own report is not a withdrawal of approval.
@@ -301,7 +302,10 @@ describe("backup and restore", () => {
           assigneeAccountId: "user-1",
           description: issueDescription(),
         },
-        [{ id: "start", name: "Start", toStatusName: IN_PROGRESS_STATUS }],
+        [
+          { id: "start", name: "Start", toStatusName: IN_PROGRESS_STATUS },
+          { id: "planning", name: "Planning", toStatusName: "AI 계획중" },
+        ],
       );
     }
     const original = openRouterDb(config.db.path);

@@ -246,9 +246,12 @@ export const AdminWorkflowCheckRequestSchema = z.object({
   workflow: z
     .object({
       requestStatus: z.string().min(1),
+      planningInProgressStatus: z.string().min(1),
+      integrationPendingStatus: z.string().min(1),
+      implementationCompleteStatus: z.string().min(1),
       inProgressStatus: z.string().min(1),
       reviewStatus: z.string().min(1),
-      doneStatus: z.string().min(1).optional(),
+      doneStatus: z.string().min(1),
     })
     .strict(),
 });

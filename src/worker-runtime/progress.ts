@@ -34,6 +34,7 @@ const KIND: Record<JobKind, string> = {
   planning: "계획",
   implementation: "구현",
   quality_review: "품질 평가",
+  integration_check: "통합 검증",
 };
 const STAGE: Record<ExecutionStage, string> = {
   preparing: "작업 환경 준비 중",

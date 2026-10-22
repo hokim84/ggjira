@@ -29,6 +29,7 @@ export const ImplementationReportSchema = z
   .object({
     outcome: z.enum(["completed", "needs_decision"]),
     summary: z.string().min(1),
+    noChangeReason: z.string().min(1).optional(),
     scopeDeviations: z
       .array(z.object({ description: z.string().min(1), reason: z.string().min(1) }))
       .default([]),
@@ -69,6 +70,7 @@ export const IMPLEMENTATION_REPORT_JSON_SCHEMA = {
   additionalProperties: false,
   required: ["outcome", "summary", "scopeDeviations", "risks", "verification"],
   properties: {
+    noChangeReason: { type: "string" },
     outcome: { type: "string", enum: ["completed", "needs_decision"] },
     summary: { type: "string" },
     scopeDeviations: {

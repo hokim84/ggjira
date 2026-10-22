@@ -24,19 +24,13 @@ const FORM_KEYS = new Set([
 
 /** The workflow's statuses (ADR 0044, ADR 0047): delegated by status, always planned first. */
 const STATUS_FIELDS = [
-  [
-    "requestStatus",
-    "AI 검토 상태",
-    "부모의 계획·자식 실행·평가 대기 상태. 실행할 자식을 작업 중으로 옮기면 해당 작업만 승인",
-  ],
-  ["inProgressStatus", "진행 상태", "사람과 AI가 함께 쓰는 작업 상태"],
-  ["reviewStatus", "검토 상태", "작업이 끝나면 Router가 옮김. 사람이 확인 후 완료 처리"],
-  [
-    "doneStatus",
-    "완료 상태",
-    "워커가 연 GitHub PR이 머지되면 검토 상태에서 옮김. 비우면 댓글만",
-    true,
-  ],
+  ["requestStatus", "AI 계획", "사람이 계획을 요청"],
+  ["planningInProgressStatus", "AI 계획중", "실제 계획 실행부터 질문·계획 게시까지 자동 표시"],
+  ["inProgressStatus", "AI 구현", "사람이 개별 작업을 승인. 첫 자식 실행 시 부모도 이동"],
+  ["integrationPendingStatus", "AI 통합 대기", "PR을 사람이 머지하면 통합 검증"],
+  ["implementationCompleteStatus", "AI 구현 완료", "통합·검증 성공 시 자동 이동"],
+  ["reviewStatus", "AI 리뷰", "사람이 요청하는 선택적 평가. 결과는 댓글로 게시"],
+  ["doneStatus", "Done", "사람이 최종 완료로 이동"],
 ];
 
 const HOP_BADGES = {
@@ -396,6 +390,7 @@ export async function renderConfig(root, ctx) {
 
   // Jira project info (statuses, subtask types) per project key, loaded on demand.
   const jiraInfo = new Map();
+  const workflowMessages = new Map();
   const hopTimers = new Map();
 
   async function loadJira(projectKey, force = false) {
@@ -516,6 +511,34 @@ export async function renderConfig(root, ctx) {
             type: "button",
             class: "btn btn-small",
             disabled: !projectKey,
+            onclick: async (event) => {
+              const button = event.currentTarget;
+              button.disabled = true;
+              fill(hopsEl, notice("info", "누락된 AI 상태와 전이를 자동으로 추가합니다."));
+              try {
+                const result = await admin("POST", "/jira/ensure-workflow", { projectKey });
+                workflowMessages.set(projectKey, {
+                  tone: result.complete ? "ok" : "warn",
+                  text: result.messages.join(" "),
+                });
+                await loadJira(projectKey, true);
+              } catch (error) {
+                if (error.status === 401) return ctx.logout();
+                workflowMessages.set(projectKey, { tone: "error", text: error.message });
+                workspaces.redraw();
+              } finally {
+                button.disabled = false;
+              }
+            },
+          },
+          "AI 상태 자동 구성",
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn btn-small",
+            disabled: !projectKey,
             onclick: () => loadJira(projectKey, true),
           },
           info?.statuses ? "Jira에서 다시 불러오기" : "Jira에서 상태 불러오기",
@@ -523,10 +546,13 @@ export async function renderConfig(root, ctx) {
       ),
       info?.loading ? h("p", { class: "muted" }, `${projectKey} 상태를 불러오는 중…`) : null,
       info?.error ? errorNotice({ message: `${projectKey}: ${info.error}` }) : null,
+      workflowMessages.has(projectKey)
+        ? notice(workflowMessages.get(projectKey).tone, workflowMessages.get(projectKey).text)
+        : null,
       h(
         "p",
         { class: "muted" },
-        "요청 상태로 옮기면 계획부터 시작하고, 계획 검토 → 진행 상태로 옮기면 승인된 계획을 실행합니다.",
+        "계획과 구현 승인은 사람이 결정합니다. 통합 검증 후 구현 완료로 자동 이동하며, AI 리뷰는 선택 사항입니다.",
       ),
       h(
         "div",
@@ -633,8 +659,8 @@ export async function renderConfig(root, ctx) {
     ),
     section("계획(PM)", "계획에서 생성할 하위 작업의 유형과 개수를 설정합니다.", planningFields),
     section(
-      "GitHub PR 머지 → 완료",
-      "워커가 연 PR이 머지되면 이슈를 검토 상태에서 '완료 상태'로 옮깁니다. 웹훅으로 바로 알고, 놓친 것은 주기적으로 GitHub에 확인합니다.",
+      "GitHub PR 머지 → 통합 검증",
+      "AI 통합 대기에서 사람이 PR을 머지하면 대상 브랜치를 검증합니다. 검증 통과 후 AI 구현 완료로 옮기며, Done은 사람이 결정합니다. 웹훅과 주기적 GitHub 조회로 머지를 확인합니다.",
       githubSection(view.github ?? { webhook: false, token: NO_SECRET, pullRequests: [] }, ctx),
     ),
     section(

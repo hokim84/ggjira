@@ -19,6 +19,9 @@ export const testWorkspace: WorkspaceConfig = {
   projectKeys: ["KAN"],
   workflow: {
     requestStatus: REQUEST_STATUS,
+    planningInProgressStatus: "AI 계획중",
+    integrationPendingStatus: "AI 통합 대기",
+    implementationCompleteStatus: "AI 구현 완료",
     inProgressStatus: IN_PROGRESS_STATUS,
     reviewStatus: REVIEW_STATUS,
     doneStatus: DONE_STATUS,
@@ -29,6 +32,9 @@ export const testWorkspace: WorkspaceConfig = {
 export const WORKFLOW_TRANSITIONS = [
   TODO_STATUS,
   REQUEST_STATUS,
+  "AI 계획중",
+  "AI 통합 대기",
+  "AI 구현 완료",
   PLAN_REVIEW_STATUS,
   IN_PROGRESS_STATUS,
   REVIEW_STATUS,
@@ -57,7 +63,7 @@ export function singlePlan(overrides: Record<string, unknown> = {}): Record<stri
 
 export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): RouterConfig {
   return {
-    configVersion: 5,
+    configVersion: 6,
     jira: { baseUrl: "https://example.atlassian.net" },
     repositories: [{ id: "repo1" }],
     workspaces: [testWorkspace],

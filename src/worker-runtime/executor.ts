@@ -35,8 +35,8 @@ import {
 import { integrationTarget } from "../worker/worktree.js";
 import type { WorkerConfig } from "./config.js";
 import { executePlanningEnvelope } from "./planning.js";
-import { executeQualityEnvelope } from "./quality.js";
 import type { ExecutionStage } from "./progress.js";
+import { executeQualityEnvelope } from "./quality.js";
 
 /** A result minus the identifiers the runner stamps on (`resultId`, `jobId`, ...). */
 export type ExecutionOutcome = Omit<
@@ -190,7 +190,7 @@ async function executeWithProvider(
     });
   }
 
-  if (envelope.kind === "quality_review")
+  if (envelope.kind === "quality_review" || envelope.kind === "integration_check")
     return executeQualityEnvelope(envelope, {
       repository,
       provider,
@@ -220,18 +220,17 @@ async function executeWithProvider(
   let executionBase = repository.baseBranch;
   if (branch) {
     try {
-      if (envelope.integration)
-        executionBase = await integrationTarget(
-          repository.path,
-          repository.pushRemote ?? "origin",
-          envelope.integration.baseBranch,
-          envelope.integration.mergeCommits,
-        );
+      executionBase = await integrationTarget(
+        repository.path,
+        repository.pushRemote ?? "origin",
+        repository.baseBranch,
+        envelope.integration?.mergeCommits ?? [],
+      );
       cwd = (await createWorktree(repository.path, executionBase, branch, deps.worktreesRoot)).path;
     } catch (error) {
       return {
         status: "failed",
-        summary: "Could not create a git worktree for this job.",
+        summary: "Could not fetch the latest base or create a git worktree for this job.",
         failureReason: errorMessage(error),
       };
     }

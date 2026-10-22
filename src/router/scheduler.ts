@@ -44,9 +44,15 @@ import {
   readIssueApproval,
   storeApproval,
 } from "./issue-check.js";
-import { integrationEvidence, lifecycleVersion } from "./lifecycle.js";
+import { integrationEvidence } from "./lifecycle.js";
 import { syncPlanningRequest } from "./planning-requests.js";
 import { pressureRank, usagePressure } from "./usage-routing.js";
+import {
+  checkContext,
+  checkSource,
+  latestImplementation,
+  verifiedNoChange,
+} from "./workflow-checks.js";
 import { isDependencyResolved, reRequestHint } from "./workflow-mode.js";
 
 /** How long a lease is valid before Router considers it expired
@@ -192,8 +198,9 @@ async function reconcileIssue(
     const parentReview = getPlanReview(deps.db, liveParent.planReviewId);
     if (
       parentReview &&
-      lifecycleVersion(deps.db, parentReview) === 2 &&
-      issue.statusName === workspace.workflow.requestStatus
+      [workspace.workflow.requestStatus, workspace.workflow.planningInProgressStatus].includes(
+        issue.statusName,
+      )
     ) {
       const request = await syncPlanningRequest(
         deps.db,
@@ -201,6 +208,7 @@ async function reconcileIssue(
         issue,
         workspace.workflow.requestStatus,
         deps.now(),
+        workspace.workflow.planningInProgressStatus,
       );
       if (request?.id === parentReview.requestApprovalId) return;
     }
@@ -232,6 +240,25 @@ async function reconcileIssue(
     throw error;
   }
   const { kind, requirements, planTask, approvalId, inputHash } = approval;
+  const quality =
+    kind === "quality_review" || kind === "integration_check"
+      ? await checkContext(
+          deps.db,
+          deps.jira,
+          deps.config,
+          workspace,
+          issue,
+          kind === "quality_review",
+        )
+      : undefined;
+  if ((kind === "quality_review" || kind === "integration_check") && !quality) {
+    report.held.push({
+      issueKey: issue.key,
+      target: "human",
+      reason: "현재 결과의 PR 머지·통합 증거 또는 모든 자식의 완료를 기다립니다.",
+    });
+    return;
+  }
 
   const dependencyKeys = extractDependencyKeys(requirements.dependencies);
   const unresolvedDependencies = await resolveUnresolvedDependencies(
@@ -244,13 +271,15 @@ async function reconcileIssue(
   if (planTask) {
     const parent = getActivePlanDeployment(deps.db, planTask.parentKey);
     const review = parent && getPlanReview(deps.db, parent.planReviewId);
-    if (review && lifecycleVersion(deps.db, review) === 2) {
+    if (review) {
       const baseBranch =
         deps.config.repositories.find((repo) => repo.id === workspace.repositoryId)?.baseBranch ??
         "main";
       const evidence = dependencyKeys.map((key) => integrationEvidence(deps.db, key, baseBranch));
       dependencyKeys.forEach((key, index) => {
-        if (!evidence[index] && !unresolvedDependencies.includes(key))
+        const latest = latestImplementation(deps.db, key);
+        const noChange = latest && verifiedNoChange(JSON.parse(latest.payload));
+        if (!evidence[index] && !noChange && !unresolvedDependencies.includes(key))
           unresolvedDependencies.push(key);
       });
       integration = {
@@ -267,6 +296,12 @@ async function reconcileIssue(
       : undefined;
   const now = deps.now();
   storeApproval(deps.db, approval, now, planning);
+  if (quality) {
+    const stored = getApproval(deps.db, issue.key);
+    deps.db
+      .prepare("UPDATE approvals SET input_snapshot=? WHERE issue_key=?")
+      .run(JSON.stringify({ ...(stored?.inputSnapshot as ApprovalSnapshot), quality }), issue.key);
+  }
   if (integration) {
     const stored = getApproval(deps.db, issue.key);
     if (stored)
@@ -350,6 +385,15 @@ async function reconcileIssue(
       now,
     });
     report.jobsCreated.push(job.id);
+    deps.db
+      .prepare("INSERT INTO job_inputs VALUES (?,?)")
+      .run(job.id, JSON.stringify(getApproval(deps.db, issue.key)?.inputSnapshot));
+    if (quality)
+      deps.db
+        .prepare(
+          "INSERT INTO workflow_checks (job_id,issue_key,source_key,context) VALUES (?,?,?,?)",
+        )
+        .run(job.id, issue.key, checkSource(quality), JSON.stringify(quality));
     settleOnNewApproval(deps.db, issue.key, approvalId, now);
     return;
   }

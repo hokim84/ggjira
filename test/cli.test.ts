@@ -2,16 +2,16 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { main } from "../src/cli-main.js";
 import type { CliIo } from "../src/cli-io.js";
+import { main } from "../src/cli-main.js";
+import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { decideServeMode } from "../src/router/cli.js";
-import { RouterConfigError, RouterConfigSchema } from "../src/router/config.js";
 import { routerConfigTemplate } from "../src/router/config-store.js";
+import { RouterConfigError, RouterConfigSchema } from "../src/router/config.js";
 import type { WorkspaceConfig } from "../src/router/config.js";
 import { getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { recordReviewTarget } from "../src/router/db/review-targets.js";
 import { assessResult } from "../src/router/review-gate.js";
-import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { loadWorkerConfig } from "../src/worker-runtime/config.js";
 import { loadWorkerCredential } from "../src/worker-runtime/credential.js";
 import { ADMIN_TOKEN, RouterHarness } from "./helpers/router-harness.js";
@@ -65,7 +65,7 @@ describe("ggjira CLI", () => {
     const io = captureIo();
     expect(await main(["router", "setup", "--config", configPath], io)).toBe(0);
     const config = RouterConfigSchema.parse(JSON.parse(readFileSync(configPath, "utf-8")));
-    expect(config.configVersion).toBe(5);
+    expect(config.configVersion).toBe(6);
     expect(io.stdout.join("\n")).toMatch(/GGJIRA_WEBHOOK_SECRET=\S{32,}/);
     expect(io.stdout.join("\n")).toMatch(/GGJIRA_ADMIN_TOKEN=\S{32,}/);
 

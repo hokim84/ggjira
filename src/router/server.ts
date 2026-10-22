@@ -5,10 +5,10 @@ import type { z } from "zod";
 import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
-  AdminReviewJudgmentRequestSchema,
   AdminJiraProjectRequestSchema,
-  AdminWorkflowCheckRequestSchema,
+  AdminReviewJudgmentRequestSchema,
   AdminSecretRequestSchema,
+  AdminWorkflowCheckRequestSchema,
   type ApiErrorResponse,
   JobAuthorizeRequestSchema,
   JobHeartbeatRequestSchema,
@@ -23,22 +23,22 @@ import {
 import { JOB_STATES } from "../contracts/job-state.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import { AdminError, type AdminService } from "./admin-service.js";
-import { RecoveryError } from "./recovery.js";
-import {
-  ingestJiraWebhookEvent,
-  isRelevantJiraWebhook,
-  summarizeJiraWebhook,
-  verifyJiraWebhookSignature,
-} from "./webhook.js";
+import { recordGithubDelivery } from "./db/pull-requests.js";
 import {
   type PullRequestClosed,
   type PullRequestOutcome,
   parsePullRequestClosed,
   verifyGithubSignature,
 } from "./github.js";
-import { recordGithubDelivery } from "./db/pull-requests.js";
-import { registerWebUi } from "./web-ui.js";
 import { getPromptCatalog } from "./prompt-catalog.js";
+import { RecoveryError } from "./recovery.js";
+import { registerWebUi } from "./web-ui.js";
+import {
+  ingestJiraWebhookEvent,
+  isRelevantJiraWebhook,
+  summarizeJiraWebhook,
+  verifyJiraWebhookSignature,
+} from "./webhook.js";
 import { WorkerApiError, type WorkerService } from "./worker-service.js";
 
 const SIGNATURE_HEADER = "x-hub-signature";
@@ -467,11 +467,20 @@ function registerAdminRoutes(
         const body = parseBody(AdminWorkflowCheckRequestSchema, request.body);
         return admin.checkWorkflow(body.projectKey, {
           requestStatus: body.workflow.requestStatus,
+          planningInProgressStatus: body.workflow.planningInProgressStatus,
+          integrationPendingStatus: body.workflow.integrationPendingStatus,
+          implementationCompleteStatus: body.workflow.implementationCompleteStatus,
           inProgressStatus: body.workflow.inProgressStatus,
           reviewStatus: body.workflow.reviewStatus,
-          ...(body.workflow.doneStatus ? { doneStatus: body.workflow.doneStatus } : {}),
+          doneStatus: body.workflow.doneStatus,
         });
       });
+      scope.post("/jira/ensure-workflow", async (request) =>
+        admin.ensureWorkflow(
+          parseBody(AdminJiraProjectRequestSchema, request.body).projectKey,
+          actorOf(request),
+        ),
+      );
       scope.post<{ Body: ParsedBody | undefined }>("/check", async (request) => {
         const issueKey = (request.body?.parsed as { issueKey?: unknown } | undefined)?.issueKey;
         return admin.check(typeof issueKey === "string" && issueKey ? issueKey : undefined);

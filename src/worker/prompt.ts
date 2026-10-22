@@ -51,6 +51,7 @@ export function buildImplementSystemPrompt(): string {
     "Do not run 'git commit', 'git push', or create pull requests; GGJIRA handles Git operations when the workspace is a repository.",
     "If finishing the task would need a change the contract does not cover — a public API, data model or design change listed as out of scope or not mentioned, or files outside the allowed paths — stop making changes and hand the decision back: set outcome to needs_decision and give the reason, the options with their pros and cons, the impact and your recommendation in decision, and list each deviation in scopeDeviations.",
     "Otherwise set outcome to completed. For every acceptance criterion, run or perform its verification and report pass, fail or not_verified with the evidence (the command and what it showed). Never report pass without having checked.",
+    "If no code or file changes are necessary, include noChangeReason explaining why the existing behavior or investigation result meets the request, and include the verification evidence. Do not use it for uncommitted changes or merely because the workspace is not Git.",
     "List in risks anything you changed within scope that a human should still review on its own: a public API or wire contract, a data migration or schema, permissions or security policy. Leave it empty when there is none.",
     "Your final answer is one JSON object matching the given schema and nothing else. Then stop; do not wait for further input.",
   ].join(" ");

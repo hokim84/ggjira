@@ -36,7 +36,7 @@ describe("admin config and check API (web UI)", () => {
       restartFields: [],
       pendingApply: false,
       problem: null,
-      file: expect.objectContaining({ configVersion: 5 }),
+      file: expect.objectContaining({ configVersion: 6 }),
     });
   });
 
@@ -122,7 +122,7 @@ describe("admin config and check API (web UI)", () => {
   });
 
   it("refuses to apply a file that is invalid", async () => {
-    writeFileSync(configPath, JSON.stringify({ configVersion: 5 }));
+    writeFileSync(configPath, JSON.stringify({ configVersion: 6 }));
     const response = await router.adminCall("POST", "/config/apply");
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ error: "invalid_config" });

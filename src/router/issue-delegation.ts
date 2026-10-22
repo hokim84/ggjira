@@ -3,6 +3,7 @@ import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PlanMetadataError, readPlanTaskMetadata } from "../pm/metadata.js";
 import type { WorkspaceConfig } from "./config.js";
+import { getApproval } from "./db/approvals.js";
 import { getApprovalHoldActor } from "./db/holds.js";
 import { getOpenJobForIssue } from "./db/jobs.js";
 import {
@@ -13,9 +14,8 @@ import {
   listPlanDeployments,
 } from "./db/plan-delegation.js";
 import { listBatchReportSteps } from "./db/report-steps.js";
-import { integrationEvidence, lifecycleVersion } from "./lifecycle.js";
+import { integrationEvidence } from "./lifecycle.js";
 import { latestPlanningRequest } from "./planning-requests.js";
-import { latestQualityCycle } from "./quality-review.js";
 import { parseTaskApprovalId } from "./report-journal.js";
 
 /**
@@ -43,6 +43,8 @@ export type DelegationStage =
   | "running"
   | "coordinating"
   | "task"
+  | "integration_pending"
+  | "implementation_complete"
   | "result_review"
   | "done";
 
@@ -57,7 +59,10 @@ export interface IssueDelegationView {
   stage: DelegationStage;
   statuses: {
     request: string;
+    planningInProgress: string;
     inProgress: string;
+    integrationPending: string;
+    implementationComplete: string;
     review: string;
     done: string | null;
   };
@@ -94,7 +99,7 @@ export async function readIssueDelegation(
   let parentKey: string | null = null;
   let stage: DelegationStage = "not_delegated";
 
-  if (issue.statusName === requestStatus) {
+  if ([requestStatus, workspace.workflow.planningInProgressStatus].includes(issue.statusName)) {
     stage =
       job?.kind === "planning"
         ? ["failed", "timed_out"].includes(job.state)
@@ -118,6 +123,7 @@ export async function readIssueDelegation(
                   : "planning"
           : "plan_requested";
   } else if (issue.statusName === inProgressStatus) {
+    stage = "running";
     if (deployment?.state === "waiting_plan_apply") {
       stage = "approved_waiting";
     } else if (deployment?.state === "active") {
@@ -135,14 +141,18 @@ export async function readIssueDelegation(
         parentKey = planTask.parentKey;
       }
     }
-  } else if (issue.statusName === reviewStatus && (review || job)) {
+  } else if (issue.statusName === workspace.workflow.integrationPendingStatus) {
+    stage = "integration_pending";
+  } else if (issue.statusName === workspace.workflow.implementationCompleteStatus) {
+    stage = "implementation_complete";
+  } else if (issue.statusName === reviewStatus) {
     stage = "result_review";
-  } else if (doneStatus && issue.statusName === doneStatus && review) {
+  } else if (doneStatus && issue.statusName === doneStatus) {
     stage = "done";
   }
 
   // A task run is held by its own approval; a plan by the approval of its deployment.
-  const runApproval = job?.approvalId;
+  const runApproval = job?.approvalId ?? getApproval(db, issue.key)?.approvalId;
   const planApproval = runApproval
     ? (parseTaskApprovalId(runApproval)?.planApprovalId ?? runApproval)
     : deployment?.approvalId;
@@ -155,8 +165,12 @@ export async function readIssueDelegation(
       : null);
   if (heldBy && issue.statusName === requestStatus) stage = "plan_held";
   let quality: IssueDelegationView["quality"];
-  if (review && lifecycleVersion(db, review) === 2 && deployment) {
-    const cycle = latestQualityCycle(db, deployment.id);
+  if (review && deployment) {
+    const cycle = db
+      .prepare(
+        "SELECT j.state,c.report FROM workflow_checks c JOIN jobs j ON j.id=c.job_id WHERE c.issue_key=? ORDER BY j.rowid DESC LIMIT 1",
+      )
+      .get(issue.key) as { state: string; report: string | null } | undefined;
     const children = await deps.jira.searchIssues(`parent = "${issue.key}"`, { all: true });
     let completed = 0;
     for (const child of children) {
@@ -185,7 +199,10 @@ export async function readIssueDelegation(
     stage,
     statuses: {
       request: requestStatus,
+      planningInProgress: workspace.workflow.planningInProgressStatus,
       inProgress: inProgressStatus,
+      integrationPending: workspace.workflow.integrationPendingStatus,
+      implementationComplete: workspace.workflow.implementationCompleteStatus,
       review: reviewStatus,
       done: doneStatus ?? null,
     },

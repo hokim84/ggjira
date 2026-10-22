@@ -9,9 +9,8 @@ import { reRequestHint } from "../src/router/workflow-mode.js";
 import {
   IN_PROGRESS_STATUS,
   REQUEST_STATUS,
-  REVIEW_STATUS,
-  testWorkspace,
   WORKFLOW_TRANSITIONS,
+  testWorkspace,
 } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
 
@@ -193,9 +192,13 @@ describe("attention items", () => {
     await router.seedQueuedJob("KAN-1");
     router.jira.seedIssue(
       { ...(await router.jira.getIssue("KAN-1")) },
-      WORKFLOW_TRANSITIONS.filter((transition) => transition.toStatusName !== REVIEW_STATUS),
+      WORKFLOW_TRANSITIONS.filter(
+        (transition) => transition.toStatusName !== testWorkspace.workflow.integrationPendingStatus,
+      ),
     );
-    const envelope = await runOnce({});
+    const envelope = await runOnce({
+      pullRequest: { repo: "org/repo", number: 99, url: "https://github.com/org/repo/pull/99" },
+    });
     const open = await router.adminCall("GET", "/attention");
     expect(open.json()).toMatchObject({
       items: [{ kind: "report_blocked", issueKey: "KAN-1", status: "open" }],

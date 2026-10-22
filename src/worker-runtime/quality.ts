@@ -3,8 +3,8 @@ import path from "node:path";
 import type { JobEnvelope } from "../contracts/envelope.js";
 import {
   QUALITY_REPORT_JSON_SCHEMA,
-  QualityReportSchema,
   type QualityReport,
+  QualityReportSchema,
 } from "../contracts/quality.js";
 import type { UsageReading, WorkerProvider } from "../worker/provider.js";
 import { runValidateCommand } from "../worker/validate.js";
@@ -54,19 +54,21 @@ export async function executeQualityEnvelope(
         deps.worktreesRoot,
       )
     ).path;
-    if (!deps.repository.validateCommand)
+    if (!deps.repository.validateCommand && envelope.kind === "integration_check")
       throw new Error("quality review needs a trusted repository.validateCommand");
     if (deps.signal.aborted) return { status: "cancelled", summary: "Quality review cancelled." };
     deps.onProgress?.("validating");
-    const validation = await runValidateCommand(deps.repository.validateCommand, cwd, {
-      signal: deps.signal,
-      timeoutMs: envelope.timeoutMs,
-    });
+    const validation = deps.repository.validateCommand
+      ? await runValidateCommand(deps.repository.validateCommand, cwd, {
+          signal: deps.signal,
+          timeoutMs: envelope.timeoutMs,
+        })
+      : { ok: false, summary: "검증 명령이 설정되지 않았습니다. 리뷰 의견만 제공합니다." };
     const baselineSha = context.integration.mergeCommits[0]
       ? await revParse(cwd, `${context.integration.mergeCommits[0]}^`)
       : targetSha;
     let quality: QualityReport;
-    if (context.verificationOnly) {
+    if (envelope.kind === "integration_check" || context.verificationOnly) {
       quality = QualityReportSchema.parse({
         targetSha,
         baselineSha,

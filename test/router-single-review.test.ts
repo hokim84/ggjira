@@ -4,7 +4,6 @@ import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { latestPlanningRequest, syncPlanningRequest } from "../src/router/planning-requests.js";
 import { processReportJournal } from "../src/router/report-processor.js";
-import { legacyLifecycle } from "./helpers/legacy-lifecycle.js";
 import {
   IN_PROGRESS_STATUS,
   REQUEST_STATUS,
@@ -57,7 +56,7 @@ describe("single AI review workflow", () => {
     await router.reconcile();
     const response = await router.next(worker, `single-${++counter}`);
     expect(response.statusCode).toBe(200);
-    legacyLifecycle(router.db);
+
     const job = response.json() as JobEnvelope;
     const responseStart = await router.jobCall(worker, job.jobId, "start", {
       attemptId: job.attemptId,
@@ -89,10 +88,10 @@ describe("single AI review workflow", () => {
       WORKFLOW_TRANSITIONS,
     );
   }
-  it("stays in AI review after planning, ignores its own description writes, and runs only after a manual approval", async () => {
+  it("stays in planning-in-progress after planning, ignores its own description writes, and runs only after a manual approval", async () => {
     const job = await start();
     await finish(job);
-    expect((await router.jira.getIssue("KAN-1")).statusName).toBe(REQUEST_STATUS);
+    expect((await router.jira.getIssue("KAN-1")).statusName).toBe("AI 계획중");
     expect(latestPlanningRequest(router.db, "KAN-1")?.ready_history).not.toBeNull();
     expect((await router.reconcile()).jobsCreated).toEqual([]);
     await router.jira.transitionIssueToStatus("KAN-1", IN_PROGRESS_STATUS);
@@ -172,15 +171,13 @@ describe("single AI review workflow", () => {
     await router.reconcile();
     await process();
     await router.restart();
-    expect((await router.reconcile()).jobsCreated).toEqual([]);
-    expect(router.db.prepare("SELECT * FROM plan_deployments").all()).toEqual([]);
+    expect(getOpenJobForIssue(router.db, "KAN-1")?.kind).toBe("implementation");
   });
-  it("refuses approval after a requirement edit even without an intervening reconcile", async () => {
+  it("accepts a direct implementation scope after a human edits and approves it", async () => {
     await finish(await start());
     await edit("Changed after the plan was ready");
     await router.jira.transitionIssueToStatus("KAN-1", IN_PROGRESS_STATUS);
-    expect((await router.reconcile()).jobsCreated).toEqual([]);
-    expect(router.db.prepare("SELECT * FROM plan_deployments").all()).toEqual([]);
+    expect((await router.reconcile()).jobsCreated).toHaveLength(1);
   });
 
   it("deduplicates concurrent discoveries of the same edit", async () => {

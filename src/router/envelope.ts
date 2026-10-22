@@ -126,7 +126,7 @@ export function buildJobEnvelope(
     issueSnapshot: toIssueSnapshot(job.id, approval.inputSnapshot),
     ...(job.kind === "planning"
       ? { planningContext: toPlanningContext(job.id, approval.inputSnapshot) }
-      : job.kind === "quality_review"
+      : job.kind === "quality_review" || job.kind === "integration_check"
         ? { qualityContext: snapshot.quality }
         : {
             executionContract: toExecutionContract(job.id, approval.inputSnapshot),

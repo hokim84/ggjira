@@ -66,7 +66,7 @@ import { planDeploymentAuthorizes } from "./delegation.js";
 import { buildJobEnvelope } from "./envelope.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import { expireLeases } from "./leases.js";
-import { recordQualityResult } from "./quality-review.js";
+import { latestPlanningRequest } from "./planning-requests.js";
 import {
   buildRecoveredSteps,
   buildResultSteps,
@@ -572,6 +572,7 @@ export class WorkerService {
         ? "requirements_change"
         : "not_applicable";
     }
+    if (job.kind === "integration_check" && finalState === "failed") return "unknown";
     if (result.status === "succeeded" || result.status === "planned") return "none";
     if (result.status === "needs_decision") return "not_applicable";
     const exit = result.execution?.exitReason;
@@ -591,6 +592,15 @@ export class WorkerService {
     result: JobResultRequest,
     now: string,
   ): ClosedJobState {
+    if (
+      job.kind === "integration_check" &&
+      result.status === "succeeded" &&
+      !result.quality?.verificationPassed
+    ) {
+      transitionAttemptState(this.db, attempt.id, "failed", now);
+      transitionJobState(this.db, job.id, "failed", now);
+      return "failed";
+    }
     // A cancel request wins: even a successful run is closed as cancelled, since approval was
     // withdrawn while it ran.
     if (attempt.state === "cancel_requested") {
@@ -633,12 +643,38 @@ export class WorkerService {
   private journalStart(job: JobRow, attempt: AttemptRow, now: string): void {
     const workspace = this.workspaceFor(job);
     if (!workspace) return;
+    const steps = buildStartSteps(job, workspace, attempt.id, this.config.reporting.language);
+    const snapshot = getApproval(this.db, job.issueKey)?.inputSnapshot as
+      | ApprovalSnapshot
+      | undefined;
+    const parentKey = snapshot?.planTask?.parentKey ?? snapshot?.issue.parentKey;
+    const request = parentKey ? latestPlanningRequest(this.db, parentKey) : undefined;
+    if (job.kind === "implementation" && parentKey && request)
+      steps.push({
+        kind: "transition",
+        params: {
+          issueKey: parentKey,
+          parentProgress: true,
+          to: workspace.workflow.inProgressStatus,
+          from: [
+            workspace.workflow.planningInProgressStatus,
+            workspace.workflow.integrationPendingStatus,
+          ],
+          approvalId: request.id,
+          approvalStatus: workspace.workflow.requestStatus,
+          approvalRule: {
+            kind: "parent-stage",
+            requestId: request.id,
+            inputHash: request.input_hash,
+          },
+        },
+      });
     insertReportBatch(this.db, {
       batchId: startBatchId(attempt.id),
       jobId: job.id,
       attemptId: attempt.id,
       issueKey: job.issueKey,
-      steps: buildStartSteps(job, workspace, attempt.id, this.config.reporting.language),
+      steps,
       now,
     });
   }
@@ -657,8 +693,48 @@ export class WorkerService {
     const snapshot = getApproval(this.db, job.issueKey)?.inputSnapshot as
       | ApprovalSnapshot
       | undefined;
-    if (job.kind === "quality_review") {
-      recordQualityResult(this.db, job.id, result, now);
+    if (job.kind === "quality_review" || job.kind === "integration_check") {
+      const passed = finalState === "succeeded" && !!result.quality?.verificationPassed;
+      if (["failed", "timed_out"].includes(finalState))
+        recordAttention(this.db, {
+          issueKey: job.issueKey,
+          approvalId: job.approvalId,
+          kind: "failed",
+          cause: `${job.kind}:${job.id}`,
+          severity: "immediate",
+          reason:
+            result.failureReason ??
+            "통합 검증에 실패했습니다. 원인을 해결한 뒤 담당자가 재시도 댓글을 남기세요.",
+          evidence: {
+            kind: job.kind,
+            targetSha: result.quality?.targetSha ?? null,
+            verification: result.quality?.verificationEvidence ?? [],
+          },
+          now,
+        });
+      this.db
+        .prepare("UPDATE workflow_checks SET report=?,verified=? WHERE job_id=?")
+        .run(
+          result.quality ? JSON.stringify(result.quality) : null,
+          passed && job.kind === "integration_check" ? 1 : 0,
+          job.id,
+        );
+      const body = result.quality
+        ? [
+            job.kind === "integration_check" ? "통합 검증 결과" : "AI 리뷰 결과 (권고)",
+            result.quality.summary,
+            `검증: ${result.quality.verificationPassed ? "통과" : "미통과"}`,
+            `대상: ${result.quality.targetSha}`,
+            ...result.quality.verificationEvidence,
+            ...result.quality.findings.map(
+              (finding) =>
+                `- [${finding.category}] ${finding.summary}\n  근거: ${finding.evidence.join("; ")}\n  영향: ${finding.impact}\n  수정 제안: ${finding.remediation.title}`,
+            ),
+            job.kind === "quality_review"
+              ? "평가는 권고입니다. Done, AI 구현(수정), AI 계획(재계획) 중 다음 행동을 선택하세요."
+              : "",
+          ].join("\n")
+        : `평가·검증 미완료: ${result.failureReason ?? result.summary}\n원인 확인 후 ‘재시도’ 댓글을 남기세요.`;
       insertReportBatch(this.db, {
         batchId: result.resultId,
         resultId: result.resultId,
@@ -669,11 +745,35 @@ export class WorkerService {
           {
             kind: "comment",
             params: {
-              body: result.quality
-                ? `통합 평가 결과: ${result.quality.summary}\n검증: ${result.quality.verificationPassed ? "통과" : "미통과"}\n후보: ${result.quality.findings.length}개\n대상: ${result.quality.targetSha}`
-                : `평가 미완료: ${result.failureReason ?? result.summary}\n원인 확인 후 ‘재시도’ 댓글을 남기세요.`,
+              body,
             },
           },
+          {
+            kind:
+              passed || (job.kind === "quality_review" && !!result.quality)
+                ? "remove-label"
+                : "add-label",
+            params: { label: this.config.reporting.failureLabel },
+          },
+          ...(job.kind === "integration_check" && passed
+            ? [
+                {
+                  kind: "transition",
+                  params: {
+                    to: workspace.workflow.implementationCompleteStatus,
+                    from: [workspace.workflow.integrationPendingStatus],
+                    approvalStatus: workspace.workflow.integrationPendingStatus,
+                    approvalId: job.approvalId,
+                    approvalRule: {
+                      kind: "workflow-job",
+                      jobId: job.id,
+                      inputHash: job.inputHash,
+                      workspace,
+                    },
+                  },
+                },
+              ]
+            : []),
         ],
         now,
       });
@@ -852,12 +952,8 @@ export class WorkerService {
     const approval = getApproval(this.db, job.issueKey);
     if (!approval || approval.approvalId !== job.approvalId) return false;
     if (!inputHashMatches(job.inputHash, approval.inputHash)) return false;
-    if (job.kind === "quality_review") {
-      return !!this.db
-        .prepare(
-          "SELECT 1 FROM quality_cycles q JOIN plan_deployments d ON d.id=q.deployment_id WHERE q.job_id=? AND q.state='running' AND d.state='active'",
-        )
-        .get(job.id);
+    if (job.kind === "quality_review" || job.kind === "integration_check") {
+      return !!this.db.prepare("SELECT 1 FROM workflow_checks WHERE job_id=?").get(job.id);
     }
     if (job.kind !== "implementation") return true;
     const snapshot = approval.inputSnapshot as ApprovalSnapshot | null;

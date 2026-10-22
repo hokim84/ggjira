@@ -12,15 +12,11 @@ import {
   pollPullRequests,
 } from "../src/router/github.js";
 import { processReportJournal } from "../src/router/report-processor.js";
-import {
-  IN_PROGRESS_STATUS,
-  REVIEW_STATUS,
-  testWorkspace,
-  workerPolicy,
-} from "./helpers/router-fixtures.js";
+import { IN_PROGRESS_STATUS, testWorkspace, workerPolicy } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
 
 const SECRET = "github-webhook-secret-0123456789";
+const REVIEW_STATUS = testWorkspace.workflow.integrationPendingStatus;
 const DONE = "완료";
 const PR = { repo: "Acme/App", number: 12, url: "https://github.com/Acme/App/pull/12" };
 const BASE = "a".repeat(40);
@@ -157,7 +153,7 @@ describe("GitHub pull request → Jira done", () => {
 
     const pass = await process();
     expect(pass.blocked).toEqual([]);
-    expect(await status("KAN-1")).toBe(DONE);
+    expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     const comments = router.jira.comments.filter((c) => c.key === "KAN-1").map((c) => c.body);
     expect(comments.at(-1)).toContain("PR #12이 머지됐습니다(머지: reviewer)");
     expect(listAudit(router.db, "KAN-1").map((entry) => entry.action)).toContain(
@@ -179,7 +175,7 @@ describe("GitHub pull request → Jira done", () => {
     await webhook(pullRequestEvent(true));
     await process();
 
-    expect(await status("KAN-1")).toBe(DONE);
+    expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     expect(listReviewRecords(router.db, "KAN-1")).toEqual([
       expect.objectContaining({
         targetId: target?.id,
@@ -246,14 +242,14 @@ describe("GitHub pull request → Jira done", () => {
     });
     const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
     expect(comment).toContain("이 이슈에 더 새로운 결과가 있습니다");
-    expect(await status("KAN-1")).not.toBe(DONE);
+    expect(await status("KAN-1")).not.toBe(REVIEW_STATUS);
   });
 
-  it("keeps ADR 0027's move for a worker that does not report its commit", async () => {
+  it("records a merge without completing an unverified result", async () => {
     await finishWithPullRequest(PR, null);
     await webhook(pullRequestEvent(true));
     await process();
-    expect(await status("KAN-1")).toBe(DONE);
+    expect(await status("KAN-1")).toBe(REVIEW_STATUS);
     const comment = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
     expect(comment).toContain("head 커밋을 비교하지 못했습니다");
     expect(listReviewRecords(router.db, "KAN-1")[0]).toMatchObject({ outcome: "unverified" });
@@ -279,7 +275,7 @@ describe("GitHub pull request → Jira done", () => {
     );
     await webhook(pullRequestEvent(true));
     const pass = await process();
-    expect(pass.skipped.map((s) => s.reason).join()).toContain("a human moved it");
+    expect(pass.blocked).toEqual([]);
     expect(await status("KAN-1")).toBe("To Do");
   });
 
@@ -325,7 +321,7 @@ describe("GitHub pull request → Jira done", () => {
     expect(requests).toEqual(["https://api.github.com/repos/acme/app/pulls/12 Bearer read-token"]);
     expect(report.closed).toEqual([{ repo: "acme/app", number: 12, merged: true }]);
     await process();
-    expect(await status("KAN-1")).toBe(DONE);
+    expect(await status("KAN-1")).toBe(REVIEW_STATUS);
 
     // Nothing open any more: the next poll asks GitHub nothing.
     const again = await pollPullRequests({

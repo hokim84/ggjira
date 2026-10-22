@@ -64,10 +64,21 @@ export async function syncPlanningRequest(
   issue: JiraIssue,
   requestStatus: string,
   now = new Date().toISOString(),
+  planningInProgressStatus?: string,
 ): Promise<PlanningRequest | undefined> {
   const entry = await computeApprovalId(jira, issue, requestStatus);
   const hash = planningFingerprint(issue);
   const previous = latestPlanningRequest(db, issue.key);
+  if (previous && planningInProgressStatus && previous.entry_id === entry) {
+    const snapshot = JSON.parse(previous.input_snapshot) as Record<string, unknown>;
+    if (snapshot.planningInProgressStatus !== planningInProgressStatus) {
+      previous.input_snapshot = JSON.stringify({ ...snapshot, planningInProgressStatus });
+      db.prepare("UPDATE planning_requests SET input_snapshot=? WHERE id=?").run(
+        previous.input_snapshot,
+        previous.id,
+      );
+    }
+  }
   const live = getActivePlanDeployment(db, issue.key);
   if (previous?.lifecycle_version === 2 && live && previous.input_hash !== hash) {
     const started = db
@@ -171,6 +182,7 @@ export async function syncPlanningRequest(
         summary: issue.summary,
         description: requirementDescription(issue.description),
         statusName: requestStatus,
+        planningInProgressStatus,
         assigneeAccountId: issue.assigneeAccountId,
       }),
       source?.id ?? null,
@@ -211,8 +223,15 @@ export async function markReadyPlans(db: Database.Database, jira: JiraGateway): 
     )
       continue;
     const issue = await jira.getIssue(request.issue_key);
-    const status = (JSON.parse(request.input_snapshot) as { statusName?: string }).statusName;
-    if (issue.statusName !== status || planningFingerprint(issue) !== request.input_hash) continue;
+    const snapshot = JSON.parse(request.input_snapshot) as {
+      statusName?: string;
+      planningInProgressStatus?: string;
+    };
+    if (
+      ![snapshot.statusName, snapshot.planningInProgressStatus].includes(issue.statusName) ||
+      planningFingerprint(issue) !== request.input_hash
+    )
+      continue;
     const history = await jira.getIssueChangelog(issue.key);
     db.prepare("UPDATE planning_requests SET ready_history = ? WHERE id = ?").run(
       JSON.stringify(history.map((entry) => entry.id)),

@@ -18,8 +18,9 @@ import {
   renderParentPlan,
   renderTaskDescription,
 } from "../pm/plan-render.js";
-import { computeApprovalId, computeDelegationApprovalIds } from "./approval.js";
+import { computeApprovalId, computeDelegationApprovalIds, computeInputHash } from "./approval.js";
 import { COMMENT_TEXT } from "./comment-text.js";
+import { getApproval } from "./db/approvals.js";
 import {
   listAttentionItems,
   normalizeCause,
@@ -38,6 +39,7 @@ import {
   listJobReportSteps,
   updateReportStep,
 } from "./db/report-steps.js";
+import type { ApprovalSnapshot } from "./issue-check.js";
 import { integrationEvidence } from "./lifecycle.js";
 import {
   latestPlanningRequest,
@@ -59,6 +61,7 @@ import type {
   TransitionParams,
 } from "./report-journal.js";
 import { parseTaskApprovalId } from "./report-journal.js";
+import { checkContext, checkSource } from "./workflow-checks.js";
 
 /**
  * Executes the report journal (src/router/report-journal.ts) against Jira
@@ -202,7 +205,14 @@ async function runTransition(
     };
   }
   const issue = await jira.getIssue(params.issueKey ?? step.issueKey);
-  if (issue.statusName === params.to) return { status: "applied" };
+  if (issue.statusName === params.to) {
+    if (params.parentProgress && (await approvalStillStands(jira, db, issue, params)))
+      db.prepare("INSERT OR REPLACE INTO parent_progress_entries VALUES (?,?)").run(
+        issue.key,
+        await computeApprovalId(jira, issue, params.to),
+      );
+    return { status: "applied" };
+  }
   if (!params.from.includes(issue.statusName)) {
     return {
       status: "skipped",
@@ -213,6 +223,11 @@ async function runTransition(
     return { status: "skipped", reason: `${issue.key} was re-approved since this job was created` };
   }
   await write(() => jira.transitionIssueToStatus(issue.key, params.to));
+  if (params.parentProgress)
+    db.prepare("INSERT OR REPLACE INTO parent_progress_entries VALUES (?,?)").run(
+      issue.key,
+      await computeApprovalId(jira, issue, params.to),
+    );
   return { status: "applied" };
 }
 
@@ -225,49 +240,71 @@ async function approvalStillStands(
   params: TransitionParams,
 ): Promise<boolean> {
   const rule = params.approvalRule;
-  if (rule?.kind === "quality") {
+  if (rule?.kind === "parent-stage") {
     const request = latestPlanningRequest(db, issue.key);
-    const plan = PlanMetadataSchema.safeParse(
-      await jira.getIssueProperty(issue.key, PLAN_PROPERTY_KEY),
+    return (
+      !!issue.assigneeAccountId &&
+      request?.id === rule.requestId &&
+      request.input_hash === rule.inputHash &&
+      planningFingerprint(issue) === rule.inputHash
     );
-    const cycle = db.prepare("SELECT state FROM quality_cycles WHERE id=?").get(rule.cycleId) as
-      | { state: string }
-      | undefined;
+  }
+  if (rule?.kind === "workflow-job") {
+    const job = getJob(db, rule.jobId);
+    const approval = getApproval(db, issue.key);
     if (
+      !job ||
+      !approval ||
       !issue.assigneeAccountId ||
-      request?.id !== rule.requestId ||
-      planningFingerprint(issue) !== rule.inputHash ||
-      !plan.success ||
-      plan.data.version !== rule.planVersion ||
-      cycle?.state !== "passed"
+      approval.approvalId !== job.approvalId ||
+      approval.inputHash !== rule.inputHash
     )
       return false;
-    for (const task of rule.tasks) {
-      if (
-        (await jira.getIssue(task.key)).statusName !== rule.taskStatus ||
-        integrationEvidence(db, task.key, rule.baseBranch)?.resultId !== task.resultId
-      )
-        return false;
+    const snapshot = approval.inputSnapshot as ApprovalSnapshot;
+    if (
+      computeInputHash({
+        kind: job.kind,
+        issue,
+        requirements: snapshot.requirements,
+        planTask: snapshot.planTask,
+      }) !== rule.inputHash
+    )
+      return false;
+    if (
+      (job.kind === "integration_check" || job.kind === "quality_review") &&
+      rule.workspace &&
+      snapshot.quality
+    ) {
+      const context = await checkContext(
+        db,
+        jira,
+        {
+          repositories: [
+            {
+              id: rule.workspace.repositoryId,
+              baseBranch: snapshot.quality.integration.baseBranch,
+            },
+          ],
+        },
+        rule.workspace,
+        issue,
+        job.kind === "quality_review",
+      );
+      if (!context || checkSource(context) !== checkSource(snapshot.quality)) return false;
     }
-    return true;
+    if (job.kind === "planning") {
+      const request = latestPlanningRequest(db, issue.key);
+      return request?.id === job.approvalId && request.input_hash === planningFingerprint(issue);
+    }
+    const entry = await computeApprovalId(jira, issue, params.approvalStatus);
+    const expected =
+      parseTaskApprovalId(job.approvalId)?.entryId ??
+      job.approvalId.replace(/^(implementation|integration_check|quality_review):/, "");
+    return expected.split(":retry:")[0]?.split(":source:")[0] === entry;
   }
-  if (rule?.kind === "plan-approval") {
-    const parent = rule.issueKey === issue.key ? issue : await jira.getIssue(rule.issueKey);
-    const { planApprovalId } = await computeDelegationApprovalIds(jira, parent, rule);
-    return planApprovalId !== null && planApprovalOf(params.approvalId) === planApprovalId;
-  }
-  if (rule?.kind === "plan-task") {
-    const run = parseTaskApprovalId(params.approvalId);
-    if (!run) return false;
-    return (await computeApprovalId(jira, issue, rule.inProgressStatus)) === run.entryId;
-  }
+  if (rule) return false;
   const approvalId = await computeApprovalId(jira, issue, params.approvalStatus);
   return approvalId === params.approvalId;
-}
-
-/** The plan approval inside a task run's approval id, or the id itself for the plan's own. */
-function planApprovalOf(approvalId: string): string {
-  return parseTaskApprovalId(approvalId)?.planApprovalId ?? approvalId;
 }
 
 /** Finds a subtask created by `step` (its marker is in the description). */
@@ -624,18 +661,75 @@ async function runReportJournal(
       try {
         const job = getJob(deps.db, jobId);
         if (
+          job &&
+          job.kind !== "planning" &&
+          step.resultId !== null &&
+          step.batchId === step.resultId
+        ) {
+          const input = deps.db
+            .prepare("SELECT snapshot FROM job_inputs WHERE job_id=?")
+            .get(job.id) as { snapshot: string } | undefined;
+          if (input) {
+            const snapshot = JSON.parse(input.snapshot) as ApprovalSnapshot;
+            const issue = await deps.jira.getIssue(job.issueKey);
+            const transition =
+              step.kind === "transition" ? (step.params as unknown as TransitionParams) : undefined;
+            const fresh =
+              issue.statusName === snapshot.issue.statusName &&
+              (await approvalStillStands(deps.jira, deps.db, issue, {
+                to: issue.statusName,
+                from: [issue.statusName],
+                approvalStatus: snapshot.issue.statusName,
+                approvalId: job.approvalId,
+                approvalRule: {
+                  kind: "workflow-job",
+                  jobId: job.id,
+                  inputHash: job.inputHash,
+                  ...(transition?.approvalRule?.kind === "workflow-job" &&
+                  transition.approvalRule.workspace
+                    ? { workspace: transition.approvalRule.workspace }
+                    : {}),
+                },
+              }));
+            if (!fresh && issue.statusName !== transition?.to) {
+              updateReportStep(deps.db, step.id, {
+                status: "skipped",
+                error: "superseded result or a human moved it",
+                now: deps.now(),
+              });
+              report.skipped.push({
+                stepId: step.id,
+                reason: "superseded result or a human moved it",
+              });
+              continue;
+            }
+          }
+        }
+        if (
           job?.kind === "planning" &&
           job.approvalId.startsWith("planning:") &&
           (step.resultId !== null || step.batchId.startsWith("start:"))
         ) {
           const issue = await deps.jira.getIssue(job.issueKey);
           const previous = latestPlanningRequest(deps.db, job.issueKey);
-          const requestStatus = previous
-            ? (JSON.parse(previous.input_snapshot) as { statusName?: string }).statusName
+          const snapshot = previous
+            ? (JSON.parse(previous.input_snapshot) as {
+                statusName?: string;
+                planningInProgressStatus?: string;
+              })
             : null;
+          const requestStatus = snapshot?.statusName;
           const request =
-            requestStatus && issue.statusName === requestStatus
-              ? await syncPlanningRequest(deps.db, deps.jira, issue, requestStatus, deps.now())
+            requestStatus &&
+            [requestStatus, snapshot?.planningInProgressStatus].includes(issue.statusName)
+              ? await syncPlanningRequest(
+                  deps.db,
+                  deps.jira,
+                  issue,
+                  requestStatus,
+                  deps.now(),
+                  snapshot?.planningInProgressStatus,
+                )
               : undefined;
           if (
             !request ||
@@ -654,23 +748,7 @@ async function runReportJournal(
             continue;
           }
         }
-        if (step.batchId.startsWith("quality:")) {
-          const issue = await deps.jira.getIssue(step.issueKey);
-          const request = latestPlanningRequest(deps.db, issue.key);
-          const status = request
-            ? (JSON.parse(request.input_snapshot) as { statusName?: string }).statusName
-            : undefined;
-          if (
-            !request ||
-            issue.statusName !== status ||
-            planningFingerprint(issue) !== request.input_hash
-          ) {
-            outcome = {
-              status: "skipped",
-              reason: "quality procedure withdrawn or requirements changed",
-            };
-          } else outcome = await runStep(deps.jira, deps.db, step, ctx);
-        } else outcome = await runStep(deps.jira, deps.db, step, ctx);
+        outcome = await runStep(deps.jira, deps.db, step, ctx);
       } catch (error) {
         const message = errorMessage(error);
         if (error instanceof WriteError && error.definitive) {

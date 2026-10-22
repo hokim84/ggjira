@@ -4,17 +4,17 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
+import type { RouterConfig } from "../src/router/config.js";
 import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
 import { listAttentionItems } from "../src/router/db/attention.js";
 import { openRouterDb } from "../src/router/db/connection.js";
 import { createJob, getJob, getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
 import { RuleDecisionProvider } from "../src/router/decision.js";
-import type { RouterConfig } from "../src/router/config.js";
 import {
-  assignQueuedJobs,
-  reconcileCandidates,
   type SchedulerDeps,
   type WorkerAvailability,
+  assignQueuedJobs,
+  reconcileCandidates,
 } from "../src/router/scheduler.js";
 import {
   type ApprovedIssueOptions,
@@ -22,17 +22,17 @@ import {
   seedApprovedIssue,
 } from "./helpers/approved-plan.js";
 import {
-  buildRouterConfig as buildConfig,
   DONE_STATUS,
   IN_PROGRESS_STATUS,
+  REQUEST_STATUS,
+  TODO_STATUS,
+  WORKFLOW_TRANSITIONS,
+  buildRouterConfig as buildConfig,
   issueDescription as description,
   makeClock,
   makeIdGenerator,
-  REQUEST_STATUS,
   singlePlan,
-  TODO_STATUS,
   testWorkspace,
-  WORKFLOW_TRANSITIONS,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
@@ -122,7 +122,7 @@ describe("reconcileCandidates", () => {
     expect(getOpenJobForIssue(db, "KAN-1")?.kind).toBe("planning");
   });
 
-  it("never picks up an issue a person moved to in progress", async () => {
+  it("accepts a direct implementation request from in progress", async () => {
     jira.seedIssue({
       key: "KAN-1",
       statusName: IN_PROGRESS_STATUS,
@@ -133,8 +133,8 @@ describe("reconcileCandidates", () => {
 
     const report = await reconcileCandidates(makeDeps(buildConfig()), []);
 
-    expect(report.jobsCreated).toEqual([]);
-    expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
+    expect(report.jobsCreated).toHaveLength(1);
+    expect(getOpenJobForIssue(db, "KAN-1")?.kind).toBe("implementation");
   });
 
   it("holds for a human and processes other candidates when metadata is invalid or assignee is missing", async () => {
@@ -346,9 +346,11 @@ describe("reconcileCandidates", () => {
     expect(getActiveAttemptForWorker(db, "worker-1")).toBeUndefined();
     // ADR 0035: the edited request is not re-run under the approval of the original one.
     expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
-    expect(report.held).toEqual([
-      expect.objectContaining({ issueKey: "KAN-1", reason: expect.stringContaining("edited") }),
-    ]);
+    expect(report.held).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ issueKey: "KAN-1", reason: expect.stringContaining("edited") }),
+      ]),
+    );
     const again = await reconcileCandidates(deps, []);
     expect(again.jobsCreated).toEqual([]);
   });

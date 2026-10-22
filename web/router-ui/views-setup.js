@@ -181,22 +181,34 @@ export function renderSetup(root) {
           { class: "muted full-row" },
           "부모는 AI 검토에 유지하고, 실행할 자식을 작업 중으로 옮깁니다. 필수 자식 완료·통합 후 자동 평가하여 부모를 결과 검토로 옮깁니다.",
         ),
-        field(ws, "workflow.requestStatus", "AI 검토 상태 (계획·질문·승인 대기)", {
-          kind,
-          options,
-        }),
-        field(ws, "workflow.inProgressStatus", "작업 중 상태", { kind, options }),
-        field(ws, "workflow.reviewStatus", "결과 검토 상태", { kind, options }),
+        ...[
+          ["requestStatus", "AI 계획"],
+          ["planningInProgressStatus", "AI 계획중"],
+          ["inProgressStatus", "AI 구현"],
+          ["integrationPendingStatus", "AI 통합 대기"],
+          ["implementationCompleteStatus", "AI 구현 완료"],
+          ["reviewStatus", "AI 리뷰"],
+          ["doneStatus", "Done"],
+        ].map(([key, label]) => field(ws, `workflow.${key}`, label, { kind, options })),
       );
     }
 
     async function loadStatuses(projectKey) {
       wizard.statuses = [];
+      wizard.workflowReady = false;
       if (projectKey) {
         try {
-          wizard.statuses = (
-            await setup("POST", "/jira/statuses", { ...creds(), projectKey })
-          ).statuses;
+          fill(
+            message,
+            notice(
+              "info",
+              "프로젝트의 AI 상태를 확인합니다. 없는 상태와 전이는 자동으로 추가합니다.",
+            ),
+          );
+          const result = await setup("POST", "/jira/ensure-workflow", { ...creds(), projectKey });
+          wizard.statuses = result.statuses;
+          wizard.workflowReady = result.complete;
+          fill(message, notice(result.complete ? "ok" : "warn", result.messages.join(" ")));
         } catch (error) {
           fill(message, errorNotice(error));
         }
@@ -245,9 +257,27 @@ export function renderSetup(root) {
       event.preventDefault();
       ws.repositoryId = repository().id;
       const missing = [];
+      if (!wizard.workflowReady) {
+        fill(
+          message,
+          notice(
+            "warn",
+            "AI 상태 구성이 완료되어야 계속할 수 있습니다. 프로젝트를 다시 선택하여 재시도하세요.",
+          ),
+        );
+        return;
+      }
       if (!ws.projectKeys?.length)
         missing.push({ path: "workspaces.0.projectKeys", message: "프로젝트를 선택하세요" });
-      for (const key of ["requestStatus", "inProgressStatus", "reviewStatus"]) {
+      for (const key of [
+        "requestStatus",
+        "planningInProgressStatus",
+        "inProgressStatus",
+        "integrationPendingStatus",
+        "implementationCompleteStatus",
+        "reviewStatus",
+        "doneStatus",
+      ]) {
         if (!ws.workflow[key]) missing.push({ path: `workflow.${key}`, message: "필수입니다" });
       }
       if (missing.length) {
@@ -335,7 +365,7 @@ export function renderSetup(root) {
 
   function finalConfig() {
     const cfg = structuredClone(wizard.config);
-    cfg.configVersion = 5;
+    cfg.configVersion = 6;
     if (wizard.skipWorker) cfg.workers = [];
     return cfg;
   }

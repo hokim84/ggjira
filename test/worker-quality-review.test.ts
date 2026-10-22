@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
-import type { WorkerRepositoryConfig } from "../src/worker-runtime/config.js";
+import { WorkerConfigSchema, type WorkerRepositoryConfig } from "../src/worker-runtime/config.js";
+import { executeEnvelope } from "../src/worker-runtime/executor.js";
+import { executePlanningEnvelope } from "../src/worker-runtime/planning.js";
 import { executeQualityEnvelope } from "../src/worker-runtime/quality.js";
 import { fakeSuccessResult } from "../src/worker/fake.js";
 import type { WorkerProvider } from "../src/worker/provider.js";
@@ -123,6 +125,67 @@ describe("Git-pinned quality review worker", () => {
     if (!envelope.qualityContext) throw new Error("missing test context");
     return envelope.qualityContext;
   }
+  it.each(["planning", "implementation"] as const)(
+    "fetches the latest remote before %s and preserves local edits and HEAD",
+    async (kind) => {
+      writeFileSync(path.join(repository.path, "feature.txt"), "local edit\n");
+      const worker: WorkerProvider = {
+        run: async (request) => {
+          calls++;
+          expect(git(request.cwd, "rev-parse", "HEAD")).toBe(targetSha);
+          expect(readFileSync(path.join(request.cwd, "feature.txt"), "utf8")).toBe("integrated\n");
+          return fakeSuccessResult({
+            structuredOutput:
+              kind === "planning"
+                ? { summary: "Plan", needsDecision: false, tasks: [] }
+                : undefined,
+          });
+        },
+      };
+      const job = { ...envelope, kind, qualityContext: undefined };
+      const deps = {
+        repository,
+        provider: worker,
+        worktreesRoot: path.join(dir, "worktrees"),
+        logPath: path.join(dir, "logs"),
+        signal: new AbortController().signal,
+      };
+      if (kind === "planning") await executePlanningEnvelope(job, deps);
+      else
+        await executeEnvelope(job, {
+          ...deps,
+          config: WorkerConfigSchema.parse({
+            configVersion: 5,
+            routerUrl: "http://localhost:8787",
+            repositories: [repository],
+            providers: [{ id: "default", type: "claude-code" }],
+            dataDir: path.join(dir, "data"),
+            logPath: deps.logPath,
+            credentialPath: path.join(dir, "credential.json"),
+          }),
+          createProvider: () => worker,
+          authorize: async () => true,
+        });
+      expect(calls).toBe(1);
+      expect(git(repository.path, "rev-parse", "HEAD")).toBe(baselineSha);
+      expect(readFileSync(path.join(repository.path, "feature.txt"), "utf8")).toBe("local edit\n");
+    },
+  );
+  it("does not start planning when fetching the remote fails", async () => {
+    git(repository.path, "remote", "set-url", "origin", path.join(dir, "missing.git"));
+    const result = await executePlanningEnvelope(
+      { ...envelope, kind: "planning" },
+      {
+        repository,
+        provider: provider(),
+        worktreesRoot: path.join(dir, "worktrees"),
+        logPath: path.join(dir, "logs"),
+        signal: new AbortController().signal,
+      },
+    );
+    expect(result.status).toBe("failed");
+    expect(calls).toBe(0);
+  });
   it("fetches the integrated target without resetting the shared checkout", async () => {
     const result = await execute();
     expect(result).toMatchObject({
@@ -165,10 +228,13 @@ describe("Git-pinned quality review worker", () => {
     });
     expect(calls).toBe(0);
   });
-  it("does not pass an evaluation without a configured trusted validation command", async () => {
+  it("still returns advisory findings without claiming validation when no trusted command is configured", async () => {
     repository.validateCommand = null;
-    expect((await execute()).status).toBe("failed");
-    expect(calls).toBe(0);
+    expect(await execute()).toMatchObject({
+      status: "succeeded",
+      quality: { verificationPassed: false },
+    });
+    expect(calls).toBe(1);
   });
   it("detects a target branch update during the assessment", async () => {
     const result = await execute(

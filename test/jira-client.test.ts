@@ -55,6 +55,8 @@ describe("JiraClient", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const headers = init.headers as Record<string, string>;
+    expect(headers["Accept-Language"]).toBe("en-US");
+    expect(headers["X-Force-Accept-Language"]).toBe("true");
     expect(headers.Authorization).toBe(
       `Basic ${Buffer.from("user@example.com:token-123").toString("base64")}`,
     );

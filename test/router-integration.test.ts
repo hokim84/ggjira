@@ -17,7 +17,6 @@ import { WorkerRunner } from "../src/worker-runtime/runner.js";
 import { ResultSpool } from "../src/worker-runtime/spool.js";
 import { fakeSuccessResult } from "../src/worker/fake.js";
 import type { WorkerRequest, WorkerResult } from "../src/worker/provider.js";
-import { legacyLifecycle } from "./helpers/legacy-lifecycle.js";
 import {
   IN_PROGRESS_STATUS,
   PLAN_REVIEW_STATUS,
@@ -49,7 +48,21 @@ class RecordingProvider {
           summary: `planned by ${this.workerId}`,
           structuredOutput: singlePlan(),
         })
-      : fakeSuccessResult({ summary: `done by ${this.workerId}` });
+      : fakeSuccessResult({
+          summary: `done by ${this.workerId}`,
+          structuredOutput: {
+            outcome: "completed",
+            summary: `done by ${this.workerId}`,
+            noChangeReason: "Existing result already meets the request",
+            verification: [
+              {
+                acceptance: "The change works",
+                status: "pass",
+                evidence: "Checked the existing output",
+              },
+            ],
+          },
+        });
   }
 }
 
@@ -86,7 +99,7 @@ describe("Router with two workers over HTTP", () => {
     }
     for (const key of ["KAN-1", "KAN-2", "KAN-3"])
       await syncPlanningRequest(db, jira, await jira.getIssue(key), REQUEST_STATUS);
-    legacyLifecycle(db);
+
     daemon = new RouterDaemon({
       db,
       jira,
@@ -165,7 +178,7 @@ describe("Router with two workers over HTTP", () => {
     await vi.waitFor(
       async () => {
         for (const key of ["KAN-1", "KAN-2", "KAN-3"]) {
-          expect((await jira.getIssue(key)).statusName).toBe(PLAN_REVIEW_STATUS);
+          expect((await jira.getIssue(key)).statusName).toBe("AI 계획중");
           expect(
             (
               db
@@ -189,7 +202,7 @@ describe("Router with two workers over HTTP", () => {
     await vi.waitFor(
       async () => {
         for (const key of ["KAN-1", "KAN-2", "KAN-3"]) {
-          expect((await jira.getIssue(key)).statusName).toBe(REVIEW_STATUS);
+          expect((await jira.getIssue(key)).statusName).toBe("AI 구현 완료");
         }
       },
       { timeout: 20_000, interval: 100 },

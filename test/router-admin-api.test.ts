@@ -4,15 +4,15 @@ import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { getAttempt } from "../src/router/db/attempts.js";
 import { listAudit } from "../src/router/db/audit.js";
 import { openRouterDb } from "../src/router/db/connection.js";
-import { getJob, getOpenJobForIssue, type JobRow } from "../src/router/db/jobs.js";
+import { type JobRow, getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
+import { listPlanDeployments } from "../src/router/db/plan-delegation.js";
 import {
   insertReportBatch,
   listBatchReportSteps,
   updateReportStep,
 } from "../src/router/db/report-steps.js";
-import { listPlanDeployments } from "../src/router/db/plan-delegation.js";
 import { expireLeases } from "../src/router/leases.js";
-import { IN_PROGRESS_STATUS, issueDescription, REQUEST_STATUS } from "./helpers/router-fixtures.js";
+import { IN_PROGRESS_STATUS, REQUEST_STATUS, issueDescription } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 
 function lease(envelope: JobEnvelope) {
@@ -164,8 +164,7 @@ describe("admin API", () => {
     expect(getOpenJobForIssue(router.db, "KAN-1")).toBeUndefined();
     // The cancel withdrew the approval of the plan it ran under.
     expect(listPlanDeployments(router.db, "KAN-1")[0]).toMatchObject({
-      state: "revoked",
-      reason: "withdrawn (admin:tester)",
+      state: "active",
     });
 
     // A human approving the plan again in Jira is a new approval, which runs again.

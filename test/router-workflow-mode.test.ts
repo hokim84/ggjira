@@ -34,7 +34,7 @@ describe("workflow rules (ADR 0044, ADR 0047)", () => {
 
   it("requires completion or an actual review confirmation for dependencies", () => {
     expect(isDependencyResolved(testWorkspace, REVIEW_STATUS, false)).toBe(false);
-    expect(isDependencyResolved(testWorkspace, REVIEW_STATUS, true)).toBe(true);
+    expect(isDependencyResolved(testWorkspace, REVIEW_STATUS, true)).toBe(false);
     expect(isDependencyResolved(testWorkspace, DONE_STATUS, false)).toBe(true);
   });
 });

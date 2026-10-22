@@ -15,6 +15,10 @@ import type {
  * on. `JiraClient` implements this; tests substitute `FakeJiraGateway` instead.
  */
 export interface JiraGateway {
+  ensureAiWorkflow?(
+    projectKey: string,
+    mapping?: import("./workflow-provisioning.js").DEFAULT_AI_WORKFLOW_TYPE,
+  ): Promise<import("./workflow-provisioning.js").WorkflowProvisionResult>;
   searchIssues(jql: string, opts?: SearchIssuesOptions): Promise<JiraIssue[]>;
   getIssue(key: string, fields?: string[]): Promise<JiraIssue>;
   addComment(key: string, body: string): Promise<void>;

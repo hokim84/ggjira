@@ -9,26 +9,17 @@ function nfc(value: string): string {
 
 const nfcString = z.string().min(1).transform(nfc);
 
-/**
- * A workspace's statuses (ADR 0044, ADR 0047). People delegate by moving issues on the board:
- *
- *   human -> requestStatus [planning / awaiting answer / awaiting approval]
- *         -> human approves: requestStatus -> inProgressStatus (shared with people)
- *         -> [Router runs the approved plan] reviewStatus -> [merge] doneStatus
- *
- * New requests use lifecycle v2: the parent stays in requestStatus, child moves approve
- * their contracts, and completion quality review moves the parent to reviewStatus.
- * Existing v1 requests retain parent approval and execution. Labels play no part. Keys of the removed workflows (`mode`,
- * `planReviewStatus`, `planningStatus`, `needsDecisionStatus`, `optInLabel`) are rejected, never reinterpreted.
- */
+/** Seven board stages: manual requests, automatic progress and integration, optional review, manual Done. */
 const WorkflowStatusSchema = z
   .object({
     requestStatus: nfcString,
+    planningInProgressStatus: nfcString,
     inProgressStatus: nfcString,
+    integrationPendingStatus: nfcString,
+    implementationCompleteStatus: nfcString,
     reviewStatus: nfcString,
-    /** Where Router moves an issue from `reviewStatus` once the worker's GitHub pull request is
-     *  merged (ADR 0027), and what completes a dependency. Unset: a merge is only commented on. */
-    doneStatus: nfcString.optional(),
+    /** Final completion is always a human status move. */
+    doneStatus: nfcString,
   })
   .strict()
   .superRefine((workflow, ctx) => {
@@ -36,7 +27,10 @@ const WorkflowStatusSchema = z
     const seen = new Map<string, string>();
     for (const field of [
       "requestStatus",
+      "planningInProgressStatus",
       "inProgressStatus",
+      "integrationPendingStatus",
+      "implementationCompleteStatus",
       "reviewStatus",
       "doneStatus",
     ] as const) {
@@ -203,7 +197,7 @@ const JevConfigSchema = z.object({
 
 export const RouterConfigSchema = z
   .object({
-    configVersion: z.literal(5),
+    configVersion: z.literal(6),
     jira: z.object({ baseUrl: z.string().url() }),
     repositories: z.array(RepositorySchema).min(1),
     workspaces: z.array(WorkspaceSchema).min(1),

@@ -9,22 +9,26 @@ const workspace: WorkspaceConfig = {
   projectKeys: ["KAN"],
   workflow: {
     requestStatus: "AI 작업 요청",
+    planningInProgressStatus: "AI 계획중",
+    integrationPendingStatus: "AI 통합 대기",
+    implementationCompleteStatus: "AI 구현 완료",
+    doneStatus: "Done",
     inProgressStatus: "작업 중",
     reviewStatus: "AI 작업 완료",
   },
 };
 
 describe("buildWorkspaceJql", () => {
-  it("queries only the request status, never the shared in-progress status", () => {
+  it("queries planning, implementation, integration and advisory review stages", () => {
     expect(buildWorkspaceJql(workspace)).toBe(
-      'project in ("KAN") AND status in ("AI 작업 요청") ORDER BY created ASC',
+      'project in ("KAN") AND status in ("AI 작업 요청", "AI 계획중", "작업 중", "AI 통합 대기", "AI 작업 완료") ORDER BY created ASC',
     );
   });
 
   it("lists every project key configured for the workspace", () => {
     const multiProject: WorkspaceConfig = { ...workspace, projectKeys: ["KAN", "OPS"] };
     expect(buildWorkspaceJql(multiProject)).toBe(
-      'project in ("KAN", "OPS") AND status in ("AI 작업 요청") ORDER BY created ASC',
+      'project in ("KAN", "OPS") AND status in ("AI 작업 요청", "AI 계획중", "작업 중", "AI 통합 대기", "AI 작업 완료") ORDER BY created ASC',
     );
   });
 });
@@ -37,7 +41,7 @@ describe("findWorkspaceCandidates", () => {
 
     const candidates = await findWorkspaceCandidates(jira, workspace);
 
-    expect(candidates.map((issue) => issue.key)).toEqual(["KAN-1"]);
+    expect(candidates.map((issue) => issue.key)).toEqual(["KAN-1", "KAN-2"]);
   });
 
   it("excludes GGJIRA meta issues even when their status matches", async () => {

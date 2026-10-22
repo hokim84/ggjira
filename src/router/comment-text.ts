@@ -127,7 +127,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
         "다음: 이 실행의 결과는 이슈에 반영되지 않았습니다. 다시 실행하려면 이슈를 요청 상태로 옮기세요.",
     },
     planningStarted: (requestStatus) =>
-      `GGJIRA가 이 요청의 계획을 시작했습니다. 계획을 검토할 수 있을 때까지 이슈는 "${requestStatus}" 상태에 있습니다.`,
+      `GGJIRA가 계획 실행을 시작하여 "${requestStatus}"으로 이동합니다. 질문에 답하거나 게시된 계획의 작업을 개별 승인하세요.`,
     stopped: "AI 실행이 중지됐습니다.",
     unassigned: {
       title: "GGJIRA가 이 요청을 시작하지 않았습니다: 이슈에 담당자가 없습니다.",
@@ -199,7 +199,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       ordinaryQueue: "일반 검토 대기열에 올렸습니다.",
       nextWithPullRequest: (url, doneStatus) =>
         // The URL stands apart: a particle written onto it would become part of Jira's link.
-        `다음: PR을 검토하고 머지하세요 — ${url}${doneStatus ? ` (머지하면 Router가 이슈를 "${doneStatus}" 상태로 옮깁니다)` : ""}`,
+        `다음: PR을 검토하고 머지하세요 — ${url}${doneStatus ? ` (머지 후 통합 검증이 통과하면 "${doneStatus}"으로 이동합니다. AI 리뷰는 선택 사항입니다)` : ""}`,
       nextWithoutPullRequest: (doneStatus) =>
         `다음: 아래 결과를 검토하세요${doneStatus ? `. 이슈는 직접 "${doneStatus}" 상태로 옮기세요` : ""}. PR은 없습니다.`,
       reviewedCommit: (head, base) => `검토 대상 커밋: ${head}(base ${base})`,
@@ -303,7 +303,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
         "Next: nothing from this run was applied; to run it again, move the issue back to its request status.",
     },
     planningStarted: (requestStatus) =>
-      `GGJIRA started planning this request. The issue stays in "${requestStatus}" until the plan is ready for review.`,
+      `GGJIRA started planning and moves this issue to "${requestStatus}". Answer questions or approve individual tasks when ready.`,
     stopped: "AI execution stopped.",
     unassigned: {
       title: "GGJIRA did not start this request: the issue has no assignee.",
@@ -356,7 +356,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       reason: (reason) => reason.detail,
       ordinaryQueue: "Ready for the ordinary review queue.",
       nextWithPullRequest: (url, doneStatus) =>
-        `Next: review and merge ${url}${doneStatus ? `; Router then moves the issue to "${doneStatus}"` : ""}.`,
+        `Next: review and merge ${url}${doneStatus ? `; successful integration validation then moves the issue to "${doneStatus}"` : ""}. AI review is optional.`,
       nextWithoutPullRequest: (doneStatus) =>
         `Next: review the result below${doneStatus ? ` and move the issue to "${doneStatus}" yourself` : ""}; there is no pull request.`,
       reviewedCommit: (head, base) => `Reviewed commit: ${head} (base ${base})`,

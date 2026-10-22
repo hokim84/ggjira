@@ -2,15 +2,16 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { WorkerConfigSchema } from "../src/worker-runtime/config.js";
 import { executeEnvelope } from "../src/worker-runtime/executor.js";
 import { fakeSuccessResult } from "../src/worker/fake.js";
-import type { WorkerProvider, WorkerRequest } from "../src/worker/provider.js";
 import { createPullRequest, pullRequestFromUrl } from "../src/worker/github.js";
+import type { WorkerProvider, WorkerRequest } from "../src/worker/provider.js";
 import { githubCompareUrl, githubRepoSlug } from "../src/worker/worktree.js";
+import * as worktree from "../src/worker/worktree.js";
 
 function git(args: string[], cwd: string): string {
   return execFileSync(
@@ -88,6 +89,7 @@ describe("pushing the job branch", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -142,6 +144,8 @@ describe("pushing the job branch", () => {
   });
 
   it("reports a failed push without failing the job", async () => {
+    git(["remote", "add", "nosuchremote", remote], clone);
+    git(["remote", "set-url", "--push", "nosuchremote", path.join(dir, "missing.git")], clone);
     const { outcome } = run("nosuchremote");
     const result = await outcome;
     expect(result.status).toBe("succeeded");
@@ -159,6 +163,8 @@ describe("pushing the job branch", () => {
     // origin looks like GitHub for the PR, but pushes still go to the local bare repository.
     git(["remote", "set-url", "origin", "https://github.com/acme/app.git"], clone);
     git(["remote", "set-url", "--push", "origin", remote], clone);
+    git(["config", `url.${remote}.insteadOf`, "https://github.com/acme/app.git"], clone);
+    vi.spyOn(worktree, "remoteUrl").mockResolvedValue("https://github.com/acme/app.git");
     const calls: Array<Record<string, string>> = [];
     const result = await executeEnvelope(envelope(), {
       config: config("origin", true),
@@ -191,6 +197,8 @@ describe("pushing the job branch", () => {
   it("reports a failed pull request with a manual link, keeping the job succeeded", async () => {
     git(["remote", "set-url", "origin", "https://github.com/acme/app.git"], clone);
     git(["remote", "set-url", "--push", "origin", remote], clone);
+    git(["config", `url.${remote}.insteadOf`, "https://github.com/acme/app.git"], clone);
+    vi.spyOn(worktree, "remoteUrl").mockResolvedValue("https://github.com/acme/app.git");
     const result = await executeEnvelope(envelope(), {
       config: config("origin", true),
       createProvider: () => new WritingProvider(),

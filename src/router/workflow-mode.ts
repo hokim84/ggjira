@@ -12,8 +12,10 @@ import type { WorkspaceConfig } from "./config.js";
  *  implementation runs in `inProgressStatus`, approved by the move there from `requestStatus`
  *  (src/router/delegation.ts). */
 export function approvalStatusFor(kind: JobKind, workspace: WorkspaceConfig): string {
-  const { requestStatus, inProgressStatus } = workspace.workflow;
-  return kind !== "implementation" ? requestStatus : inProgressStatus;
+  const workflow = workspace.workflow;
+  if (kind === "quality_review") return workflow.reviewStatus;
+  if (kind === "integration_check") return workflow.integrationPendingStatus;
+  return kind === "planning" ? workflow.requestStatus : workflow.inProgressStatus;
 }
 
 /** Where a result asking for a human decision moves the issue: a planning question waits with the
@@ -32,11 +34,11 @@ export function reRequestHint(
   const { requestStatus, inProgressStatus } = workspace.workflow;
   if (language === "ko") {
     return kind === "implementation"
-      ? `이슈를 "${requestStatus}" 상태로 옮겨 다시 계획한 뒤, 완성된 계획을 확인하고 "${inProgressStatus}" 상태로 옮기세요`
+      ? `원인을 해결한 뒤 담당자가 "재시도" 댓글을 남기세요. 범위를 바꾸려면 설명을 수정하고 "${inProgressStatus}"으로 다시 옮기거나 "${requestStatus}"으로 재계획하세요`
       : `담당자가 "재시도" 댓글을 남기거나 제목·설명을 수정하세요`;
   }
   return kind === "implementation"
-    ? `move the issue to "${requestStatus}", wait for the new plan, then approve it by moving to "${inProgressStatus}"`
+    ? `resolve the cause and ask the assignee to comment "재시도"; for a new scope, update the description and re-enter "${inProgressStatus}" or replan in "${requestStatus}"`
     : 'ask the assignee to comment "재시도" or edit the title or description';
 }
 
@@ -48,5 +50,7 @@ export function isDependencyResolved(
   reviewConfirmed: boolean,
 ): boolean {
   const { doneStatus } = workspace.workflow;
-  return (doneStatus !== undefined && statusName === doneStatus) || reviewConfirmed;
+  return (
+    statusName === workspace.workflow.implementationCompleteStatus || statusName === doneStatus
+  );
 }

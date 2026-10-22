@@ -232,6 +232,17 @@ function jiraRetryDelayMs(error: unknown): number | undefined {
 }
 
 export class JiraClient implements JiraGateway {
+  async ensureAiWorkflow(
+    projectKey: string,
+    mapping?: import("./workflow-provisioning.js").DEFAULT_AI_WORKFLOW_TYPE,
+  ): Promise<import("./workflow-provisioning.js").WorkflowProvisionResult> {
+    const { ensureProjectAiWorkflow } = await import("./workflow-provisioning.js");
+    return ensureProjectAiWorkflow(
+      (method, path, body) => this.request(method, path, body),
+      projectKey,
+      mapping,
+    );
+  }
   private readonly baseUrl: string;
   private readonly authHeader: string;
   private readonly logger: Logger | undefined;
@@ -257,6 +268,8 @@ export class JiraClient implements JiraGateway {
       headers: {
         Authorization: this.authHeader,
         Accept: "application/json",
+        "Accept-Language": "en-US",
+        "X-Force-Accept-Language": "true",
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),

@@ -254,15 +254,7 @@ const MAX_PAGE_SIZE = 200;
 /** The workflow fields that decide which issues are approved work (see
  *  `assertApprovalRulesUnchangedUnderLiveJobs`). */
 function approvalRules(workspace: WorkspaceConfig) {
-  // ADR 0044: the plan-review status is where approvals come from, and a run's own moves to
-  // review/done are re-checked against it.
-  const { requestStatus, inProgressStatus, reviewStatus, doneStatus } = workspace.workflow;
-  return {
-    requestStatus,
-    inProgressStatus,
-    reviewStatus,
-    doneStatus: doneStatus ?? null,
-  };
+  return workspace.workflow;
 }
 
 function elapsedMs(since: string | null, now: string): number | null {
@@ -799,6 +791,31 @@ export class AdminService {
   /** Statuses and subtask issue types of a Jira project, for the web UI pickers (read-only). */
   async jiraProject(projectKey: string): Promise<ProjectWorkflowInfo> {
     return this.callJira(() => inspectProjectWorkflow(this.deps.jira, projectKey));
+  }
+  async ensureWorkflow(projectKey: string, actor = "admin") {
+    const workspace = this.deps.config.workspaces.find((ws) => ws.projectKeys.includes(projectKey));
+    if (!workspace)
+      throw new AdminError(400, "unknown_project", "설정에 등록된 프로젝트를 선택하세요.");
+    const ensure = this.deps.jira.ensureAiWorkflow?.bind(this.deps.jira);
+    if (!ensure)
+      throw new AdminError(
+        502,
+        "workflow_unavailable",
+        "Jira 상태 자동 추가를 지원하지 않는 연결입니다.",
+      );
+    const result = await this.callJira(() => ensure(projectKey, workspace.workflow));
+    appendAudit(this.deps.db, {
+      at: this.now(),
+      actor,
+      action: "jira.workflow.provisioned",
+      subject: projectKey,
+      detail: {
+        added: result.added,
+        workflowsUpdated: result.workflowsUpdated,
+        complete: result.complete,
+      },
+    });
+    return result;
   }
 
   /** Whether Router's own status moves exist in the project's workflow (read-only). */

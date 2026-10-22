@@ -71,12 +71,12 @@ const DELEGATION_STAGES = {
   plan_review: [
     "계획 검토 대기",
     (s) =>
-      `계획을 읽고, 승인하려면 "${s.request}" → "${s.inProgress}"로 옮기세요. 바꾸려면 제목이나 설명을 수정하세요.`,
+      `계획을 읽고 실행할 개별 작업을 "${s.inProgress}"으로 옮기세요. 바꾸려면 AI 계획으로 재계획하세요.`,
   ],
   plan_needs_decision: [
     "결정 필요",
     (s) =>
-      `담당자가 선택지 번호만 댓글로 남기세요(예: 2). "${s.request}" 상태에서 자동으로 다시 계획합니다.`,
+      "담당자가 선택지 번호만 댓글로 남기세요(예: 2). AI 계획중에서 자동으로 계획을 이어갑니다.",
   ],
   approved_waiting: ["승인됨 · 계획 반영 대기", () => "계획이 Jira에 다 반영되면 시작합니다."],
   running: [
@@ -85,15 +85,26 @@ const DELEGATION_STAGES = {
   ],
   coordinating: [
     "하위 작업 조정",
-    (s) =>
-      `하위 작업이 승인된 계획으로 실행됩니다. 모두 "${s.done ?? "완료"}"면 "${s.review}"로 옮겨집니다.`,
+    (s) => "자식을 개별 승인합니다. 모든 자식의 통합·검증 후 부모도 AI 구현 완료로 이동합니다.",
   ],
   task: [
     "승인된 계획의 하위 작업",
     (s) =>
       `다시 실행하려면 "${s.inProgress}" 밖으로 옮겼다가 돌아오게 하세요(같은 계획 안의 재시도).`,
   ],
-  result_review: ["결과 검토", () => "검토 화면에서 판단을 남기거나 PR을 머지하세요."],
+  integration_pending: [
+    "통합 대기",
+    () =>
+      "PR을 머지하고 통합 검증을 기다리세요. 실패하면 원인 해결 후 담당자가 재시도 댓글을 남기세요.",
+  ],
+  implementation_complete: [
+    "구현 완료",
+    () => "Done으로 마치거나 선택적으로 AI 리뷰를 요청하세요.",
+  ],
+  result_review: [
+    "AI 리뷰",
+    () => "평가 댓글을 확인하고 Done, AI 구현(수정), AI 계획(재계획)을 선택하세요.",
+  ],
   done: ["완료", () => "끝났습니다."],
 };
 
@@ -109,12 +120,12 @@ function delegationRows(view) {
   const d = view.delegation;
   const [label, next] = DELEGATION_STAGES[d.stage] || [d.stage, () => ""];
   return [
-    d.quality ? h("dt", {}, "부모 완료 평가") : null,
+    d.quality ? h("dt", {}, "부모 통합 진행") : null,
     d.quality
       ? h(
           "dd",
           {},
-          `${d.quality.completed}/${d.quality.total} 통합 · ${({ children_waiting: "자식별 실행·통합 대기", running: "통합 평가 중", judgment: "후보 판단·개선 대기", failed: "평가 실패 · 원인 확인 후 재시도 댓글", stale: "평가 대상 갱신 필요", passed: "평가 통과" })[d.quality.state] ?? d.quality.state}${d.quality.targetSha ? ` · ${d.quality.targetSha.slice(0, 12)}` : ""}`,
+          `${d.quality.completed}/${d.quality.total} 통합 · ${({ children_waiting: "자식별 실행·통합 대기", running: "통합 검증 또는 리뷰 중", judgment: "리뷰 결과 게시됨", succeeded: "완료", queued: "워커 대기", leased: "실행 준비", failed: "평가 실패 · 원인 확인 후 재시도 댓글", stale: "평가 대상 갱신 필요", passed: "평가 통과" })[d.quality.state] ?? d.quality.state}${d.quality.targetSha ? ` · ${d.quality.targetSha.slice(0, 12)}` : ""}`,
         )
       : null,
     h("dt", {}, "위임 단계"),
@@ -127,7 +138,7 @@ function delegationRows(view) {
         "div",
         { class: "hint" },
         d.quality
-          ? "실행할 자식을 작업 중으로 옮기세요. 필수 작업의 통합·평가·판단 후 부모가 결과 검토로 이동합니다."
+          ? "실행할 자식을 AI 구현으로 옮기세요. 모든 자식과 부모의 통합 검증 후 AI 구현 완료로 이동합니다. AI 리뷰는 선택 사항입니다."
           : next(d.statuses),
       ),
     ),

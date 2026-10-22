@@ -226,6 +226,38 @@ const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 19,
+    description: "board lifecycle: independent integration checks and advisory reviews",
+    rebuildJobs: true,
+    up(db) {
+      const table = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'")
+        .get() as { sql: string };
+      const indexes = db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='jobs' AND sql IS NOT NULL",
+        )
+        .all() as { sql: string }[];
+      db.exec(
+        table.sql
+          .replace(/CREATE TABLE(?: IF NOT EXISTS)? ["`]?jobs["`]?/i, "CREATE TABLE jobs_new")
+          .replace("'quality_review')", "'quality_review', 'integration_check')"),
+      );
+      db.exec(
+        "INSERT INTO jobs_new SELECT * FROM jobs; DROP TABLE jobs; ALTER TABLE jobs_new RENAME TO jobs;",
+      );
+      for (const index of indexes) db.exec(index.sql);
+      db.exec(`CREATE TABLE workflow_checks (
+        job_id TEXT PRIMARY KEY REFERENCES jobs(id), issue_key TEXT NOT NULL,
+        source_key TEXT NOT NULL, context TEXT NOT NULL, report TEXT, verified INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE parent_progress_entries (issue_key TEXT PRIMARY KEY, entry_id TEXT NOT NULL);
+        CREATE TABLE job_inputs (job_id TEXT PRIMARY KEY REFERENCES jobs(id), snapshot TEXT NOT NULL);
+        CREATE TABLE workflow_retry_comments (issue_key TEXT NOT NULL, comment_id TEXT NOT NULL, PRIMARY KEY(issue_key,comment_id));`);
+      if ((db.pragma("foreign_key_check") as unknown[]).length)
+        throw new Error("board workflow migration foreign key check failed");
+    },
+  },
 ];
 
 interface MigrationRow {

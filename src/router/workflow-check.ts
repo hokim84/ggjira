@@ -33,13 +33,45 @@ const nfc = (value: string) => value.normalize("NFC");
  *  between is a human's move, but it has to exist in the workflow all the same. */
 export function routerWorkflowHops(workflow: WorkflowStatus): WorkflowHop[] {
   const hops: WorkflowHop[] = [
-    { label: "계획 승인(사람)", from: workflow.requestStatus, to: workflow.inProgressStatus },
-    { label: "작업 완료", from: workflow.inProgressStatus, to: workflow.reviewStatus },
-    { label: "부모 평가 통과", from: workflow.requestStatus, to: workflow.reviewStatus },
+    {
+      label: "계획 실행 시작",
+      from: workflow.requestStatus,
+      to: workflow.planningInProgressStatus,
+    },
+    {
+      label: "구현 승인(사람)·첫 자식 시작(부모)",
+      from: workflow.planningInProgressStatus,
+      to: workflow.inProgressStatus,
+    },
+    {
+      label: "구현 완료·PR 대기",
+      from: workflow.inProgressStatus,
+      to: workflow.integrationPendingStatus,
+    },
+    {
+      label: "변경 없는 작업 완료",
+      from: workflow.inProgressStatus,
+      to: workflow.implementationCompleteStatus,
+    },
+    {
+      label: "통합 검증 통과",
+      from: workflow.integrationPendingStatus,
+      to: workflow.implementationCompleteStatus,
+    },
+    {
+      label: "선택적 리뷰(사람)",
+      from: workflow.implementationCompleteStatus,
+      to: workflow.reviewStatus,
+    },
+    {
+      label: "리뷰 생략·완료(사람)",
+      from: workflow.implementationCompleteStatus,
+      to: workflow.doneStatus,
+    },
+    { label: "리뷰 후 완료(사람)", from: workflow.reviewStatus, to: workflow.doneStatus },
+    { label: "리뷰 후 수정(사람)", from: workflow.reviewStatus, to: workflow.inProgressStatus },
+    { label: "재계획(사람)", from: workflow.reviewStatus, to: workflow.requestStatus },
   ];
-  if (workflow.doneStatus) {
-    hops.push({ label: "PR 머지 후 완료", from: workflow.reviewStatus, to: workflow.doneStatus });
-  }
   return hops;
 }
 

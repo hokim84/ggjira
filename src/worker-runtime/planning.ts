@@ -4,7 +4,7 @@ import type { JobEnvelope } from "../contracts/envelope.js";
 import { PLAN_JSON_SCHEMA, parsePlan } from "../pm/plan.js";
 import { buildPlanningPrompt } from "../pm/prompt.js";
 import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provider.js";
-import { createWorktree, isGitRepository } from "../worker/worktree.js";
+import { createWorktree, integrationTarget, isGitRepository } from "../worker/worktree.js";
 import type { WorkerRepositoryConfig } from "./config.js";
 import type { ExecutionOutcome } from "./executor.js";
 import type { ExecutionStage } from "./progress.js";
@@ -41,18 +41,18 @@ export async function executePlanningEnvelope(
   if (await isGitRepository(deps.repository.path)) {
     const branch = `ggjira-pm/${issue.key}-${envelope.attemptId.slice(0, 8)}`;
     try {
-      cwd = (
-        await createWorktree(
-          deps.repository.path,
-          deps.repository.baseBranch,
-          branch,
-          deps.worktreesRoot,
-        )
-      ).path;
+      const targetSha = await integrationTarget(
+        deps.repository.path,
+        deps.repository.pushRemote ?? "origin",
+        deps.repository.baseBranch,
+        [],
+      );
+      cwd = (await createWorktree(deps.repository.path, targetSha, branch, deps.worktreesRoot))
+        .path;
     } catch (error) {
       return {
         status: "failed",
-        summary: "Could not create a git worktree for planning.",
+        summary: "Could not fetch the latest base or create a git worktree for planning.",
         failureReason: errorMessage(error),
       };
     }
