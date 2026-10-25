@@ -110,7 +110,7 @@ const DELEGATION_STAGES = {
   implementation_complete: [
     "구현 완료",
     () =>
-      "자식은 부모 PR의 구성 결과로 보존됩니다. 부모·단독 작업은 통합 검증을 마쳤으며 Done은 수동입니다. FCI는 병합 후 별도로 확인합니다.",
+      "자식은 부모 PR의 구성 결과로 보존됩니다. 부모·단독 작업은 통합 검증을 마쳤으며 Done은 수동입니다. 기술부채 추이는 병합 후 별도로 확인합니다.",
   ],
   done: ["완료", () => "끝났습니다."],
 };
@@ -174,13 +174,14 @@ function delegationRows(view) {
 }
 
 function nextAction(d, job) {
-  if (d.stage === "done") return "완료된 작업입니다. 필요한 경우 실행 기록과 FCI를 참고하세요.";
+  if (d.stage === "done")
+    return "완료된 작업입니다. 필요한 경우 실행 기록과 기술부채 추이를 참고하세요.";
   if (job?.kind === "integration_check" && ["queued", "leased", "running"].includes(job.state))
     return "PR 병합 후 통합 검증이 대기 또는 실행 중입니다. 검증 결과를 기다리세요.";
   if (d.stage === "implementation_complete")
     return d.parentKey
       ? "자식 구현 결과가 보존됐습니다. 부모 작업의 PR 생성·통합 검증 진행을 확인하세요."
-      : "통합 검증 결과를 확인하고 Jira에서 Done으로 옮기세요. FCI는 별도 참고 지표입니다.";
+      : "통합 검증 결과를 확인하고 Jira에서 Done으로 옮기세요. 구조 부채 지수는 별도 참고 지표입니다.";
   if (d.quality) {
     const text = {
       children_waiting:
@@ -476,7 +477,7 @@ export function renderIssues(root, ctx) {
         h(
           "section",
           { class: "panel" },
-          h("h2", {}, "FCI 분석 결과"),
+          h("h2", {}, "구조 부채 평가 결과"),
           h(
             "p",
             { class: "muted" },

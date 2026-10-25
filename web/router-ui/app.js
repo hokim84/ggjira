@@ -13,7 +13,7 @@ import { renderDashboard, renderWorkers } from "./views-status.js";
 const ROUTES = {
   "#/": { label: "대시보드", render: renderDashboard, poll: true },
   "#/workers": { label: "워커", render: renderWorkers },
-  "#/repositories": { label: "저장소 FCI", render: renderFci },
+  "#/repositories": { label: "기술부채 추이", render: renderFci },
   "#/tasks": { label: "작업 상세", render: renderIssues, parent: "#/" },
   "#/config": { label: "설정", render: renderConfig },
   "#/config/prompts": { label: "프롬프트", render: renderPrompts, parent: "#/config" },

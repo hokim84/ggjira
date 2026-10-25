@@ -4,9 +4,14 @@ FCI is an **experimental relative structural index**, not validated development 
 failure probability, or an approval gate. Higher values indicate more structural change burden under
 the selected rule. Repositories and languages should not be ranked against one another with it.
 
+The UI calls this **기술부채 추이**, with the heading **코드 구조 기반 기술부채 추이** and the score
+**구조 부채 지수**. This is a structural proxy for one aspect of technical debt, not a measurement of
+all debt: test deficiencies, security findings and outdated dependencies are outside the score.
+The internal FCI identifiers, calculation rules, series, baselines and saved scores are unchanged.
+
 ## Use
 
-Open **저장소 FCI**, enable FCI and enter a starting commit SHA (7–40 hexadecimal characters).
+Open **기술부채 추이**, enable **기술부채 추적 사용** and enter **비교 시작 커밋** (7–40 hexadecimal characters).
 The Worker resolves an unambiguous commit and checks that it is on the configured target branch's
 first-parent history. No language, model, weight, or provider input is required.
 An offline Worker means pending verification; an invalid baseline produces an explicit error.
@@ -26,7 +31,7 @@ evidence, confidence, raw observations, PR/Jira references and independent retri
 **AI로 설명** explicitly requests a read-only explanation from the existing Worker provider.
 It never changes the static score. No explicit model ID is required for this explanation; the reported
 model or `unreported`, prompt hash, frozen input, evidence and result remain in the attempt record.
-The prompt is editable at **설정 → 프롬프트 → FCI 변경 설명**. Explanation and Jira-report failure
+The prompt is editable at **설정 → 프롬프트 → 기술부채 변화 설명**. Explanation and Jira-report failure
 are separate from structural-analysis and implementation failure.
 
 ## Rules: fci-static-v2

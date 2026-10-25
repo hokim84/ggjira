@@ -65,7 +65,7 @@ export function getPromptCatalog(prompts = RolePromptsSchema.parse({})) {
       },
       {
         id: "fci_analysis",
-        title: "FCI 변경 설명",
+        title: "기술부채 변화 설명",
         description:
           "선택한 커밋의 정적 평가 근거와 개선 우선순위를 설명합니다. AI는 점수를 변경하지 않으며 승인과 상태 전이를 차단하지 않습니다.",
         source: "src/worker/fci-prompt.ts",

@@ -25,7 +25,10 @@ function graph(commits, selected, onSelect) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 1000 340");
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", "커밋 순서에 따른 FCI. 점을 선택하면 상세 설명을 엽니다.");
+  svg.setAttribute(
+    "aria-label",
+    "커밋 순서에 따른 구조 부채 지수. 점을 선택하면 상세 설명을 엽니다.",
+  );
   svg.style.width = "100%";
   const add = (tag, attrs, text) => {
     const node = document.createElementNS(svg.namespaceURI, tag);
@@ -89,7 +92,7 @@ function graph(commits, selected, onSelect) {
         "stroke-width": 2,
         tabindex: 0,
         role: "button",
-        "aria-label": `${c.sha.slice(0, 7)} ${axis === "fci" ? "FCI" : AXES[axis]} ${n(v)}`,
+        "aria-label": `${c.sha.slice(0, 7)} ${axis === "fci" ? "구조 부채 지수" : AXES[axis]} ${n(v)}`,
       });
       clickable(dot, c);
       const title = document.createElementNS(svg.namespaceURI, "title");
@@ -120,7 +123,7 @@ function graph(commits, selected, onSelect) {
   add(
     "text",
     { x: 65, y: 332, fill: "currentColor", "font-size": 12 },
-    commits[0]?.sha.slice(0, 7) ?? "시작 커밋",
+    commits[0]?.sha.slice(0, 7) ?? "비교 시작 커밋",
   );
   add(
     "text",
@@ -135,7 +138,7 @@ export async function renderFci(root) {
   const view = await admin("GET", "/fci?summary=1");
   const repo =
     view.repositories.find((r) => r.id === params.get("repository")) ?? view.repositories[0];
-  fill(root, h("h1", {}, "저장소 FCI"));
+  fill(root, h("h1", {}, "코드 구조 기반 기술부채 추이"));
   if (!repo) {
     root.append(h("p", {}, "저장소를 먼저 연결해 주세요."));
     return;
@@ -162,9 +165,9 @@ export async function renderFci(root) {
   const enabled = h("input", { type: "checkbox", checked: repo.fci.enabled });
   const baseline = h("input", {
     value: repo.fci.baselineSha ?? "",
-    placeholder: "시작 커밋 SHA",
+    placeholder: "비교를 시작할 커밋 SHA",
     spellcheck: false,
-    "aria-label": "시작 커밋",
+    "aria-label": "비교 시작 커밋",
     required: true,
     pattern: "[a-fA-F0-9]{7,40}",
   });
@@ -185,8 +188,8 @@ export async function renderFci(root) {
         }
       },
     },
-    h("label", {}, enabled, " FCI 사용"),
-    h("label", {}, "시작 커밋 ", baseline),
+    h("label", {}, enabled, " 기술부채 추적 사용"),
+    h("label", {}, "비교 시작 커밋 ", baseline),
     h("button", { class: "btn", type: "submit" }, "적용"),
     h(
       "p",
@@ -194,12 +197,35 @@ export async function renderFci(root) {
       `대상 브랜치: ${repo.baseBranch} · 언어 자동 감지 · AI 없이 구조 평가`,
     ),
   );
-  root.append(repo.fci.enabled ? details("시작점 변경·사용 설정", settings) : settings);
+  root.append(repo.fci.enabled ? details("비교 기준·사용 설정", settings) : settings);
   root.append(
     h(
       "p",
       { class: "muted" },
-      "시작점은 100입니다. 높아질수록 구조상 변경 부담이 큽니다. 실제 개발 비용이나 장애 확률을 뜻하지 않습니다.",
+      "코드 구조에 쌓이는 기술부채의 변화를 살펴봅니다. 의존성·복잡도·중복·변경 파급을 분석하며, 비교 시작 커밋을 100으로 둡니다. 높아질수록 구조상 변경 부담이 커졌음을 뜻합니다.",
+    ),
+    h(
+      "p",
+      { class: "muted" },
+      "테스트 부족·보안 문제·오래된 라이브러리 등 모든 기술부채를 포함하지 않으며, 실제 개선 비용을 뜻하지 않습니다.",
+    ),
+    details(
+      "측정 범위와 계산 방식(FCI)",
+      h(
+        "p",
+        {},
+        "구조 부채 지수는 코드 구조를 평가하는 실험적 상대 지표입니다. 네 항목을 각각 25%로 합산하고 비교 시작 커밋을 100에 맞춥니다.",
+      ),
+      h(
+        "p",
+        {},
+        "계산식: 100 + 현재 커밋의 구조 점수 − 비교 시작 커밋의 구조 점수. 항목별 선도 시작점을 100으로 비교합니다.",
+      ),
+      h(
+        "p",
+        {},
+        "FCI(Future Change Cost Index)는 내부 평가 방식의 이름입니다. 기술부채의 절대량, 개발 시간·비용 증가율이나 장애 확률을 측정하지 않습니다. 테스트 실행 여부와 분석하지 못한 부분은 커밋별 상세에서 확인하세요.",
+      ),
     ),
   );
   const archive = details("보관된 분석·평가 버전");
@@ -248,7 +274,7 @@ export async function renderFci(root) {
     root.append(
       notice(
         "info",
-        "기존 AI 평가는 보관됩니다. 설정에서 적용을 누르면 정적 FCI를 새로 시작합니다.",
+        "기존 AI 평가는 보관됩니다. 설정에서 적용을 누르면 코드 구조 기반 추적을 새로 시작합니다.",
       ),
     );
     return;
@@ -276,7 +302,7 @@ export async function renderFci(root) {
   const updateSummary = (v) => {
     progress.textContent = `${v.completed ?? 0} / ${v.total}개 평가 완료`;
     latest.textContent = v.latest
-      ? `최근 평가 FCI ${n(v.latest.fci)} · ${v.latest.sha.slice(0, 7)}${v.latest.ordinal < v.total - 1 ? ` · 이후 ${v.total - 1 - v.latest.ordinal}개 미평가` : ""}`
+      ? `구조 부채 지수 ${n(v.latest.fci)} · ${v.latest.sha.slice(0, 7)}${v.latest.ordinal < v.total - 1 ? ` · 이후 ${v.total - 1 - v.latest.ordinal}개 미평가` : ""}`
       : "표시할 평가값이 없습니다.";
     fill(errors, v.state?.error ? notice("error", v.state.error) : null);
     for (const button of controlButtons)
@@ -328,7 +354,7 @@ export async function renderFci(root) {
         h(
           "p",
           {},
-          `${label(c.status)} · FCI ${n(c.fci)} · 직전 대비 ${c.delta == null ? "—" : `${c.delta > 0 ? "+" : ""}${n(c.delta)}`}`,
+          `${label(c.status)} · 구조 부채 지수 ${n(c.fci)} · 직전 대비 ${c.delta == null ? "—" : `${c.delta > 0 ? "+" : ""}${n(c.delta)}`}`,
         ),
         h("p", { class: "muted" }, c.committed_at),
         c.error ? notice("error", c.error) : null,
@@ -514,11 +540,11 @@ export async function renderFci(root) {
   const chartRoot = h("div", {
     class: "fci-chart",
     tabindex: 0,
-    "aria-label": "FCI 그래프 가로 스크롤",
+    "aria-label": "기술부채 추이 그래프 가로 스크롤",
   });
   const selected = new Set(["fci"]);
   const legend = h("div", { class: "form-actions fci-legend" });
-  for (const [axis, title] of Object.entries({ fci: "종합 FCI", ...AXES }))
+  for (const [axis, title] of Object.entries({ fci: "종합", ...AXES }))
     legend.append(
       h(
         "label",
@@ -541,7 +567,7 @@ export async function renderFci(root) {
     );
   root.append(legend, chartRoot);
   fill(chartRoot, graph(commits, [...selected], select));
-  const emptyNotice = h("p", {}, "Worker가 시작 커밋과 대상 브랜치 이력을 확인 중입니다.");
+  const emptyNotice = h("p", {}, "워커가 비교 시작 커밋과 대상 브랜치 이력을 확인 중입니다.");
   emptyNotice.hidden = commits.length > 0;
   root.append(emptyNotice);
   const rangeLabel = h(

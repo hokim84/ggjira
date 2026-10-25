@@ -36,7 +36,7 @@ it("serves current built-in prompts only to an authenticated administrator", asy
     expect(roles.map((role: { title: string }) => role.title)).toEqual([
       "플랜",
       "구현",
-      "FCI 변경 설명",
+      "기술부채 변화 설명",
     ]);
     expect(roles[0].examplePrompt).toContain("EXAMPLE-1");
     expect(roles[0].outputSchema).toHaveProperty("properties");
