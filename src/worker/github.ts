@@ -24,6 +24,12 @@ export interface CreatePullRequestInput {
 }
 
 export type CreatePullRequest = (input: CreatePullRequestInput) => Promise<PullRequestRef>;
+export type RetirePullRequest = (input: {
+  cwd: string;
+  repo: string;
+  number: number;
+  replacementUrl: string;
+}) => Promise<void>;
 
 function runGh(
   command: string,
@@ -85,14 +91,52 @@ export const createPullRequest: CreatePullRequest = async (input) => {
 
   const existing = await runGh(
     gh,
-    ["pr", "view", input.head, "--repo", input.repo, "--json", "number,url"],
+    [
+      "pr",
+      "view",
+      input.head,
+      "--repo",
+      input.repo,
+      "--json",
+      "number,url,state,baseRefName,headRefName",
+    ],
     input.cwd,
     timeoutMs,
   );
   if (existing.code === 0) {
     try {
-      const parsed = JSON.parse(existing.stdout) as { number?: number; url?: string };
-      if (parsed.number && parsed.url) {
+      const parsed = JSON.parse(existing.stdout) as {
+        number?: number;
+        url?: string;
+        state?: string;
+        baseRefName?: string;
+        headRefName?: string;
+      };
+      if (
+        parsed.number &&
+        parsed.url &&
+        parsed.state === "OPEN" &&
+        parsed.baseRefName === input.base &&
+        parsed.headRefName === input.head
+      ) {
+        const edited = await runGh(
+          gh,
+          [
+            "pr",
+            "edit",
+            String(parsed.number),
+            "--repo",
+            input.repo,
+            "--title",
+            input.title,
+            "--body",
+            input.body,
+          ],
+          input.cwd,
+          timeoutMs,
+        );
+        if (edited.code !== 0)
+          throw new Error(edited.stderr || "Cannot update existing PR manifest");
         return { repo: input.repo, number: parsed.number, url: parsed.url };
       }
     } catch {
@@ -100,4 +144,32 @@ export const createPullRequest: CreatePullRequest = async (input) => {
     }
   }
   throw new Error(created.stderr || created.stdout || `gh exited with ${created.code}`);
+};
+
+/** Close only unmerged legacy child PRs, after their replacement parent PR exists. */
+export const retirePullRequest: RetirePullRequest = async (input) => {
+  const prior = await runGh(
+    "gh",
+    ["pr", "view", String(input.number), "--repo", input.repo, "--json", "state"],
+    input.cwd,
+    60000,
+  );
+  if (prior.code !== 0) throw new Error(prior.stderr || "Cannot inspect legacy child PR");
+  const state = (JSON.parse(prior.stdout) as { state: string }).state;
+  if (state !== "OPEN") return;
+  const closed = await runGh(
+    "gh",
+    [
+      "pr",
+      "close",
+      String(input.number),
+      "--repo",
+      input.repo,
+      "--comment",
+      `부모 통합 PR로 이전했습니다: ${input.replacementUrl}\n변경 커밋과 브랜치는 보존합니다.`,
+    ],
+    input.cwd,
+    60000,
+  );
+  if (closed.code !== 0) throw new Error(closed.stderr || "Cannot retire legacy child PR");
 };

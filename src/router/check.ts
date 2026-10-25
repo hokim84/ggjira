@@ -104,7 +104,7 @@ async function checkProject(
   // The REST API does not expose a workflow's initial status; check it manually.
   items.push({
     level: "warn",
-    message: `${where}: confirm by hand that a new "${subtaskType}" can move to "${workspace.workflow.inProgressStatus}" — Router moves the tasks of an approved plan there (ADR 0044)`,
+    message: `${where}: confirm by hand that a new "${subtaskType}" can move to "${workspace.workflow.inProgressStatus}" — a person approves each child by moving it there`,
   });
 }
 

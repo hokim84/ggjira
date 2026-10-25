@@ -1,165 +1,143 @@
-# FCI: experimental Future Change Cost Index
+# FCI: one graph, deterministic structural observations
 
-FCI measures an experimental, relative view of a repository's future change difficulty. It is
-not validated against actual development costs. It is **not** a development-time multiplier,
-cost increase percentage, incident probability, PR approval rule, or implementation-effort score.
-Higher values mean more maintenance burden under the selected rubric, not a prediction of money or hours.
+FCI is an **experimental relative structural index**, not validated development cost, elapsed time,
+failure probability, or an approval gate. Higher values indicate more structural change burden under
+the selected rule. Repositories and languages should not be ranked against one another with it.
 
-## Enable and register a baseline
+## Use
 
-FCI is disabled unless explicitly enabled for a Router repository. In **저장소 FCI → 분석 설정·기준 등록**,
-enter the full 40-character baseline commit SHA, the existing provider type and an explicit model ID.
-The Worker repository must have the matching provider ID/model configured, using its existing CLI login.
-The baseline is never silently selected from the current branch tip. The initial baseline analysis must
-provide all five axes before normalized indices can be calculated. A queued/failed/unassessable baseline
-is shown as such; it does not produce invented values of 100 or zero for later commits.
+Open **저장소 FCI**, enable FCI and enter a starting commit SHA (7–40 hexadecimal characters).
+The Worker resolves an unambiguous commit and checks that it is on the configured target branch's
+first-parent history. No language, model, weight, or provider input is required.
+An offline Worker means pending verification; an invalid baseline produces an explicit error.
 
-Example Router repository settings (configVersion **7**, Worker wire protocol **6**):
+The baseline is evaluated automatically. **다음 커밋 평가** evaluates one oldest missing commit;
+**미평가 모두 평가** fills the known historical range. **일시정지** stops scheduling historical work
+after the current commit finishes. Press the all button to resume. Completed snapshots are reused.
+The known target tip is frozen when requesting a range; newly arriving target commits are evaluated
+automatically through Worker polling. Failed/unassessable commits require explicit retry and do not
+loop indefinitely. An unassessable baseline blocks normalized history until corrected/retried.
 
-```json
-{
-  "id": "main-repo",
-  "baseBranch": "main",
-  "fci": {
-    "enabled": true,
-    "baselineSha": "<replace with an actual 40-character commit SHA>",
-    "providerType": "codex",
-    "modelId": "<the explicit model ID configured on the Worker>",
-    "ruleVersion": "fci-v1",
-    "weights": { "coupling": 0.25, "complexity": 0.20, "verification": 0.25, "ripple": 0.20, "history": 0.10 },
-    "timeoutMs": 600000
-  }
-}
-```
+There is one chart, with overall FCI shown initially. The legend toggles the four component lines.
+Pages contain 100 commits, retaining individual points and keyboard-accessible selection. Missing
+and failed observations break lines instead of producing zero/stale points. Selecting a point opens
+evidence, confidence, raw observations, PR/Jira references and independent retries.
 
-`providerType` can be `codex` or `claude-code`. For example, set `providers[].model` in
-`worker.config.json` to the same explicit model ID. Account-selected defaults without a model ID
-are not eligible for FCI. Router does not create credentials or install Unity Editor on Workers.
+**AI로 설명** explicitly requests a read-only explanation from the existing Worker provider.
+It never changes the static score. No explicit model ID is required for this explanation; the reported
+model or `unreported`, prompt hash, frozen input, evidence and result remain in the attempt record.
+The prompt is editable at **설정 → 프롬프트 → FCI 변경 설명**. Explanation and Jira-report failure
+are separate from structural-analysis and implementation failure.
 
-## Calculation and uncertainty
+## Rules: fci-static-v2
 
-For each complete snapshot, the AI supplies evidence-backed integer grades `g_i` from 0 to 4.
-Weights are configurable but must sum to 1. Arithmetic is deterministic:
+The four components have equal weights. Let `clamp(x)=max(0,min(1,x))` and
+`Q(values)=(mean(values)+nearest-rank-90th-percentile(values))/2`.
+
+| Component | Raw score, 0–100 |
+| --- | --- |
+| Dependency | `100 × (0.7 × Q(clamp(file fanOut/10)) + 0.3 × cycle-participating-file fraction)` |
+| Complexity | `100 × Q(0.6 × clamp((function cyclomatic−1)/14) + 0.4 × clamp((nesting−1)/4))` |
+| Duplication | `100 × excess duplicated function-body tokens / all evaluated function-body tokens` |
+| Ripple | `100 × Q(clamp(unique transitive dependent files/20))` |
+
+These constants are experimental anchors, not empirically validated cost thresholds. Cycles and
+transitive reachability count each consumer once and exclude self. Nested functions are evaluated
+independently rather than being counted in their outer function. Duplication considers bodies of at
+least 50 syntax tokens, ignores comments/whitespace, normalizes local names and preserves operators
+and literals. Different languages are not compared as textual clones. All product function tokens
+form the duplication denominator; trivial bodies alone do not count as clones.
 
 ```text
-Axis raw score A_i(S) = 25 * g_i(S)
-Repository raw score R(S) = sum(weight_i * A_i(S))   [0..100]
+R(S) = mean(four raw component scores)
 FCI(S) = 100 + R(S) - R(baseline)
-deltaRaw = R(after) - R(before)
-deltaFCI = FCI(after) - FCI(before)
-Axis trend = 100 + A_i(S) - A_i(baseline)
+componentIndex(S) = 100 + componentRaw(S) - componentRaw(baseline)
+delta = FCI(after) - FCI(before)
 ```
 
-The baseline index is 100 after successful complete evaluation. A raw baseline of zero is valid;
-there is no division by zero. Scores are stored before display rounding. Under this affine formula,
-raw and normalized deltas have the same numerical value; both underlying raw scores are retained.
-No clipping or percentage conversion is applied. Any unavailable axis makes the overall raw score,
-FCI and delta unavailable (`null`). Available axes remain visible. There is no weight redistribution.
+Raw values are saved before rounding. A zero raw baseline is valid. Missing components are null,
+never zero or redistributed weights. A repository with no assessable product source cannot establish
+100. Fewer than 80% of candidate product files parsed successfully makes the aggregate unavailable.
+Unresolved internal references lower confidence; if reference candidates exist but none resolve,
+dependency and ripple are unavailable. Otherwise the graph is an explicitly partial observation.
+Known absence of branches, clones or internal references in observed code is a legitimate zero.
 
-### Versioned grading anchors
+File/line counts do not add a penalty. Adding simple code can change distributions; commonization can
+reduce duplication while increasing ripple. Component changes expose these tradeoffs. Test code,
+generated code, dependencies and build outputs are excluded from product scores. Test presence,
+actual execution evidence, co-change history and Unity serialization are context only. Adding tests
+alone therefore does not lower structural FCI. Parsing C# does not compile Unity or run Editor tests.
 
-These are repository-structure examples, not rules to award points solely from a count.
-Every assigned grade needs existing SHA-pinned file/line evidence and an explanation. Missing data
-means uncertainty or an unavailable grade, never assumed high risk or an automatic zero.
+## Language coverage and limits
 
-| Axis / initial weight | 0 | 1 | 2 | 3 | 4 |
-|---|---|---|---|---|---|
-| Coupling / 25% | Clearly isolated modules | Limited direct dependencies | Coupling concentrated in shared modules | Cycles/state cross boundaries | Widespread cycles and hidden shared state |
-| Structural complexity / 20% | Simple independent flows | Local branching | Repeated nesting/duplicated rules | Interacting branches and duplicated decisions | Change paths cannot readily be isolated |
-| Verification difficulty / 25% | Core behavior independently verifiable | Some setup needed | Important verification gaps | Environment/global-state dependencies impede tests | Core outcomes very difficult to reproduce or judge |
-| Ripple/interfaces / 20% | Narrow contracts, local impact | Limited consumers | Multiple consumers need coordination | Public/serialized contracts propagate broadly | Widespread hidden contracts require coordinated changes |
-| Observed Git change risk / 10% | Sufficient history shows independent changes | Rare co-change | Repeated nonlocal co-change | Repeated fixes/reverts supported by structural evidence | Persistent cross-boundary correction chains |
+Pinned Tree-sitter grammars cover TS/TSX, JS/JSX/MJS/CJS, Python and C#. Source files form the common
+graph; class/type references project into file edges. C# namespaces, using scopes, type declarations,
+partial-type files, fields, parameters, return types, inheritance and explicit static references are
+observed conservatively. Ambiguous references are not guessed. JS/TS relative imports, `.js` to `.ts`
+source resolution, local path aliases, literal require/import and re-exports are considered. Inherited
+tsconfig aliases are disclosed as gaps. Python package and relative imports are observed.
 
-Facts and AI judgments are separate. Deterministic facts include tracked AST observations, function
-branch/nesting counts, resolvable imports, graph cycles/fan-in/fan-out, candidate duplicate bodies,
-test paths, assembly dependencies, Unity GUID references and observed co-change pairs.
-AI grades are not deterministic measurements. The index is a hypothesis about structure and testability.
+Reflection, runtime dispatch, computed imports, custom build resolution, binary assets and Unity
+lifecycle dependencies are not fully resolved. `.asmdef`/`.asmref` and text asset GUID references
+remain separate evidence; framework types or prefab counts do not inflate structural scores.
+Tracked regular files only; symlinks and files over 2 MB are skipped and disclosed. Unsupported or
+skipped source counts against coverage. Per-file parse results use a bounded in-process cache keyed
+by analyzer, path and content hash. Durable whole-snapshot caching survives restarts.
 
-## Language and Unity coverage
+Design references: [Tree-sitter queries](https://tree-sitter.github.io/tree-sitter/using-parsers/queries/1-syntax.html),
+[AST graph analysis and its limits](https://arxiv.org/abs/2308.15669),
+[class coupling](https://learn.microsoft.com/en-us/visualstudio/code-quality/code-metrics-class-coupling?view=visualstudio),
+[Git first-parent traversal](https://git-scm.com/docs/git-rev-list).
 
-Languages are detected automatically. Version-pinned Tree-sitter WASM grammars support TypeScript,
-TSX, JavaScript/JSX, Python and C#. No Python interpreter, .NET SDK or Unity Editor is needed just to parse.
-The package lock pins `web-tree-sitter@0.24.7` and `tree-sitter-wasms@0.1.13` together. Runtime downloads
-are not used. Newer unsupported syntax and parser errors are explicitly recorded.
+## History, PRs, reliability
 
-The analyzer reads tracked regular files, excluding `.git`, dependency/build/cache folders such as
-`node_modules`, Unity `Library/Temp/Logs/UserSettings/Build`, and `obj/bin/dist/coverage`.
-It does not follow symlinks. Files over 2 MB and binary assets are recorded as observation gaps.
-Unity observations include `.asmdef`/`.asmref` names and references, `.meta` GUIDs and references in
-text `.unity`, `.prefab` and `.asset` files. Reference existence is not proof of runtime coupling.
-C# reflection, compiler symbols, runtime dispatch, Unity lifecycle behavior, addressable/runtime-loaded
-assets and binary serialized data are not fully resolved. Unsupported source languages remain visible
-as coverage gaps; AI can inspect files but must not claim equivalent static coverage.
+Only actual target first-parent states enter the curve, including direct commits. Unmerged PR branches
+are excluded. Rebase commits appear as actual target commits; merge commits represent the resulting
+target state. PR delta still uses proven actual merge boundaries, not a sum of intermediate penalties.
+Ambiguous PR boundaries can fail independently of valid commit snapshots. Historical backfills never
+create bulk Jira comments; existing registered parent/direct PR reporting retains its outbox/marker.
 
-Git observations use the most recent **200 non-merge commits reachable from the evaluated SHA**, never
-future commits or the current wall-clock date. Co-change pairs for commits touching over 40 source files
-are omitted and the omission is disclosed. Large commits are not automatically penalized. Fewer than
-10 commits lowers evidence quality; fewer than 2 makes the history axis unavailable.
+Worker history scans run at most once per minute through the existing polling queue. Ordinary jobs
+take priority. SQLite persists the initial tip, known history, range, pause state and attempts. SHA +
+series + revision deduplicates observations; overlapping PR and history tasks share snapshot claims.
+Retries do not execute implementation. Explicit reanalysis keeps an auditable revision and does not
+silently replace the canonical curve. Force-pushed-away commits remain archived and are removed from
+the active curve. Losing baseline ancestry stops evaluation instead of joining unrelated histories.
 
-FCI does not automatically rerun project tests. Snapshot evidence records `not_run` and the configured
-validation command. Implementation and integration test results remain linked through the source job;
-a cached structural evaluation is not evidence of fresh tests. No missing run is recorded as a pass.
-Unity Editor/EditMode/PlayMode tests require a trusted validation command and an installed, usable Editor;
-they are not implied by successful C# parsing.
+Admin routes under `/api/v1/admin`:
 
-## Lifecycle and cache
+- `GET /fci?summary=1`: repository/series metadata without all evidence payloads.
+- `PUT /repositories/:id/fci`: enable/baseline configuration.
+- `GET /repositories/:id/fci/history?offset=0&limit=100`: paginated active history.
+- `GET /repositories/:id/fci/commits/:sha`: selected immutable observations and explanation.
+- `POST /repositories/:id/fci/control`: `{action:all|next|pause|resume|explain, sha?:...}`.
+- Existing `/fci/:id/retry`, `/reanalyze`, `/report-retry`: independent recovery.
 
-- Worker records the implementation start SHA before the AI call and spools reporting failures.
-  Successful applied implementation results enqueue a provisional before/after snapshot comparison.
-- Existing GitHub polling observes only registered GGJIRA PRs. New head or target SHAs supersede old
-  previews. A preview uses a deterministic synthetic merge with the observed target, never a real merge.
-- Actual merged before/after states are evaluated independently of the original preview. Merge commits
-  use the first parent. Squash and rebase use aggregate and per-commit stable patch IDs to establish a
-  unique boundary. An ambiguous boundary is not silently approximated. The actual result must still
-  belong to the configured target history. Closed, unmerged PRs do not enter the confirmed timeline.
-- Confirmed points are ordered by their target first-parent ancestry. A gap between consecutive
-  after/before SHAs is not interpolated: it may include untracked PRs, direct commits or missing analysis.
-  A history rewrite is not joined to the old history as though it were continuous.
-- Each snapshot is scored independently of the implementation's duration, number of retries or PR effort.
-  PR delta is the difference between whole-repository states, not a sum of local risk penalties.
-- Series identity includes repository, baseline, target branch, rubric, weights, analyzer/grammar version,
-  prompt fingerprint and model/provider identity. Changing any condition creates another series and
-  evaluates the registered baseline under those conditions. Old results remain available.
-- A repository/SHA/profile is reused. In-flight snapshot claims coalesce simultaneous Workers. A partial
-  result is preserved in attempt history but does not prevent a later complete retry. Explicit reanalysis
-  creates a linked revision and does not replace the canonical historical curve automatically.
+## Upgrade
 
-Model IDs reported by the CLI are checked against the configured ID. Configured-only identity is
-labelled as such; provider/backend version not exposed by the CLI is `unreported`, not invented.
-Silent changes behind a model alias and global CLI instructions remain reproducibility limitations.
+Router config version remains 7; Worker wire protocol is **8**, database schema **23**.
+Drain active jobs and Worker result spools, stop both processes, then run
+`npx tsx tools/migrate-fci-static.ts` for a preview and add `--apply` to migrate.
+The tool backs up SQLite/config, preserves enabled flags and baseline references, removes obsolete
+model/weight requirements, and archives old FCI prompt instructions in the config backup rather than
+applying scoring instructions to explanations. Restart Router and Worker together.
 
-## Failures, retry and operations
+Old AI results are retained as separate series; they are not comparable with static v2. See
+[the archived v1 specification](./fci-v1.md). Disabling FCI stops reservations and requests cancellation
+of an in-flight analysis through heartbeat; saved results remain available through legacy/detail APIs.
 
-FCI has a separate queue, attempts, immutable evidence, leases, snapshot cache and reporting outbox.
-Normal Jira jobs take priority. FCI does not occupy the issue's normal workflow-job slot, never creates
-approval records, and never transitions issues. Analysis failure does not fail implementation.
+## Verification limits
 
-The repository screen offers analysis retry, explicit reanalysis and report-only retry. Retrying does
-not execute implementation code. The outbox uses one Jira comment marker per analysis; a new outcome
-for a retry updates that comment. Uncertain writes look up the marker before creating a comment.
-If a gateway cannot update the existing comment, reporting fails visibly rather than duplicating it.
-Expired/late attempts remain auditable and cannot replace current results.
+Automated tests use real temporary Git repositories/remotes, SQLite, HTTP and fake providers/Jira.
+They cover static determinism, wording-only changes, duplication/removal/test additions, cache reuse,
+sequential backfill, pause/resume, automatic new commits and first-parent rejection. Existing PR-boundary
+and reporting tests cover merge/squash/rebase and independent retries. Actual AI explanations, real
+GitHub/Jira writes and Unity Editor tests must be reported separately from these local fixtures.
 
-Admin API (existing bearer token): `GET /fci`, `GET /fci/:id`,
-`PUT /repositories/:id/fci`, `POST /fci/:id/retry`, `POST /fci/:id/reanalyze`,
-`POST /fci/:id/report-retry` under `/api/v1/admin`.
-Worker FCI reserve/heartbeat/lookup/snapshot/result routes reuse Worker tokens and sessions.
-
-Before upgrading, drain ordinary jobs, old AI-review jobs and result spools, back up SQLite, stop
-Router/Worker, then run `npx tsx tools/migrate-fci-config.ts --apply` and update both processes.
-Without `--apply`, the command only validates/previews. It backs up old config including review
-instructions; those instructions are not automatically applied to FCI. Existing AI-review statuses are
-retired from configuration/provisioning; move any remaining issues appropriately before hiding the
-board column. Do not delete a shared Jira status blindly. Historical general-review records are retained.
-
-When disabled, no FCI analysis/model calls/reporting occur. Existing historical data remains readable.
-FCI cannot block PR approval, merge, integration completion or manual Done, even when enabled.
-
-## Validation limits
-
-Automatic checks use temporary Git repositories, SQLite, HTTP loopback and fake AI/Jira/GitHub.
-Fixtures include wording-only changes, duplicated shared logic, deduplication and added tests; they
-validate observations and evidence contracts, not a hardcoded expected AI score.
-Actual AI score plausibility requires a separately recorded manual assessment; exact AI grades are not
-a deterministic test oracle. C# parsing is not Unity Editor compilation. Real GitHub merges, real Jira
-writes and real Unity tests must be reported separately from local fixtures.
+Local verification on 2026-10-26: 668 regression tests passed with the four existing Windows CLI
+process-fixture files excluded. Type checking, lint and build passed. The live Router/Worker was
+upgraded with SQLite/config backups; baseline `68677de` was selected by the user and six target
+commits were evaluated through the real UI (100.0 → 104.3531746031746). Desktop/mobile layout,
+one-step/all-history controls and selected evidence were checked in Chrome. Real AI explanation
+calls, actual Jira/GitHub writes, Unity Editor tests and OS dark-mode rendering were not exercised;
+AI evidence validation and report retries use fake-provider/Jira tests.

@@ -206,6 +206,19 @@ describe("Git-pinned integration validation worker", () => {
     expect((await execute()).failureReason).toContain("stale quality target");
     expect(calls).toBe(0);
   });
+  it("validates the pinned merge even if another PR advanced the target branch", async () => {
+    context().expectedSha = targetSha;
+    writeFileSync(path.join(source, "other.txt"), "concurrent PR");
+    git(source, "add", ".");
+    git(source, "commit", "-m", "another PR");
+    git(source, "push", "origin", "main");
+    const result = await execute();
+    expect(result).toMatchObject({
+      status: "succeeded",
+      quality: { targetSha, verificationPassed: true },
+    });
+    expect(calls).toBe(0);
+  });
   it("marks failed trusted validation as not passed even when the agent says pass", async () => {
     repository.validateCommand = 'node -e "process.exit(1)"';
     expect(await execute()).toMatchObject({

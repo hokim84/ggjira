@@ -31,6 +31,7 @@ export function isRouteDispatch(result: RouteResult): result is RouteDispatch {
     result.target === "planning" ||
     result.target === "implementation" ||
     result.target === "quality_review" ||
-    result.target === "integration_check"
+    result.target === "integration_check" ||
+    result.target === "assemble_pr"
   );
 }

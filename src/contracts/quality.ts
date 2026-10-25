@@ -2,8 +2,10 @@ import { z } from "zod";
 import { PLAN_JSON_SCHEMA, PlanTaskSchema } from "../pm/plan.js";
 
 export const GitIntegrationSchema = z.object({
+  parentKey: z.string().min(1).optional(),
   baseBranch: z.string().min(1),
   mergeCommits: z.array(z.string().regex(/^[a-f0-9]{40}$/i)),
+  resultCommits: z.array(z.string().regex(/^[a-f0-9]{40}$/i)).optional(),
 });
 export const QualityContextSchema = z.object({
   cycleId: z.string().min(1),

@@ -90,45 +90,7 @@ export async function reconcileDelegatedPlans(
     }
     for (const child of tasks) if (child.statusName === w.inProgressStatus) await reconcile(child);
     if (managed !== deployment.taskIds.length) continue;
-    const settled = [
-      w.integrationPendingStatus,
-      w.implementationCompleteStatus,
-      w.implementationCompleteStatus,
-      w.doneStatus,
-    ];
-    const automatic = deps.db
-      .prepare("SELECT entry_id FROM parent_progress_entries WHERE issue_key=?")
-      .get(issue.key) as { entry_id: string } | undefined;
-    if (
-      issue.statusName === w.inProgressStatus &&
-      !getOpenJobForIssue(deps.db, issue.key) &&
-      automatic?.entry_id === (await computeApprovalId(deps.jira, issue, w.inProgressStatus)) &&
-      tasks.every((child) => settled.includes(child.statusName))
-    ) {
-      insertReportBatch(deps.db, {
-        batchId: `parent-integration:${deployment.id}:${sourceKey(tasks.map((task) => [task.key, latestImplementation(deps.db, task.key)?.id]))}`,
-        jobId: review.jobId,
-        attemptId: review.attemptId,
-        issueKey: issue.key,
-        steps: [
-          {
-            kind: "transition",
-            params: {
-              to: w.integrationPendingStatus,
-              from: [w.inProgressStatus],
-              approvalId: request.id,
-              approvalStatus: w.requestStatus,
-              approvalRule: {
-                kind: "parent-stage",
-                requestId: request.id,
-                inputHash: request.input_hash,
-              },
-            },
-          },
-        ],
-        now: deps.now(),
-      });
-    }
+    // Only successful aggregate publication may move the parent to integration pending.
   }
 }
 

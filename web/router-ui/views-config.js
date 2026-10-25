@@ -28,7 +28,11 @@ const STATUS_FIELDS = [
   ["planningInProgressStatus", "AI 계획중", "실제 계획 실행부터 질문·계획 게시까지 자동 표시"],
   ["inProgressStatus", "AI 구현", "사람이 개별 작업을 승인. 첫 자식 실행 시 부모도 이동"],
   ["integrationPendingStatus", "AI 통합 대기", "PR을 사람이 머지하면 통합 검증"],
-  ["implementationCompleteStatus", "AI 구현 완료", "통합·검증 성공 시 자동 이동"],
+  [
+    "implementationCompleteStatus",
+    "AI 구현 완료",
+    "자식: 구현·자체 테스트 완료 / 부모·단독: 병합 후 통합 검증 성공",
+  ],
   ["doneStatus", "Done", "사람이 최종 완료로 이동"],
 ];
 
@@ -469,7 +473,7 @@ export async function renderConfig(root, ctx) {
         h(
           "p",
           { class: "muted" },
-          "프로젝트 키와 요청, 계획 검토, 진행, 검토 상태를 정하면 전이를 확인합니다.",
+          "프로젝트 키와 AI 계획·AI 계획중·AI 구현·AI 통합 대기·AI 구현 완료 상태를 정하면 전이를 확인합니다.",
         ),
       );
       return;
@@ -750,13 +754,49 @@ export async function renderConfig(root, ctx) {
 }
 
 export function renderCheck(root, ctx) {
+  function checkMessage(item) {
+    const m = item.message;
+    if (/Jira authentication works/.test(m)) return "Jira 연결이 정상입니다.";
+    if (/Jira authentication failed/.test(m))
+      return "Jira 인증에 실패했습니다. 설정의 Jira 주소와 인증 정보를 확인하세요.";
+    if (/confirm by hand/.test(m))
+      return "새 하위 작업을 Jira에서 AI 구현 상태로 옮길 수 있는지 직접 확인하세요. 이 이동이 개별 구현 승인입니다.";
+    const transition = m.match(/transition "([^"]+)" → "([^"]+)".*?not verified — (.*)/);
+    if (transition)
+      return `${transition[1]} → ${transition[2]}: ${transition[3].includes("상태인 이슈가 없어") ? "표본 이슈가 없어 자동 확인하지 못했습니다. Jira 워크플로에서 전이를 확인하세요." : transition[3]}`;
+    if (/GitHub.*pull requests are readable/.test(m)) return "GitHub PR 조회 권한이 정상입니다.";
+    if (/GitHub/.test(m) && item.level === "fail")
+      return "GitHub PR을 조회할 수 없습니다. 저장소 주소와 조회 권한을 확인하세요.";
+    if (/no workers/.test(m)) return "등록된 워커가 없어 작업을 시작할 수 없습니다.";
+    const status = m.match(/(?:Status|status) "([^"]+)" exists/);
+    if (status) return `${status[1]} 상태를 확인했습니다.`;
+    if (item.level === "fail")
+      return "설정과 실제 프로젝트·상태·권한이 일치하는지 확인이 필요합니다.";
+    if (item.level === "warn")
+      return "자동으로 확인하지 못한 연동 조건이 있습니다. 세부 근거를 확인하세요.";
+    return "연동 조건을 확인했습니다.";
+  }
+  function checkRows(items) {
+    return h(
+      "ul",
+      { class: "check-list" },
+      items.map((item) =>
+        h(
+          "li",
+          { class: `check-${item.level}` },
+          h("strong", {}, checkMessage(item)),
+          h("details", {}, h("summary", {}, "세부 근거"), h("code", {}, item.message)),
+        ),
+      ),
+    );
+  }
   const issueInput = h("input", {
     type: "text",
     placeholder: "예: PROJ-123 (선택)",
     autocomplete: "off",
   });
   const results = h("div");
-  const button = h("button", { type: "submit", class: "btn btn-primary" }, "점검 실행");
+  const button = h("button", { type: "submit", class: "btn btn-primary" }, "연동 진단 실행");
   const form = h(
     "form",
     { class: "inline-form" },
@@ -770,27 +810,32 @@ export function renderCheck(root, ctx) {
     try {
       const issueKey = issueInput.value.trim();
       const { items } = await admin("POST", "/check", issueKey ? { issueKey } : {});
+      const failures = items.filter((item) => item.level === "fail");
+      const warnings = items.filter((item) => item.level === "warn");
+      const passed = items.filter((item) => item.level === "ok");
       fill(
         results,
-        h(
-          "ul",
-          { class: "check-list" },
-          items.map((item) =>
-            h(
-              "li",
-              { class: `check-${item.level}` },
-              h(
-                "span",
-                {
-                  class: `badge badge-${item.level === "ok" ? "ok" : item.level === "warn" ? "warn" : "bad"}`,
-                },
-                item.level.toUpperCase(),
-              ),
-              " ",
-              item.message,
-            ),
-          ),
+        notice(
+          failures.length ? "error" : warnings.length ? "warn" : "ok",
+          `문제 ${failures.length}개 · 직접 확인 ${warnings.length}개 · 정상 ${passed.length}개`,
         ),
+        failures.length
+          ? h("section", {}, h("h2", {}, "수정이 필요한 연결·설정"), checkRows(failures))
+          : null,
+        warnings.length
+          ? h(
+              "section",
+              {},
+              h("h2", {}, "직접 확인할 항목"),
+              h(
+                "p",
+                { class: "muted" },
+                "표본 이슈가 없는 항목은 연결 오류를 뜻하지 않습니다. 진단을 위해 실제 작업 상태를 바꿀 필요 없이 Jira 워크플로 화면에서 전이를 확인할 수 있습니다.",
+              ),
+              checkRows(warnings),
+            )
+          : null,
+        h("details", {}, h("summary", {}, `정상 항목 ${passed.length}개`), checkRows(passed)),
       );
     } catch (error) {
       if (error.status === 401) return ctx.logout();
@@ -801,11 +846,11 @@ export function renderCheck(root, ctx) {
   });
   fill(
     root,
-    h("h1", {}, "Jira 연결 점검"),
+    h("h1", {}, "연동 진단"),
     h(
       "p",
       { class: "muted" },
-      "저장된 설정 파일 기준으로 Jira 인증, 프로젝트, 상태와 전이를 읽기 전용으로 확인합니다.",
+      "처음 연결했을 때, 설정을 바꿨을 때, 작업이 시작되지 않거나 병합을 인식하지 못할 때 사용하세요. 저장된 설정과 실제 Jira 상태·전이, 하위 작업 유형, GitHub PR 조회 권한을 읽기 전용으로 확인합니다. 코드를 실행하는 통합 검증과는 별개이며 문제를 자동 수정하지 않습니다.",
     ),
     form,
     results,

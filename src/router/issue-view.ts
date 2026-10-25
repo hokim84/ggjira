@@ -27,6 +27,12 @@ export class IssueViewError extends Error {
 }
 
 export interface IssueView {
+  latestResult?: {
+    summary: string;
+    kind: string;
+    at: string;
+    pullRequest: { url: string; number: number } | null;
+  } | null;
   fci?: ReturnType<import("./fci-service.js").FciService["forJob"]>;
   issueKey: string;
   /** The issue in Jira's own UI, for people to open next to Router's view. */

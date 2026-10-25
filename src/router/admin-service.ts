@@ -770,6 +770,7 @@ export class AdminService {
 
   /** Current review targets and where each stands; by default only those still waiting. */
   reviewQueue(filter: {
+    issueKey?: string;
     reviewClass?: string;
     states?: string[];
     assignee?: string;
@@ -791,6 +792,7 @@ export class AdminService {
     const browse = `${this.config.jira.baseUrl.replace(/\/+$/, "")}/browse/`;
     return {
       items: listReviewQueue(this.db, {
+        ...(filter.issueKey ? { issueKey: filter.issueKey.toUpperCase() } : {}),
         ...(filter.reviewClass
           ? { reviewClass: filter.reviewClass as "immediate" | "standard" }
           : {}),
@@ -838,7 +840,22 @@ export class AdminService {
       const tasks = this.db
         .prepare("SELECT id FROM fci_tasks WHERE issue_key=? ORDER BY created_at DESC")
         .all(view.issueKey) as { id: string }[];
-      return { ...view, fci: tasks.map((t) => this.fci().detail(t.id)) };
+      const last = this.db
+        .prepare(
+          "SELECT r.payload,r.received_at,j.kind FROM results r JOIN jobs j ON j.id=r.job_id WHERE r.applied=1 AND j.id=(SELECT id FROM jobs WHERE issue_key=? ORDER BY created_at DESC,rowid DESC LIMIT 1) ORDER BY r.received_at DESC,r.rowid DESC LIMIT 1",
+        )
+        .get(view.issueKey) as { payload: string; received_at: string; kind: string } | undefined;
+      const result = last ? JSON.parse(last.payload) : null;
+      const latestResult = last
+        ? {
+            summary:
+              typeof result.summary === "string" ? result.summary : "요약이 보고되지 않았습니다.",
+            kind: last.kind,
+            at: last.received_at,
+            pullRequest: result.pullRequest ?? null,
+          }
+        : null;
+      return { ...view, latestResult, fci: tasks.map((t) => this.fci().detail(t.id)) };
     } catch (error) {
       throw toAdminError(error);
     }
@@ -959,6 +976,56 @@ export class AdminService {
    * reported and a count of what was not. `includeChildren` adds the issues whose original
    * requirement `issueKey` is (plan tasks, subtasks). Read-only; JSON is the export format.
    */
+  /** Local execution overview; no Jira lookup per dashboard row. */
+  tasks(offset = 0, limit = 30) {
+    const recent =
+      "FROM jobs j WHERE NOT EXISTS (SELECT 1 FROM jobs newer WHERE newer.issue_key=j.issue_key AND (newer.created_at>j.created_at OR (newer.created_at=j.created_at AND newer.rowid>j.rowid)))";
+    const rows = this.db
+      .prepare(`SELECT j.*, COALESCE((SELECT json_extract(i.snapshot,'$.issue.summary') FROM job_inputs i WHERE i.job_id=j.id),(SELECT json_extract(a.input_snapshot,'$.issue.summary') FROM approvals a WHERE a.issue_key=j.issue_key)) AS title,
+      (SELECT json_extract(i.snapshot,'$.planTask.parentKey') FROM job_inputs i WHERE i.job_id=j.id) AS parent_key,
+      (SELECT json_extract(r.payload,'$.summary') FROM results r WHERE r.job_id=j.id AND r.applied=1 ORDER BY r.received_at DESC,r.rowid DESC LIMIT 1) AS summary,
+      (SELECT json_extract(r.payload,'$.status') FROM results r WHERE r.job_id=j.id AND r.applied=1 ORDER BY r.received_at DESC,r.rowid DESC LIMIT 1) AS result_status
+      ${recent} ORDER BY CASE WHEN j.state IN ('succeeded','cancelled') THEN 1 ELSE 0 END,j.updated_at DESC,j.rowid DESC LIMIT ? OFFSET ?`)
+      .all(
+        Math.max(1, Math.min(100, Math.trunc(limit) || 30)),
+        Math.max(0, Math.trunc(offset) || 0),
+      ) as Array<{
+      issue_key: string;
+      title: string | null;
+      kind: string;
+      state: string;
+      updated_at: string;
+      summary: string | null;
+      parent_key: string | null;
+      result_status: string | null;
+      id: string;
+    }>;
+    const browse = `${this.config.jira.baseUrl.replace(/\/$/, "")}/browse/`;
+    return {
+      total: (this.db.prepare(`SELECT COUNT(*) n ${recent}`).get() as { n: number }).n,
+      items: rows.map((row) => ({
+        issueKey: row.issue_key,
+        title: row.title,
+        kind: row.kind,
+        state: row.state,
+        updatedAt: row.updated_at,
+        summary: row.summary,
+        parentKey: row.parent_key,
+        resultStatus: row.result_status,
+        issueUrl: `${browse}${encodeURIComponent(row.issue_key)}`,
+        pullRequest:
+          this.db
+            .prepare(
+              "SELECT url,state,number FROM pull_requests WHERE job_id=? ORDER BY updated_at DESC LIMIT 1",
+            )
+            .get(row.id) ?? null,
+        attention: listAttentionItems(this.db, { issueKey: row.issue_key, status: "open" }).map(
+          (a) => ({ kind: a.kind, reason: a.reason }),
+        ),
+      })),
+    };
+  }
+
   executions(filter: { issueKey?: string; includeChildren?: boolean }): {
     records: ExecutionRecordRow[];
     totals: ExecutionTotals;

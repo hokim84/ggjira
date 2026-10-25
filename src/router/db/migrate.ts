@@ -285,6 +285,45 @@ const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 22,
+    description: "Parent aggregate PR cycles and post-merge evaluation",
+    rebuildJobs: true,
+    up(db) {
+      const table = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'")
+        .get() as { sql: string };
+      const indexes = db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='jobs' AND sql IS NOT NULL",
+        )
+        .all() as { sql: string }[];
+      db.exec(
+        table.sql
+          .replace(/CREATE TABLE(?: IF NOT EXISTS)? [\"`]?jobs[\"`]?/i, "CREATE TABLE jobs_new")
+          .replace("'integration_check')", "'integration_check', 'assemble_pr')"),
+      );
+      db.exec(
+        "INSERT INTO jobs_new SELECT * FROM jobs; DROP TABLE jobs; ALTER TABLE jobs_new RENAME TO jobs;",
+      );
+      for (const index of indexes) db.exec(index.sql);
+      db.exec(`CREATE TABLE assembly_runs (job_id TEXT PRIMARY KEY REFERENCES jobs(id), parent_key TEXT NOT NULL, cycle_id TEXT NOT NULL, context TEXT NOT NULL);
+        UPDATE fci_tasks SET superseded=1 WHERE purpose IN ('task_result','pr_preview');
+        UPDATE report_steps SET status='skipped',last_error='retired child-PR parent transition' WHERE batch_id LIKE 'parent-integration:%' AND status<>'applied';
+        DELETE FROM fci_snapshot_claims WHERE task_id IN (SELECT id FROM fci_tasks WHERE superseded=1);`);
+      if ((db.pragma("foreign_key_check") as unknown[]).length)
+        throw new Error("assembly migration foreign key check failed");
+    },
+  },
+  {
+    version: 23,
+    description: "Static FCI target history and resumable backfill",
+    up(db) {
+      db.exec(`CREATE TABLE IF NOT EXISTS fci_history_state (series_id TEXT PRIMARY KEY REFERENCES fci_series(id), tip TEXT, initial_tip TEXT, scanned_at TEXT, mode TEXT NOT NULL DEFAULT 'paused', through_order INTEGER, error TEXT);
+      CREATE TABLE IF NOT EXISTS fci_history_commits (series_id TEXT NOT NULL REFERENCES fci_series(id), sha TEXT NOT NULL, parent_sha TEXT, ordinal INTEGER NOT NULL, title TEXT NOT NULL, committed_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, automatic INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(series_id,sha));
+      CREATE INDEX IF NOT EXISTS fci_history_order ON fci_history_commits(series_id,active,ordinal);`);
+    },
+  },
 ];
 
 interface MigrationRow {

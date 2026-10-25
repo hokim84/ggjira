@@ -109,17 +109,21 @@ export async function runFciTask(
   try {
     const outcome =
       repository &&
-      providerConfig &&
-      providerConfig.model === task.model &&
-      providerConfig.type === task.providerType
+      ((task.staticAnalysis && task.purpose !== "explain") ||
+        (providerConfig &&
+          (task.staticAnalysis ||
+            (providerConfig.model === task.model && providerConfig.type === task.providerType))))
         ? await executeFci(task, {
             repository,
-            provider: deps.createProvider(providerConfig),
+            ...(providerConfig && (!task.staticAnalysis || task.purpose === "explain")
+              ? { provider: deps.createProvider(providerConfig) }
+              : {}),
             worktreesRoot: deps.worktreesRoot,
             signal: abort.signal,
             lookup: async (sha) => {
               while (!abort.signal.aborted) {
                 try {
+                  if (task.purpose === "explain") return null;
                   return (
                     await deps.client.fciLookup(task.id, {
                       sessionId: deps.sessionId,

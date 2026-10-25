@@ -78,18 +78,16 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 7. Jev 관찰 평가(ADR 0030): `TYPESAFE_API_KEY`가 있으면 `assess` 루프가 새 job마다 모델 등급과
    준비 상태를 Jev에 묻고 `job_assessments`에 기록한다. 아직 어떤 결정에도 쓰지 않는다.
 
-### 자식 승인과 부모 완료 평가 (ADR 0051)
+### 자식 승인과 부모 통합 PR (ADR 0056)
 
-Migration 17 이후 새 요청은 생명주기 v2다. 유효한 계획은 최소 1개의 대기 자식을 게시하고,
-부모는 requestStatus에 유지한다. 자식의 수동 inProgressStatus 진입만 해당 계약을 승인한다.
-부모 직접 구현과 자동 자식 시작은 v2에서 사용하지 않는다. 모든 필수 자식의 완료와 최신 검토 head에
-일치하는 PR 병합 커밋을 확인하면 quality_review 작업을 생성한다. Worker는 fetch한 불변 커밋에서
-신뢰된 검증과 읽기 전용 분석을 수행한다. 후보의 Jira 번호 판단·필수 개선·최신성 재검증이 끝나야
-부모를 reviewStatus로 옮긴다. 부모 최종 완료는 사람의 판단이다.
-
-quality_cycles는 평가 대상·정책·실행 결과를, quality_decisions는 담당자·소스 댓글·사유를,
-plan_extensions는 개선 계약과 채택 근거를 보존한다. 수정은 별도 자식에서만 실행한다.
-진행 요약은 부모 관리 영역과 read-only UI에 표시한다. 자세한 정책은 방향 문서와 ADR 0051을 따른다.
+자식은 각각 수동 승인하고 격리된 worktree에서 구현·자체 검증한 뒤 결과 커밋을 원격에 보존한다.
+자식별 PR은 생성하지 않으며, 선행 의존 작업의 완료 커밋을 합친 불변 SHA에서 후행 구현을 시작한다.
+모든 현재 자식의 최신 승인·검증 결과가 준비되면 일반 Worker 큐에 `assemble_pr`를 예약한다.
+이 작업은 AI 호출이나 통합 검증 없이 의존 순서로 커밋을 모아 부모 PR 하나를 게시한다.
+`assembly_runs`와 `job_inputs`에 계획·결과 ID·커밋 목록을 고정한다. 충돌은 보고 후 승인된 수정 작업으로 해결한다.
+자식은 구현 완료, 부모는 PR 게시 후 통합 대기다. 실제 병합 SHA에서 신뢰된 통합 검증이 통과해야
+부모를 구현 완료로 옮긴다. 선택적 FCI는 병합 후 독립적으로 실행하며 Done은 수동이다.
+Router/Worker protocol 8과 migration 23를 함께 적용한다. 구 정책 설명은 ADR 0056으로 대체한다.
 
 ### 기존 v1 위임과 계획 승인 (ADR 0044, `src/router/delegation.ts`)
 
@@ -207,7 +205,8 @@ result 저장 ─▶ [<resultId>]         구현 성공: 댓글 → 실패 라�
 `<dataDir>/repos/<id>`에 clone하고 바로 실행한다. Router는 URL만 주고, 로컬 경로와 검증 명령은 워커가 정한다. 성공한 작업 브랜치는 워커 설정의 `pushRemote`(기본 `origin`)에 push하고,
 push 직전에 `authorize`(stage `push`)로 권한을 다시 확인한다(ADR 0026). GitHub 원격이고 `createPullRequest`면 워커가
 `gh`로 PR을 열어 결과에 담는다. Router는 이를 `pull_requests`에 기록하고, `/webhooks/github`(HMAC 검증) 또는
-5분 폴링으로 머지를 알게 되면 이슈를 검토 상태에서 `doneStatus`로 옮긴다(ADR 0027, `src/router/github.ts`).
+5분 폴링으로 병합을 알게 되면 고정된 병합 SHA의 통합 검증을 예약한다. 자식 변경은 모두 완료된 뒤
+`assemble_pr`에서 부모 PR 하나로 게시한다. `doneStatus`로 자동 이동하지 않는다(ADR 0056).
 폴링이 실패한 PR은 `pull_request_unchecked` 주의 항목이 되고(PR마다 하나, 다음 성공이나 PR 종료 때 해소),
 `router check`는 config의 GitHub `cloneUrl`과 이미 기록된 PR의 저장소마다 PR 목록을 읽을 수 있는지 확인한다.
 워커가 쓰는 PR 본문은 Router 설정을 모르므로 "머지하면 완료"라고 단정하지 않는다.
@@ -276,7 +275,7 @@ PM 입력에는 답과 함께 최신 질문·선택지를 전달한다. 이전 I
 
 ## 기능별 AI 프롬프트
 
-관리자 API `GET /api/v1/admin/prompts`와 `설정 → 프롬프트`는 플랜·구현·FCI 분석의 기본 지침, 추가 지침, 합성 입력 예시, 출력 스키마를 제공한다. `PUT /api/v1/admin/prompts/:role`은 역할별 추가 지침만 Router 설정에 저장하고 실시간 반영한다. 실행과 화면은 같은 builder를 사용하며, 최초 전달한 시스템 지침은 `attempt_prompts`에 고정하여 재전송이나 재시작 후에도 유지한다. 통합 검증은 AI를 호출하지 않는다(ADR 0054, 기존 읽기 전용 정책 ADR 0045 대체).
+관리자 API `GET /api/v1/admin/prompts`와 `설정 → 프롬프트`는 플랜·구현·FCI 변경 설명의 기본 지침, 추가 지침, 합성 입력 예시, 출력 스키마를 제공한다. `PUT /api/v1/admin/prompts/:role`은 역할별 추가 지침만 Router 설정에 저장하고 실시간 반영한다. 실행과 화면은 같은 builder를 사용하며, 최초 전달한 시스템 지침은 `attempt_prompts`에 고정하여 재전송이나 재시작 후에도 유지한다. 통합 검증은 AI를 호출하지 않는다(ADR 0054, 기존 읽기 전용 정책 ADR 0045 대체).
 
 ## 상태 기반 위임만 지원 (ADR 0046, 0047)
 
@@ -289,4 +288,4 @@ migration 15가 열려 있던 보류와 그 주의 항목을 닫는다. 일반 �
 
 ## FCI 분석과 시계열
 
-FCI는 일반 Jira job과 분리된 큐·attempt·커밋 캐시·보고 outbox를 사용한다. Worker만 저장소와 AI를 읽고 Router만 Jira에 보고한다. 기존 AI 리뷰 상태와 일반 리뷰 dispatch는 제거했으며, 승인·통합 검증·Done 정책은 유지한다. 자세한 데이터·계산·언어 범위·실패 정책은 [FCI 문서](./fci.md)와 [ADR 0055](./decisions/0055-fci-and-pr-history.md)를 따른다. 이전 절의 과거 리뷰 생명주기 설명보다 ADR 0055가 우선한다.
+FCI는 일반 Jira job과 분리된 큐·attempt·커밋 캐시·보고 outbox를 사용한다. Worker가 정적 구조를 계산하고 Router가 이력과 보고를 관리한다. 시작 커밋부터 대상 브랜치 first-parent 이력을 수동 보충하고 새 커밋은 자동 평가한다. AI는 사용자가 선택한 커밋의 설명만 담당한다. 정적 점수·단일 그래프·범위 실행은 ADR 0057을 따른다. 자세한 데이터·계산·언어 범위·실패 정책은 [FCI 문서](./fci.md)와 [ADR 0056](./decisions/0056-parent-aggregate-pr.md)을 따른다. 과거 리뷰 생명주기 설명보다 ADR 0056이 우선한다.

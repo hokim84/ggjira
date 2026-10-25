@@ -26,7 +26,7 @@ import type { NewReportStep } from "./db/report-steps.js";
 import { type FailureMatch, failureMessage, matchFailure } from "./failure-codes.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import type { ReviewAssessment } from "./review-gate.js";
-import { verifiedNoChange } from "./workflow-checks.js";
+import { verifiedNoChange, verifiedImplementation } from "./workflow-checks.js";
 import { approvalStatusFor, decisionTransitionTarget, reRequestHint } from "./workflow-mode.js";
 
 /**
@@ -551,9 +551,11 @@ function reviewLines(input: ResultJournalInput): string[] {
   }
   const done = workspace.workflow.implementationCompleteStatus;
   lines.push(
-    result.pullRequest
-      ? text.nextWithPullRequest(result.pullRequest.url, done)
-      : text.nextWithoutPullRequest(done),
+    input.snapshot?.planTask || input.snapshot?.integration?.parentKey
+      ? "자식 결과는 원격 커밋으로 보존합니다. 모든 자식 완료 후 부모 PR 하나를 만들며, 병합 후 평가는 부모에서 진행합니다."
+      : result.pullRequest
+        ? text.nextWithPullRequest(result.pullRequest.url, done)
+        : text.nextWithoutPullRequest(done),
   );
   const { commit, risk } = review;
   if (commit.state === "committed") {
@@ -832,6 +834,23 @@ function resultSteps(input: ResultJournalInput): NewReportStep[] {
     );
   }
 
+  if (job.kind === "assemble_pr") {
+    return toNewSteps([
+      {
+        kind: "comment",
+        params: {
+          body: [
+            result.summary,
+            result.pullRequest?.url ?? "추가 변경이 없어 PR을 만들지 않았습니다.",
+            "사람의 병합 후 부모 통합 검증을 진행합니다. FCI는 활성화된 경우 병합 후 별도로 분석합니다.",
+          ].join("\n"),
+        },
+      },
+      { kind: "remove-label", params: { label: input.config.reporting.failureLabel } },
+      finishTransition(input, workspace.workflow.integrationPendingStatus),
+    ]);
+  }
+
   if (result.status === "needs_decision" && job.kind === "implementation") {
     // ADR 0036: the implement agent asked for a decision or left the contract, and the worker
     // stopped before commit/push. Not a failure, and not a planning decision.
@@ -919,23 +938,35 @@ function resultSteps(input: ResultJournalInput): NewReportStep[] {
   return toNewSteps([
     { kind: "comment", params: { body: successComment(input) } },
     { kind: "remove-label", params: { label: input.config.reporting.failureLabel } },
-    ...(input.result.pullRequest || verifiedNoChange(input.result)
+    ...((input.snapshot?.planTask || input.snapshot?.integration?.parentKey) &&
+    verifiedImplementation(input.result) &&
+    input.result.artifacts?.some((a) => a.startsWith("pushed:"))
       ? [
-          finishTransition(
-            input,
-            input.result.pullRequest
-              ? workspace.workflow.integrationPendingStatus
-              : workspace.workflow.implementationCompleteStatus,
-          ),
-        ]
-      : [
-          { kind: "add-label" as const, params: { label: input.config.reporting.failureLabel } },
+          finishTransition(input, workspace.workflow.implementationCompleteStatus),
           {
             kind: "comment" as const,
             params: {
-              body: "완료 보류: 변경된 코드의 PR 또는 변경이 필요 없는 작업의 검증 근거가 없습니다. 결과를 확인하고 다시 AI 구현으로 옮기세요.",
+              body: "자식 구현과 자체 테스트가 완료되어 결과 커밋을 보존했습니다. 나머지 자식이 완료되면 부모 통합 PR을 생성합니다. 병합 후 평가는 부모에서 수행합니다.",
             },
           },
-        ]),
+        ]
+      : input.result.pullRequest || verifiedNoChange(input.result)
+        ? [
+            finishTransition(
+              input,
+              input.result.pullRequest
+                ? workspace.workflow.integrationPendingStatus
+                : workspace.workflow.implementationCompleteStatus,
+            ),
+          ]
+        : [
+            { kind: "add-label" as const, params: { label: input.config.reporting.failureLabel } },
+            {
+              kind: "comment" as const,
+              params: {
+                body: "완료 보류: 변경된 코드의 PR 또는 변경이 필요 없는 작업의 검증 근거가 없습니다. 결과를 확인하고 다시 AI 구현으로 옮기세요.",
+              },
+            },
+          ]),
   ]);
 }

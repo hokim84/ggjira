@@ -5,6 +5,8 @@ import path from "node:path";
 import {
   FCI_AXES,
   FCI_OUTPUT_SCHEMA,
+  FCI_EXPLANATION_OUTPUT_SCHEMA,
+  FciExplanationSchema,
   FciAssessmentSchema,
   type FciOutcome,
   type FciSnapshot,
@@ -13,6 +15,7 @@ import {
 } from "../contracts/fci.js";
 import { collectFciFacts, fciGit } from "../worker/fci-facts.js";
 import type { WorkerProvider } from "../worker/provider.js";
+import { scoreStructure } from "../worker/fci-static.js";
 import { createWorktree, removeWorktree } from "../worker/worktree.js";
 import type { WorkerRepositoryConfig } from "./config.js";
 class UnassessableFci extends Error {}
@@ -92,16 +95,17 @@ function validEvidence(
   }
 }
 export async function executeFci(
-  task: FciTask,
+  inputTask: FciTask,
   deps: {
     repository: WorkerRepositoryConfig;
-    provider: WorkerProvider;
+    provider?: WorkerProvider;
     worktreesRoot: string;
     signal: AbortSignal;
     lookup: (sha: string) => Promise<FciSnapshot | null>;
     publish?: (snapshot: FciSnapshot) => Promise<unknown>;
   },
 ): Promise<FciOutcome> {
+  let task = inputTask;
   const { repository, signal } = deps;
   const remote = repository.pushRemote ?? "origin";
   try {
@@ -117,6 +121,59 @@ export async function executeFci(
       signal,
     );
     const tip = await fciGit(repository.path, ["rev-parse", "FETCH_HEAD"], signal);
+    if (task.staticAnalysis) {
+      const resolved = await fciGit(
+        repository.path,
+        ["rev-parse", "--verify", `${task.baselineSha}^{commit}`],
+        signal,
+      );
+      task = {
+        ...task,
+        baselineSha: resolved,
+        beforeSha: task.beforeSha === task.baselineSha ? resolved : task.beforeSha,
+        afterSha: task.afterSha === task.baselineSha ? resolved : task.afterSha,
+      };
+      const history = (
+        await fciGit(repository.path, ["rev-list", "--first-parent", tip], signal)
+      ).split(/\r?\n/);
+      if (!history.includes(task.baselineSha))
+        throw new UnassessableFci(
+          "시작 커밋이 대상 브랜치의 first-parent 이력에 없습니다. 기준을 다시 선택해 주세요.",
+        );
+      if (task.purpose === "history_scan") {
+        const commits = [];
+        const fields = (
+          await fciGit(
+            repository.path,
+            [
+              "log",
+              "--first-parent",
+              "--reverse",
+              `--max-count=${history.indexOf(task.baselineSha) + 1}`,
+              "-z",
+              "--format=%H%x00%P%x00%cI%x00%s",
+              tip,
+            ],
+            signal,
+          )
+        ).split("\0");
+        for (let i = 0; i + 3 < fields.length; i += 4) {
+          commits.push({
+            sha: fields[i],
+            parent: fields[i + 1]?.split(" ")[0] || null,
+            date: fields[i + 2],
+            title: fields[i + 3] ?? "",
+          });
+        }
+        return {
+          status: "succeeded",
+          snapshots: [],
+          change: { tip, commits, baselineSha: task.baselineSha },
+        };
+      }
+      if (task.purpose === "commit" && !history.includes(task.afterSha))
+        throw new UnassessableFci("커밋이 현재 대상 브랜치 이력에서 제외되었습니다.");
+    }
     for (const sha of new Set(
       [task.beforeSha, task.afterSha, task.baselineSha, task.mergeSha, ...task.prCommits].filter(
         Boolean,
@@ -192,6 +249,93 @@ export async function executeFci(
       );
       try {
         const facts = await collectFciFacts(wt.path, sha, signal);
+        if (task.staticAnalysis && task.purpose !== "explain") {
+          const structural = scoreStructure(facts);
+          const snapshot: FciSnapshot = {
+            sha,
+            model: "static",
+            modelSource: "configured",
+            providerVersion: "not-applicable",
+            analyzedAt: new Date().toISOString(),
+            assessment: {
+              structural,
+              summary:
+                structural.raw === null
+                  ? "구조 평가 불가"
+                  : "의존성·복잡도·중복·변경 파급의 정적 평가",
+              axes: Object.fromEntries(
+                FCI_AXES.map((axis) => [
+                  axis,
+                  {
+                    grade: null,
+                    confidence: "low",
+                    explanation: "기존 AI 채점 항목은 정적 점수에 사용하지 않습니다.",
+                    evidence: [],
+                    uncertainties: [],
+                  },
+                ]),
+              ) as unknown as FciSnapshot["assessment"]["axes"],
+              priorities: [],
+              unverified: structural.reasons,
+            },
+            facts: facts as unknown as Record<string, unknown>,
+            tests: [
+              {
+                command: repository.validateCommand ?? "not configured",
+                status: "not_run",
+                evidence: "정적 분석은 테스트를 실행하지 않습니다.",
+              },
+            ],
+          };
+          await deps.publish?.(snapshot);
+          snapshots.push(snapshot);
+          continue;
+        }
+        if (!deps.provider) throw new Error("AI 설명에 사용할 Worker provider가 없습니다.");
+        if (task.purpose === "explain") {
+          const result = await deps.provider.run(
+            {
+              cwd: wt.path,
+              readOnly: true,
+              systemPrompt: task.systemPrompt,
+              timeoutMs: task.timeoutMs,
+              outputSchema: FCI_EXPLANATION_OUTPUT_SCHEMA,
+              prompt: JSON.stringify({
+                snapshot: task.explanationSnapshot,
+                previous: task.explanationPrevious,
+                facts,
+              }),
+            },
+            { signal },
+          );
+          if (result.exitReason !== "completed" || result.isError) throw new Error(result.summary);
+          if (
+            (await fciGit(wt.path, ["status", "--porcelain", "--untracked-files=all"], signal)) ||
+            (await fciGit(wt.path, ["rev-parse", "HEAD"], signal)) !== sha
+          )
+            throw new Error("AI explanation modified its worktree");
+          const explanation = FciExplanationSchema.parse(
+            result.structuredOutput ?? JSON.parse(result.summary),
+          );
+          if (explanation.evidence.some((e) => !validEvidence(wt.path, e)))
+            throw new Error("AI explanation contains invalid file/line evidence");
+          return {
+            status: "succeeded",
+            snapshots: [],
+            change: {
+              explanation: [
+                explanation.summary,
+                ...explanation.evidence.map((e) => `${e.path}:${e.line} — ${e.explanation}`),
+                ...explanation.priorities.map((p) => `개선: ${p}`),
+                ...explanation.uncertainties.map((u) => `불확실성: ${u}`),
+              ].join("\n"),
+              assessment: explanation,
+              model: result.model ?? "unreported",
+              promptHash: createHash("sha256").update(task.systemPrompt).digest("hex"),
+              sha,
+            },
+          };
+        }
         const result = await deps.provider.run(
           {
             cwd: wt.path,

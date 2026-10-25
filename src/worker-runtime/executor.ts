@@ -12,7 +12,11 @@ import {
 } from "../contracts/implementation.js";
 import type { WorkerProviderConfig } from "../contracts/provider.js";
 import { matchesAnyGlob } from "../issue/paths.js";
-import { type CreatePullRequest, createPullRequest } from "../worker/github.js";
+import {
+  type CreatePullRequest,
+  type RetirePullRequest,
+  createPullRequest,
+} from "../worker/github.js";
 import { buildImplementPrompt } from "../worker/prompt.js";
 import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provider.js";
 import { runValidateCommand } from "../worker/validate.js";
@@ -37,6 +41,8 @@ import type { WorkerConfig } from "./config.js";
 import { executePlanningEnvelope } from "./planning.js";
 import type { ExecutionStage } from "./progress.js";
 import { executeQualityEnvelope } from "./quality.js";
+import { executeAssembly } from "./assembly.js";
+import { mergeResultCommits } from "../worker/worktree.js";
 
 /** A result minus the identifiers the runner stamps on (`resultId`, `jobId`, ...). */
 export type ExecutionOutcome = Omit<
@@ -57,6 +63,7 @@ export interface ExecutorDeps {
   authorize: (stage: "commit" | "validate" | "push") => Promise<boolean>;
   /** Opens the pull request after a push; tests pass a fake. */
   createPullRequest?: CreatePullRequest;
+  retirePullRequest?: RetirePullRequest;
   /** Plan usage the provider reported while running this job (ADR 0028). */
   onUsage?: (provider: WorkerProviderConfig, usage: UsageReading) => void;
 }
@@ -154,6 +161,7 @@ export async function executeEnvelope(
     };
   }
   const providerConfig = deps.config.providers.find((entry) => entry.id === envelope.providerId);
+  if (envelope.kind === "assemble_pr") return executeAssembly(envelope, deps, repository);
   if (!providerConfig) {
     return {
       status: "failed",
@@ -205,7 +213,11 @@ async function executeWithProvider(
     });
 
   const issue = envelope.issueSnapshot;
+  if (envelope.deferPullRequest && !repository.pushRemote)
+    return { status: "failed", summary: "자식 구현 결과를 보존할 pushRemote 설정이 필요합니다." };
   const gitMode = await isGitRepository(repository.path);
+  if (envelope.deferPullRequest && !gitMode)
+    return { status: "failed", summary: "부모 통합 PR 흐름에는 Git 저장소가 필요합니다." };
   if (envelope.integration && envelope.integration.baseBranch !== repository.baseBranch)
     return {
       status: "failed",
@@ -230,6 +242,14 @@ async function executeWithProvider(
         envelope.integration?.mergeCommits ?? [],
       );
       cwd = (await createWorktree(repository.path, executionBase, branch, deps.worktreesRoot)).path;
+      if (envelope.integration?.resultCommits?.length) {
+        await mergeResultCommits(
+          cwd,
+          repository.pushRemote ?? "origin",
+          envelope.integration.resultCommits,
+        );
+        executionBase = await revParse(cwd, "HEAD");
+      }
     } catch (error) {
       return {
         status: "failed",
@@ -356,6 +376,16 @@ async function executeWithProvider(
     };
   }
   const failedChecks = report.verification.filter((entry) => entry.status === "fail");
+  if (envelope.deferPullRequest && report.verification.some((entry) => entry.status !== "pass")) {
+    return {
+      status: "failed",
+      summary: report.summary,
+      failureReason: "자식 완료 전에 모든 자체 검증 항목의 통과 근거가 필요합니다.",
+      ...reported,
+      localEvidence: await keepEvidence(),
+      ...withBranch,
+    };
+  }
   if (failedChecks.length > 0) {
     return {
       status: "failed",
@@ -379,6 +409,7 @@ async function executeWithProvider(
   // Read after commit, whether or not this run committed: an agent that committed on its own
   // still left a head; a run with no commit leaves HEAD at the base and reports no head.
   const head = branch ? await revParse(cwd, "HEAD").catch(() => undefined) : undefined;
+  if (branch && head && head !== baseSha) changes = await changedFilesSince(cwd, executionBase);
   const committed = { ...withBranch, ...git(head && head !== baseSha ? head : undefined) };
 
   const validation: string[] = [];
@@ -420,6 +451,29 @@ async function executeWithProvider(
       });
     }
     deps.onProgress?.("pushing");
+    if (envelope.deferPullRequest) {
+      try {
+        await pushBranch(cwd, repository.pushRemote, branch);
+      } catch (error) {
+        return {
+          status: "failed",
+          summary: "자식 결과 커밋을 원격에 보존하지 못했습니다.",
+          failureReason: errorMessage(error),
+          ...committed,
+          changes,
+          validation,
+        };
+      }
+      return {
+        status: "succeeded",
+        summary: report.summary,
+        changes,
+        validation,
+        ...reported,
+        ...committed,
+        artifacts: [...artifacts, `pushed: ${repository.pushRemote}/${branch}`],
+      };
+    }
     const pushed = await pushJobBranch(repository, cwd, branch, {
       issueKey: issue.key,
       issueSummary: issue.summary,
@@ -592,7 +646,7 @@ async function pushJobBranch(
         job.summary,
         ...(job.changes.length ? ["", "Changes:", ...job.changes.map((c) => `- ${c}`)] : []),
         "",
-        `Opened by GGJIRA for ${job.issueKey}. When GGJIRA Router can read this repository, it notes the merge on the Jira issue and, if a done status is configured, moves the issue there.`,
+        `Opened by GGJIRA for ${job.issueKey}. After a human merges this PR, GGJIRA runs trusted integration checks and optional FCI analysis. Done remains a manual decision.`,
         `<!-- ggjira issue=${job.issueKey} job=${job.jobId} attempt=${job.attemptId} -->`,
       ].join("\n"),
     });

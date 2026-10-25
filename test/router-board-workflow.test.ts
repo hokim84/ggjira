@@ -67,6 +67,9 @@ describe("board workflow", () => {
         status: "succeeded",
         summary: "Result",
         ...data,
+        ...(job.qualityContext?.expectedSha && "quality" in data
+          ? { quality: { ...(data.quality as object), targetSha: job.qualityContext.expectedSha } }
+          : {}),
       },
       worker.token,
     );
@@ -74,6 +77,7 @@ describe("board workflow", () => {
     await process();
   }
   const noChange = {
+    git: { repository: "git", committed: false, baseBranch: "main", baseSha: sha(1) },
     scopeCheck: {
       checked: false,
       reason: "No changes needed",
@@ -98,7 +102,7 @@ describe("board workflow", () => {
       findings: [],
     },
   });
-  async function publish() {
+  async function publish(two = false) {
     const job = await start();
     expect(await status()).toBe(w.planningInProgressStatus);
     await finish(job, {
@@ -112,10 +116,37 @@ describe("board workflow", () => {
             acceptance: ["Works"],
             verification: ["Run tests"],
           },
+          ...(two
+            ? [
+                {
+                  taskId: "ui",
+                  title: "UI",
+                  description: "Use feature",
+                  acceptance: ["Works"],
+                  verification: ["Run tests"],
+                  dependencies: ["feature"],
+                },
+              ]
+            : []),
         ],
       }),
     });
     await router.reconcile();
+  }
+  async function assembleNoChange() {
+    const job = await start();
+    expect(job.kind).toBe("assemble_pr");
+    await finish(job, {
+      git: {
+        repository: "git",
+        committed: false,
+        baseBranch: "main",
+        baseSha: sha(1),
+        headSha: sha(1),
+      },
+      changes: [],
+    });
+    expect(await status()).toBe(w.integrationPendingStatus);
   }
   it("moves only when planning actually starts and preserves the request across automatic transition", async () => {
     await router.reconcile();
@@ -153,6 +184,7 @@ describe("board workflow", () => {
     await finish(child, noChange);
     await router.reconcile();
     await process();
+    await assembleNoChange();
     expect(await status()).toBe(w.integrationPendingStatus);
     const check = await start();
     expect(check.kind).toBe("integration_check");
@@ -197,6 +229,139 @@ describe("board workflow", () => {
     await finish(check, quality());
     expect(await status()).toBe(w.implementationCompleteStatus);
   });
+  it("runs dependencies from published commits, creates one parent PR, and validates only after merge", async () => {
+    await publish(true);
+    await router.jira.transitionIssueToStatus("KAN-1002", w.inProgressStatus);
+    await router.reconcile();
+    expect((await router.next(worker, `waiting-${++serial}`)).statusCode).toBe(204);
+    await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
+    const first = await start();
+    expect(first.deferPullRequest).toBe(true);
+    await finish(first, {
+      ...noChange,
+      branch: "ggjira/first",
+      artifacts: ["pushed: origin/ggjira/first"],
+      git: {
+        repository: "git",
+        committed: true,
+        baseBranch: "main",
+        baseSha: sha(1),
+        headSha: sha(2),
+      },
+    });
+    expect(await status("KAN-1001")).toBe(w.implementationCompleteStatus);
+    expect(router.db.prepare("SELECT COUNT(*) n FROM pull_requests").get()).toEqual({ n: 0 });
+    const second = await start();
+    expect(second.issueSnapshot.key).toBe("KAN-1002");
+    expect(second.integration?.resultCommits).toContain(sha(2));
+    await finish(second, {
+      ...noChange,
+      branch: "ggjira/second",
+      artifacts: ["pushed: origin/ggjira/second"],
+      git: {
+        repository: "git",
+        committed: true,
+        baseBranch: "main",
+        baseSha: sha(2),
+        headSha: sha(3),
+      },
+    });
+    const aggregate = await start();
+    expect(aggregate.kind).toBe("assemble_pr");
+    expect(aggregate.assembly?.children.map((c) => c.issueKey)).toEqual(["KAN-1001", "KAN-1002"]);
+    await finish(aggregate, {
+      branch: "ggjira/aggregate",
+      pullRequest: { repo: "org/repo", number: 10, url: "https://github.com/org/repo/pull/10" },
+      git: {
+        repository: "git",
+        committed: true,
+        baseBranch: "main",
+        baseSha: sha(1),
+        headSha: sha(4),
+      },
+    });
+    expect(await status()).toBe(w.integrationPendingStatus);
+    expect(router.db.prepare("SELECT COUNT(*) n FROM pull_requests").get()).toEqual({ n: 1 });
+    expect((await router.reconcile()).jobsCreated).toEqual([]);
+    handlePullRequestClosed(
+      router.db,
+      router.config,
+      {
+        repo: "org/repo",
+        number: 10,
+        merged: true,
+        by: "human",
+        headSha: sha(4),
+        mergeSha: sha(5),
+        targetBranch: "main",
+      },
+      router.clock.now(),
+    );
+    await process();
+    const check = await start();
+    expect(check.kind).toBe("integration_check");
+    expect(check.qualityContext?.expectedSha).toBe(sha(5));
+    expect(check.qualityContext?.resultIds).toHaveLength(3);
+    await finish(check, quality());
+    expect(await status()).toBe(w.implementationCompleteStatus);
+    expect(await status("KAN-1002")).toBe(w.implementationCompleteStatus);
+  });
+  it("withdraws an aggregate when a child is reopened, without rerunning successful siblings", async () => {
+    await publish();
+    await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
+    await finish(await start(), noChange);
+    const aggregate = await start();
+    expect(aggregate.kind).toBe("assemble_pr");
+    await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
+    await router.reconcile();
+    await finish(aggregate, {
+      git: { repository: "git", committed: false, baseSha: sha(1), headSha: sha(1) },
+      changes: [],
+    });
+    expect(await status()).toBe(w.inProgressStatus);
+    expect(router.db.prepare("SELECT COUNT(*) n FROM pull_requests").get()).toEqual({ n: 0 });
+  });
+  it("does not aggregate a manually completed child whose approved inputs changed", async () => {
+    await publish();
+    await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
+    await finish(await start(), noChange);
+    const issue = await router.jira.getIssue("KAN-1001");
+    await router.jira.updateIssueDescription(
+      issue.key,
+      `${issue.description}\nChanged requirement`,
+    );
+    await router.reconcile();
+    await process();
+    expect(router.db.prepare("SELECT COUNT(*) n FROM jobs WHERE kind='assemble_pr'").get()).toEqual(
+      { n: 0 },
+    );
+    expect(await status()).toBe(w.inProgressStatus);
+  });
+  it("rejects a successful integration report for a different SHA", async () => {
+    await publish();
+    await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
+    await finish(await start(), noChange);
+    await assembleNoChange();
+    const check = await start();
+    expect(check.kind).toBe("integration_check");
+    const response = await router.post(
+      `/api/v1/jobs/${check.jobId}/result`,
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        jobId: check.jobId,
+        attemptId: check.attemptId,
+        resultId: `wrong-${check.attemptId}`,
+        status: "succeeded",
+        summary: "Wrong target",
+        ...quality(),
+      },
+      worker.token,
+    );
+    expect(response.statusCode).toBe(200);
+    await process();
+    expect(await status()).toBe(w.integrationPendingStatus);
+    expect(getOpenJobForIssue(router.db, "KAN-1")?.state).toBe("failed");
+  });
   it("does not overwrite a human's Done with a late report", async () => {
     await router.jira.transitionIssueToStatus("KAN-1", w.inProgressStatus);
     const job = await start();
@@ -210,6 +375,7 @@ describe("board workflow", () => {
     await finish(await start(), noChange);
     await router.reconcile();
     await process();
+    await assembleNoChange();
     const check = await start();
     await finish(check, quality(false));
     expect(await status()).toBe(w.integrationPendingStatus);
@@ -238,6 +404,7 @@ describe("board workflow", () => {
     await finish(await start(), noChange);
     await router.reconcile();
     await process();
+    await assembleNoChange();
     const check = await start();
     await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
     await finish(check, quality());
@@ -248,6 +415,7 @@ describe("board workflow", () => {
     await finish(childRework, noChange);
     await router.reconcile();
     await process();
+    await assembleNoChange();
     const freshCheck = await start();
     expect(freshCheck.kind).toBe("integration_check");
     expect(freshCheck.approvalId).not.toBe(check.approvalId);
@@ -284,6 +452,7 @@ describe("board workflow", () => {
     await finish(await start(), noChange);
     await router.reconcile();
     await process();
+    await assembleNoChange();
     await finish(await start(), quality());
     await router.jira.transitionIssueToStatus("KAN-1", w.inProgressStatus);
     const rework = await start();

@@ -14,6 +14,7 @@ export function buildPmSystemPrompt(): string {
     "Every executable unit (each task, or the parent when it has no tasks) carries a scope contract: acceptance criteria, verification (the commands or observations that check each criterion), inScope (the behavior it delivers), outOfScope (results and design changes it deliberately leaves out), and affectedAreas (where the change is expected to land, a hint only).",
     "Fill allowedPaths (repository-relative globs such as src/router/**) only when the change must stay within known paths; the implement agent is stopped if it touches anything else. Leave it empty when you cannot bound the paths.",
     "Give every task a stable taskId. Express dependencies on tasks in this plan using those taskIds; use Jira issue keys for pre-existing dependencies.",
+    "Each child is manually approved, implements and verifies its own contract, and publishes its result commit without opening a PR. Dependencies consume approved published results, not merged child PRs. Once all children finish, GGJIRA creates one parent aggregate PR. Parent integration validation and optional FCI run only after a human merges it. Do not create artificial PR/review tasks to drive this automatic lifecycle.",
   ].join(" ");
 }
 

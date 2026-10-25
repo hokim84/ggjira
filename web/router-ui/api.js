@@ -2,6 +2,10 @@
 
 const TOKEN_KEY = "ggjira.router.token";
 let memoryToken = null;
+let localUiAccess = false;
+export function setLocalUiAccess(enabled) {
+  localUiAccess = enabled === true;
+}
 
 export function getToken() {
   try {
@@ -34,6 +38,7 @@ export class ApiError extends Error {
 export async function request(method, url, body, extraHeaders = {}) {
   const token = getToken();
   const headers = { ...extraHeaders };
+  if (localUiAccess) headers["x-ggjira-local-ui"] = "1";
   if (token) headers.authorization = `Bearer ${token}`;
   if (body !== undefined) headers["content-type"] = "application/json";
   const response = await fetch(url, {

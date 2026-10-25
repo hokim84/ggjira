@@ -199,7 +199,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       ordinaryQueue: "일반 검토 대기열에 올렸습니다.",
       nextWithPullRequest: (url, doneStatus) =>
         // The URL stands apart: a particle written onto it would become part of Jira's link.
-        `다음: PR을 검토하고 머지하세요 — ${url}${doneStatus ? ` (머지 후 통합 검증이 통과하면 "${doneStatus}"으로 이동합니다. AI 리뷰는 선택 사항입니다)` : ""}`,
+        `다음: PR을 검토하고 머지하세요 — ${url}${doneStatus ? ` (병합 후 통합 검증이 통과하면 "${doneStatus}"으로 이동합니다. FCI는 활성화된 경우 병합 후 별도로 분석합니다)` : ""}`,
       nextWithoutPullRequest: (doneStatus) =>
         `다음: 아래 결과를 검토하세요${doneStatus ? `. 이슈는 직접 "${doneStatus}" 상태로 옮기세요` : ""}. PR은 없습니다.`,
       reviewedCommit: (head, base) => `검토 대상 커밋: ${head}(base ${base})`,
@@ -356,7 +356,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       reason: (reason) => reason.detail,
       ordinaryQueue: "Ready for the ordinary review queue.",
       nextWithPullRequest: (url, doneStatus) =>
-        `Next: review and merge ${url}${doneStatus ? `; successful integration validation then moves the issue to "${doneStatus}"` : ""}. AI review is optional.`,
+        `Next: review and merge ${url}${doneStatus ? `; successful integration validation then moves the issue to "${doneStatus}"` : ""}. Optional FCI analysis runs only after merge. Done remains manual.`,
       nextWithoutPullRequest: (doneStatus) =>
         `Next: review the result below${doneStatus ? ` and move the issue to "${doneStatus}" yourself` : ""}; there is no pull request.`,
       reviewedCommit: (head, base) => `Reviewed commit: ${head} (base ${base})`,

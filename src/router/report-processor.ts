@@ -41,6 +41,7 @@ import {
 } from "./db/report-steps.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import { integrationEvidence } from "./lifecycle.js";
+import { assemblyContext } from "./assembly.js";
 import {
   latestPlanningRequest,
   markReadyPlans,
@@ -261,6 +262,17 @@ async function approvalStillStands(
     )
       return false;
     const snapshot = approval.inputSnapshot as ApprovalSnapshot;
+    if (job.kind === "assemble_pr") {
+      if (!rule.workspace || !snapshot.assembly) return false;
+      const current = await assemblyContext(
+        db,
+        jira,
+        rule.workspace,
+        issue,
+        snapshot.assembly.baseBranch,
+      );
+      return current?.cycleId === snapshot.assembly.cycleId;
+    }
     if (
       computeInputHash({
         kind: job.kind,
@@ -674,6 +686,10 @@ async function runReportJournal(
             const issue = await deps.jira.getIssue(job.issueKey);
             const transition =
               step.kind === "transition" ? (step.params as unknown as TransitionParams) : undefined;
+            const batchTransition = steps.find(
+              (s) => s.batchId === step.batchId && s.kind === "transition",
+            )?.params as unknown as TransitionParams | undefined;
+            const rule = transition?.approvalRule ?? batchTransition?.approvalRule;
             const fresh =
               issue.statusName === snapshot.issue.statusName &&
               (await approvalStillStands(deps.jira, deps.db, issue, {
@@ -685,9 +701,8 @@ async function runReportJournal(
                   kind: "workflow-job",
                   jobId: job.id,
                   inputHash: job.inputHash,
-                  ...(transition?.approvalRule?.kind === "workflow-job" &&
-                  transition.approvalRule.workspace
-                    ? { workspace: transition.approvalRule.workspace }
+                  ...(rule?.kind === "workflow-job" && rule.workspace
+                    ? { workspace: rule.workspace }
                     : {}),
                 },
               }));

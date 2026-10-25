@@ -14,6 +14,7 @@ import {
   integrationTarget,
   isGitRepository,
   revParse,
+  commitIsAncestor,
 } from "../worker/worktree.js";
 import type { WorkerRepositoryConfig } from "./config.js";
 import type { ExecutionOutcome } from "./executor.js";
@@ -38,14 +39,19 @@ export async function executeQualityEnvelope(
       throw new Error("quality review requires a Git repository and a pinned context");
     const remote = deps.repository.pushRemote ?? "origin";
     deps.onProgress?.("checking_target");
-    const targetSha = await integrationTarget(
+    const branchTip = await integrationTarget(
       deps.repository.path,
       remote,
       context.integration.baseBranch,
       context.integration.mergeCommits,
     );
-    if (context.expectedSha && context.expectedSha !== targetSha)
-      throw new Error("stale quality target; reply 재시도 to assess the latest commit");
+    const targetSha = context.expectedSha ?? branchTip;
+    for (const merge of context.integration.mergeCommits) {
+      if (!(await commitIsAncestor(deps.repository.path, merge, targetSha)))
+        throw new Error("stale quality target precedes the recorded merge");
+    }
+    if (!(await commitIsAncestor(deps.repository.path, targetSha, branchTip)))
+      throw new Error("pinned merge target is no longer on the target branch");
     const cwd = (
       await createWorktree(
         deps.repository.path,
@@ -79,15 +85,14 @@ export async function executeQualityEnvelope(
     if ((await hasUncommittedChanges(cwd)) || (await revParse(cwd, "HEAD")) !== targetSha)
       throw new Error("read-only review modified the evaluation worktree");
     deps.onProgress?.("checking_target");
-    if (
-      (await integrationTarget(
-        deps.repository.path,
-        remote,
-        context.integration.baseBranch,
-        context.integration.mergeCommits,
-      )) !== targetSha
-    )
-      throw new Error("stale quality target; reply 재시도 to assess the latest commit");
+    const latestTip = await integrationTarget(
+      deps.repository.path,
+      remote,
+      context.integration.baseBranch,
+      context.integration.mergeCommits,
+    );
+    if (!(await commitIsAncestor(deps.repository.path, targetSha, latestTip)))
+      throw new Error("pinned merge target left the target branch during validation");
     return {
       status: "succeeded",
       summary: quality.summary,
@@ -97,7 +102,7 @@ export async function executeQualityEnvelope(
   } catch (error) {
     return {
       status: deps.signal.aborted ? "cancelled" : "failed",
-      summary: "통합 검증·기술부채 평가를 완료하지 못했습니다.",
+      summary: "병합 후 통합 검증을 완료하지 못했습니다.",
       failureReason: error instanceof Error ? error.message : String(error),
     };
   }

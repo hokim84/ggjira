@@ -1,4 +1,4 @@
-import { FCI_OUTPUT_SCHEMA } from "../contracts/fci.js";
+import { FCI_EXPLANATION_OUTPUT_SCHEMA } from "../contracts/fci.js";
 import { IMPLEMENTATION_REPORT_JSON_SCHEMA } from "../contracts/implementation.js";
 import {
   type AiRole,
@@ -8,13 +8,13 @@ import {
 } from "../contracts/prompts.js";
 import { PLAN_JSON_SCHEMA } from "../pm/plan.js";
 import { buildPlanningPrompt, buildPmSystemPrompt } from "../pm/prompt.js";
-import { buildFciSystemPrompt } from "../worker/fci-prompt.js";
+import { buildFciExplanationPrompt } from "../worker/fci-prompt.js";
 import { buildImplementPrompt, buildImplementSystemPrompt } from "../worker/prompt.js";
 
 const builders = {
   planning: buildPmSystemPrompt,
   implementation: buildImplementSystemPrompt,
-  fci_analysis: buildFciSystemPrompt,
+  fci_analysis: buildFciExplanationPrompt,
 };
 
 export function roleSystemPrompt(role: AiRole, prompts: RolePrompts): string {
@@ -65,11 +65,11 @@ export function getPromptCatalog(prompts = RolePromptsSchema.parse({})) {
       },
       {
         id: "fci_analysis",
-        title: "FCI 분석",
+        title: "FCI 변경 설명",
         description:
-          "저장소의 미래 변경 난이도를 실험적 상대 지표로 평가합니다. 승인과 상태 전이를 차단하지 않습니다.",
+          "선택한 커밋의 정적 평가 근거와 개선 우선순위를 설명합니다. AI는 점수를 변경하지 않으며 승인과 상태 전이를 차단하지 않습니다.",
         source: "src/worker/fci-prompt.ts",
-        systemPrompt: buildFciSystemPrompt(),
+        systemPrompt: buildFciExplanationPrompt(),
         examplePrompt: JSON.stringify(
           {
             snapshotSha: "{{평가 SHA}}",
@@ -79,7 +79,7 @@ export function getPromptCatalog(prompts = RolePromptsSchema.parse({})) {
           null,
           2,
         ),
-        outputSchema: FCI_OUTPUT_SCHEMA,
+        outputSchema: FCI_EXPLANATION_OUTPUT_SCHEMA,
       },
     ].map((role) => ({
       ...role,

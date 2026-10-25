@@ -644,10 +644,18 @@ export class WorkerService {
     result: JobResultRequest,
     now: string,
   ): ClosedJobState {
+    const frozenCheck =
+      job.kind === "integration_check"
+        ? (this.db.prepare("SELECT context FROM workflow_checks WHERE job_id=?").get(job.id) as
+            | { context: string }
+            | undefined)
+        : undefined;
+    const expectedSha = frozenCheck ? JSON.parse(frozenCheck.context).expectedSha : undefined;
     if (
       job.kind === "integration_check" &&
       result.status === "succeeded" &&
-      !result.quality?.verificationPassed
+      (!result.quality?.verificationPassed ||
+        (expectedSha && result.quality.targetSha !== expectedSha))
     ) {
       transitionAttemptState(this.db, attempt.id, "failed", now);
       transitionJobState(this.db, job.id, "failed", now);
@@ -711,6 +719,7 @@ export class WorkerService {
           from: [
             workspace.workflow.planningInProgressStatus,
             workspace.workflow.integrationPendingStatus,
+            workspace.workflow.implementationCompleteStatus,
           ],
           approvalId: request.id,
           approvalStatus: workspace.workflow.requestStatus,
@@ -775,7 +784,11 @@ export class WorkerService {
         ? [
             job.kind === "integration_check" ? "통합 검증 결과" : "AI 리뷰 결과 (권고)",
             result.quality.summary,
-            `검증: ${result.quality.verificationPassed ? "통과" : "미통과"}`,
+            `검증: ${passed ? "통과" : "미통과"}`,
+            ...(snapshot?.quality?.expectedSha &&
+            result.quality.targetSha !== snapshot.quality.expectedSha
+              ? [`대상 불일치: 고정 SHA ${snapshot.quality.expectedSha}의 검증 결과가 필요합니다.`]
+              : []),
             `대상: ${result.quality.targetSha}`,
             ...result.quality.verificationEvidence,
             ...result.quality.findings.map(
@@ -839,6 +852,12 @@ export class WorkerService {
         attemptId: attempt.id,
         now,
       });
+      if (job.kind === "assemble_pr")
+        this.db
+          .prepare(
+            "UPDATE pull_requests SET job_id=?,attempt_id=?,updated_at=? WHERE lower(repo)=lower(?) AND number=? AND state='open'",
+          )
+          .run(job.id, attempt.id, now, result.pullRequest.repo, result.pullRequest.number);
     }
     // M4-11: pin what a human reviews to this exact result, in the same transaction.
     const review =

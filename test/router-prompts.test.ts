@@ -9,7 +9,7 @@ import { getActiveAttemptForWorker } from "../src/router/db/attempts.js";
 import { listAudit } from "../src/router/db/audit.js";
 import { getJob } from "../src/router/db/jobs.js";
 import { buildJobEnvelope } from "../src/router/envelope.js";
-import { buildFciSystemPrompt } from "../src/worker/fci-prompt.js";
+import { buildFciExplanationPrompt } from "../src/worker/fci-prompt.js";
 import { buildImplementSystemPrompt } from "../src/worker/prompt.js";
 
 import { ADMIN_TOKEN, RouterHarness } from "./helpers/router-harness.js";
@@ -31,12 +31,12 @@ it("serves current built-in prompts only to an authenticated administrator", asy
     expect(roles.map((role: { systemPrompt: string }) => role.systemPrompt)).toEqual([
       buildPmSystemPrompt(),
       buildImplementSystemPrompt(),
-      buildFciSystemPrompt(),
+      buildFciExplanationPrompt(),
     ]);
     expect(roles.map((role: { title: string }) => role.title)).toEqual([
       "플랜",
       "구현",
-      "FCI 분석",
+      "FCI 변경 설명",
     ]);
     expect(roles[0].examplePrompt).toContain("EXAMPLE-1");
     expect(roles[0].outputSchema).toHaveProperty("properties");

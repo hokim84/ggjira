@@ -19,6 +19,40 @@
   color-scheme: light;
 }
 
+.form-actions.fci-controls,
+.form-actions.fci-legend {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+.fci-controls .btn {
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+.form-actions.fci-legend label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+.fci-chart {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.fci-chart svg {
+  display: block;
+  min-width: 720px;
+}
+.fci-chart [role="button"] {
+  cursor: pointer;
+}
+.fci-detail:empty {
+  display: none;
+}
+.fci-detail code,
+.fci-detail a {
+  overflow-wrap: anywhere;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #12161c;
@@ -403,6 +437,14 @@ a:focus-visible {
 .grid.disabled {
   opacity: 0.45;
   pointer-events: none;
+}
+.fci-settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 600px) {
+  .fci-settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .field {
   display: flex;

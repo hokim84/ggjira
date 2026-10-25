@@ -15,6 +15,7 @@ import {
 } from "./db/plan-delegation.js";
 import { listBatchReportSteps } from "./db/report-steps.js";
 import { integrationEvidence } from "./lifecycle.js";
+import { publishedImplementation } from "./assembly.js";
 import { latestPlanningRequest } from "./planning-requests.js";
 import { parseTaskApprovalId } from "./report-journal.js";
 
@@ -175,7 +176,7 @@ export async function readIssueDelegation(
       if (
         metadata?.planVersion === deployment.planVersion &&
         deployment.taskIds.includes(metadata.taskId) &&
-        integrationEvidence(db, child.key, deps.baseBranch ?? "main")
+        (await publishedImplementation(db, deps.jira, workspace, child.key))
       )
         completed++;
     }
@@ -183,7 +184,11 @@ export async function readIssueDelegation(
       ? (JSON.parse(cycle.report) as { targetSha: string; findings: unknown[] })
       : undefined;
     quality = {
-      state: cycle?.state ?? "children_waiting",
+      state:
+        cycle?.state ??
+        (issue.statusName === workspace.workflow.integrationPendingStatus
+          ? "pr_waiting"
+          : "children_waiting"),
       completed,
       total: deployment.taskIds.length,
       targetSha: result?.targetSha ?? null,

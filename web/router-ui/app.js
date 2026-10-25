@@ -1,13 +1,12 @@
 // GGJIRA Router web UI: hash-routed shell. Setup mode shows only the wizard.
 
-import { admin, getToken, health, setToken } from "./api.js";
+import { admin, getToken, health, setToken, setLocalUiAccess } from "./api.js";
 import { clear, errorNotice, fill, h, notice } from "./dom.js";
 import { renderCheck, renderConfig } from "./views-config.js";
 import { renderFci } from "./views-fci.js";
 import { renderGuide } from "./views-guide.js";
 import { renderIssues } from "./views-issues.js";
 import { renderPrompts } from "./views-prompts.js";
-import { renderReviews } from "./views-reviews.js";
 import { renderSetup } from "./views-setup.js";
 import { renderDashboard, renderWorkers } from "./views-status.js";
 
@@ -15,11 +14,10 @@ const ROUTES = {
   "#/": { label: "대시보드", render: renderDashboard, poll: true },
   "#/workers": { label: "워커", render: renderWorkers },
   "#/repositories": { label: "저장소 FCI", render: renderFci },
-  "#/reviews": { label: "검토", render: renderReviews },
-  "#/issues": { label: "이슈", render: renderIssues },
+  "#/tasks": { label: "작업 상세", render: renderIssues, parent: "#/" },
   "#/config": { label: "설정", render: renderConfig },
   "#/config/prompts": { label: "프롬프트", render: renderPrompts, parent: "#/config" },
-  "#/check": { label: "점검", render: renderCheck },
+  "#/config/diagnostics": { label: "연동 진단", render: renderCheck, parent: "#/config" },
   "#/guide": { label: "사용 가이드", render: renderGuide },
 };
 
@@ -27,6 +25,7 @@ const app = document.getElementById("app");
 const nav = document.getElementById("nav");
 const banner = document.getElementById("banner");
 let timers = [];
+let localUiAccess = false;
 
 function stopTimers() {
   for (const timer of timers) clearInterval(timer);
@@ -39,6 +38,8 @@ const ctx = {
     timers.push(setInterval(fn, ms));
   },
   logout() {
+    localUiAccess = false;
+    setLocalUiAccess(false);
     setToken(null);
     stopTimers();
     showLogin("토큰이 만료되었거나 틀립니다. 다시 로그인하세요.");
@@ -99,21 +100,30 @@ function drawNav(active) {
           route.label,
         ),
       ),
-    h(
-      "button",
-      { type: "button", class: "btn btn-small nav-logout", onclick: () => ctx.logout() },
-      "로그아웃",
-    ),
+    localUiAccess
+      ? null
+      : h(
+          "button",
+          { type: "button", class: "btn btn-small nav-logout", onclick: () => ctx.logout() },
+          "로그아웃",
+        ),
   );
 }
 
 async function route() {
   stopTimers();
-  if (location.hash === "#/prompts") {
-    location.replace("#/config/prompts");
+  const [path, query = ""] = location.hash.split("?");
+  const aliases = {
+    "#/prompts": "#/config/prompts",
+    "#/check": "#/config/diagnostics",
+    "#/issues": "#/tasks",
+    "#/reviews": "#/",
+  };
+  if (aliases[path]) {
+    location.replace(`${aliases[path]}${query ? `?${query}` : ""}`);
     return;
   }
-  const hash = ROUTES[location.hash] ? location.hash : "#/";
+  const hash = ROUTES[path] ? path : "#/";
   const entry = ROUTES[hash];
   drawNav(entry.parent || hash);
   const view = h("div", { class: "view" }, h("p", { class: "muted" }, "불러오는 중…"));
@@ -125,6 +135,7 @@ async function route() {
           [
             ["#/config", "일반"],
             ["#/config/prompts", "프롬프트"],
+            ["#/config/diagnostics", "연동 진단"],
           ].map(([href, label]) =>
             h(
               "a",
@@ -202,7 +213,10 @@ function showLogin(message) {
 async function boot() {
   let mode = "router";
   try {
-    mode = (await health()).mode || "router";
+    const state = await health();
+    mode = state.mode || "router";
+    localUiAccess = state.localUiWithoutToken === true;
+    setLocalUiAccess(localUiAccess);
   } catch {
     fill(app, notice("error", "Router에 연결할 수 없습니다."));
     return;
@@ -214,9 +228,9 @@ async function boot() {
     return;
   }
   window.addEventListener("hashchange", () => {
-    if (getToken()) route();
+    if (localUiAccess || getToken()) route();
   });
-  if (getToken()) route();
+  if (localUiAccess || getToken()) route();
   else showLogin();
 }
 

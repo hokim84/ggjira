@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import type { IssueSnapshot, PlanningContext } from "../contracts/envelope.js";
 import type { JobKind } from "../contracts/protocol.js";
 import type { QualityContext } from "../contracts/quality.js";
+import type { AssemblyContext } from "../contracts/assembly.js";
+import { assemblyContext, latestAssembly } from "./assembly.js";
 import type { IssueRequirements } from "../issue/requirements.js";
 import { JiraApiError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
@@ -44,6 +46,7 @@ import { approvalStatusFor } from "./workflow-mode.js";
 
 /** An issue's approval as Jira and Router's plan records show it right now. */
 export interface IssueApproval {
+  assembly?: AssemblyContext;
   issue: JiraIssue;
   kind: JobKind;
   /** The approved plan's contract for an implementation; none yet for a planning request. */
@@ -79,9 +82,36 @@ export async function readIssueApproval(
   workspace: WorkspaceConfig,
   kind?: JobKind,
   now?: string,
+  baseBranch = "main",
 ): Promise<IssueApproval> {
   const planTask = await readPlanTaskMetadata(jira, issue.key);
   if (planTask) await assertPlanTaskCurrent(jira, issue.key, planTask);
+  if (
+    !planTask &&
+    (!kind || kind === "assemble_pr") &&
+    [workspace.workflow.inProgressStatus, workspace.workflow.integrationPendingStatus].includes(
+      issue.statusName,
+    )
+  ) {
+    const assembly = await assemblyContext(db, jira, workspace, issue, baseBranch);
+    if (assembly) {
+      const prior = latestAssembly(db, issue.key);
+      if (!prior || JSON.parse(prior.context).cycleId !== assembly.cycleId) {
+        const requirements = planningRequirements(issue.summary);
+        return {
+          issue,
+          planTask,
+          kind: "assemble_pr",
+          requirements,
+          assembly,
+          approvalId: await retryApprovalId(db, jira, issue, `assemble_pr:${assembly.cycleId}`),
+          inputHash: computeInputHash({ kind: "assemble_pr", issue, requirements, planTask }),
+        };
+      }
+    }
+    if (kind === "assemble_pr")
+      throw new NotDelegatedError("aggregate inputs changed or are no longer ready");
+  }
   const approved = await readApproved(jira, db, issue, workspace, planTask, kind, now);
   return {
     issue,
@@ -182,9 +212,12 @@ async function readApproved(
       );
     }
     if (
-      ![planningInProgressStatus, inProgressStatus, integrationPendingStatus].includes(
-        parent.statusName,
-      )
+      ![
+        planningInProgressStatus,
+        inProgressStatus,
+        integrationPendingStatus,
+        workspace.workflow.implementationCompleteStatus,
+      ].includes(parent.statusName)
     ) {
       throw new NotDelegatedError(
         `${issue.key}'s parent ${parent.key} left "${inProgressStatus}", withdrawing the plan`,
@@ -413,6 +446,7 @@ export async function collectPlanningContext(
 
 /** The shape `upsertApproval` stores as `input_snapshot`; `buildJobEnvelope` reads it back. */
 export interface ApprovalSnapshot {
+  assembly?: AssemblyContext;
   issue: IssueSnapshot;
   requirements: IssueRequirements;
   planTask: PlanTaskMetadata | null;
@@ -443,6 +477,7 @@ export function storeApproval(
     ...(keptPlanning ? { planning: keptPlanning } : {}),
     ...(previous?.quality ? { quality: previous.quality } : {}),
     ...(previous?.integration ? { integration: previous.integration } : {}),
+    ...(approval.assembly ? { assembly: approval.assembly } : {}),
   };
   upsertApproval(db, {
     issueKey: approval.issue.key,
@@ -491,6 +526,47 @@ export async function checkJobAgainstJira(
   }
 
   // A run never moves its issue on start, so it may only be where it runs (ADR 0044).
+  if (job.kind === "assemble_pr") {
+    const frozen = db.prepare("SELECT context FROM assembly_runs WHERE job_id=?").get(job.id) as
+      | { context: string }
+      | undefined;
+    const context = await assemblyContext(
+      db,
+      jira,
+      workspace,
+      issue,
+      config.repositories.find((r) => r.id === job.repositoryId)?.baseBranch ?? "main",
+    );
+    const stored = getApproval(db, issue.key);
+    if (
+      !frozen ||
+      !context ||
+      context.cycleId !== JSON.parse(frozen.context).cycleId ||
+      ![workspace.workflow.inProgressStatus, workspace.workflow.integrationPendingStatus].includes(
+        issue.statusName,
+      ) ||
+      stored?.approvalId !== job.approvalId ||
+      computeInputHash({
+        kind: job.kind,
+        issue,
+        requirements: (stored.inputSnapshot as ApprovalSnapshot).requirements,
+        planTask: null,
+      }) !== job.inputHash
+    )
+      return { verdict: "revoked", reason: "aggregate inputs or parent authority changed" };
+    return {
+      verdict: "current",
+      approval: {
+        issue,
+        kind: job.kind,
+        planTask: null,
+        requirements: (stored.inputSnapshot as ApprovalSnapshot).requirements,
+        approvalId: job.approvalId,
+        inputHash: stored.inputHash,
+        assembly: JSON.parse(frozen.context),
+      },
+    };
+  }
   if (job.kind === "quality_review" || job.kind === "integration_check") {
     const stored = getApproval(db, issue.key);
     const check = db.prepare("SELECT source_key FROM workflow_checks WHERE job_id=?").get(job.id) as

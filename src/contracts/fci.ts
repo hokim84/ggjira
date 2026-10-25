@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { PROTOCOL_VERSION } from "./protocol.js";
 
-export const FCI_VERSION = "fci-v1";
-export const FCI_ANALYZER = "ggjira-fci-1/tree-sitter-0.24.7/grammars-0.1.13";
+export const FCI_VERSION = "fci-static-v2";
+export const FCI_ANALYZER = "ggjira-fci-2/tree-sitter-0.24.7/grammars-0.1.13";
 export const FCI_NOTICE =
   "FCI는 코드 구조와 검증 가능성을 평가하는 실험적 상대 지표입니다. 개발 시간·비용 증가율이나 장애 확률이 아닙니다.";
 export const FCI_AXES = ["coupling", "complexity", "verification", "ripple", "history"] as const;
@@ -66,10 +66,11 @@ export const FciWeightsSchema = z
   );
 export type FciWeights = z.infer<typeof FciWeightsSchema>;
 export const ShaSchema = z.string().regex(/^[a-f0-9]{40}$/);
+const CommitRefSchema = z.string().regex(/^[a-f0-9]{7,40}$/);
 export const FciConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
-    baselineSha: ShaSchema.optional(),
+    baselineSha: CommitRefSchema.optional(),
     modelId: z.string().min(1).optional(),
     providerType: z.enum(["codex", "claude-code"]).default("codex"),
     ruleVersion: z.string().min(1).default(FCI_VERSION),
@@ -77,8 +78,8 @@ export const FciConfigSchema = z
     timeoutMs: z.number().int().min(1000).max(3600000).default(600000),
   })
   .refine(
-    (c) => !c.enabled || Boolean(c.baselineSha && c.modelId),
-    "FCI requires an explicit baseline SHA and model ID",
+    (c) => !c.enabled || Boolean(c.baselineSha && (c.ruleVersion === FCI_VERSION || c.modelId)),
+    "FCI requires a baseline SHA (legacy AI series also require a model ID)",
   );
 export const FciEvidenceSchema = z.object({
   path: z.string().min(1),
@@ -94,6 +95,20 @@ const AxisAssessmentSchema = z.object({
   uncertainties: z.array(z.string()),
 });
 export const FciAssessmentSchema = z.object({
+  structural: z
+    .object({
+      axes: z.object({
+        coupling: z.number().nullable(),
+        complexity: z.number().nullable(),
+        duplication: z.number().nullable(),
+        ripple: z.number().nullable(),
+      }),
+      raw: z.number().nullable(),
+      coverage: z.number(),
+      confidence: z.enum(["low", "medium", "high"]),
+      reasons: z.array(z.string()),
+    })
+    .optional(),
   summary: z.string().min(1),
   axes: z.object({
     coupling: AxisAssessmentSchema,
@@ -181,6 +196,7 @@ export const FCI_OUTPUT_SCHEMA = {
   },
 };
 export function rawFci(assessment: FciAssessment, weights: FciWeights): number | null {
+  if (assessment.structural) return assessment.structural.raw;
   if (FCI_AXES.some((axis) => assessment.axes[axis].grade === null)) return null;
   return FCI_AXES.reduce(
     (sum, axis) => sum + weights[axis] * 25 * (assessment.axes[axis].grade as number),
@@ -207,6 +223,35 @@ export const FciSnapshotSchema = z.object({
   ),
 });
 export type FciSnapshot = z.infer<typeof FciSnapshotSchema>;
+export const FciExplanationSchema = z.object({
+  summary: z.string().min(1),
+  evidence: z.array(FciEvidenceSchema).min(1),
+  priorities: z.array(z.string()),
+  uncertainties: z.array(z.string()),
+});
+export const FCI_EXPLANATION_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "evidence", "priorities", "uncertainties"],
+  properties: {
+    summary: { type: "string" },
+    evidence: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["path", "line", "explanation"],
+        properties: {
+          path: { type: "string" },
+          line: { type: "integer", minimum: 1 },
+          explanation: { type: "string" },
+        },
+      },
+    },
+    priorities: { type: "array", items: { type: "string" } },
+    uncertainties: { type: "array", items: { type: "string" } },
+  },
+};
 export const FciTaskSchema = z.object({
   id: z.string(),
   attemptId: z.string(),
@@ -217,11 +262,23 @@ export const FciTaskSchema = z.object({
   providerType: z.enum(["codex", "claude-code"]).default("codex"),
   seriesId: z.string(),
   profileKey: z.string(),
-  purpose: z.enum(["baseline", "task_result", "pr_preview", "merge_final", "manual"]),
+  purpose: z.enum([
+    "baseline",
+    "task_result",
+    "pr_preview",
+    "merge_final",
+    "manual",
+    "history_scan",
+    "commit",
+    "explain",
+  ]),
+  staticAnalysis: z.boolean().default(false),
+  explanationSnapshot: FciSnapshotSchema.optional(),
+  explanationPrevious: FciSnapshotSchema.optional(),
   baseBranch: z.string(),
-  baselineSha: ShaSchema,
-  beforeSha: ShaSchema,
-  afterSha: ShaSchema,
+  baselineSha: CommitRefSchema,
+  beforeSha: CommitRefSchema,
+  afterSha: CommitRefSchema,
   prRepo: z.string().nullable(),
   prNumber: z.number().nullable(),
   issueKey: z.string().nullable(),

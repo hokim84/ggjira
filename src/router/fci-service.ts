@@ -1,21 +1,28 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { z } from "zod";
 import {
   FCI_ANALYZER,
   FCI_AXES,
   FCI_LABELS,
   FCI_NOTICE,
   FCI_RUBRIC,
+  FCI_VERSION,
   type FciOutcome,
   type FciSnapshot,
   type FciTask,
   FciTaskSchema,
+  ShaSchema,
   normalizedFci,
   rawFci,
 } from "../contracts/fci.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { RouterConfig } from "./config.js";
 import { roleSystemPrompt } from "./prompt-catalog.js";
+import { appendRoleInstructions } from "../contracts/prompts.js";
+import { buildFciSystemPrompt } from "../worker/fci-prompt.js";
+import { structuralFindings } from "../worker/fci-static.js";
+import type { FciFacts } from "../worker/fci-facts.js";
 
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const fail = (statusCode: number, message: string): never => {
@@ -49,16 +56,37 @@ export class FciService {
   private series(repoId: string): Row | undefined {
     const repo = this.config.repositories.find((r) => r.id === repoId);
     const cfg = repo?.fci;
-    if (!repo || !cfg?.enabled || !cfg.baselineSha || !cfg.modelId) return;
-    const systemPrompt = roleSystemPrompt("fci_analysis", this.config.prompts);
+    if (
+      !repo ||
+      !cfg?.enabled ||
+      !cfg.baselineSha ||
+      (cfg.ruleVersion !== FCI_VERSION && !cfg.modelId)
+    )
+      return;
+    const staticAnalysis = cfg.ruleVersion === FCI_VERSION;
+    const systemPrompt = appendRoleInstructions(
+      buildFciSystemPrompt(),
+      this.config.prompts.fci_analysis.additionalInstructions,
+    );
     const profile = {
       analyzer: FCI_ANALYZER,
       ruleVersion: cfg.ruleVersion,
-      weights: cfg.weights,
-      model: cfg.modelId,
-      providerType: cfg.providerType,
-      promptHash: hash(systemPrompt),
-      systemPrompt,
+      weights: staticAnalysis ? undefined : cfg.weights,
+      ...(staticAnalysis
+        ? {
+            structuralWeights: {
+              coupling: 0.25,
+              complexity: 0.25,
+              duplication: 0.25,
+              ripple: 0.25,
+            },
+          }
+        : {}),
+      model: staticAnalysis ? "static" : cfg.modelId,
+      providerType: staticAnalysis ? "codex" : cfg.providerType,
+      promptHash: staticAnalysis ? "not-applicable" : hash(systemPrompt),
+      systemPrompt: staticAnalysis ? "" : systemPrompt,
+      staticAnalysis,
       historyLimit: 200,
       baseBranch: repo.baseBranch ?? "main",
     };
@@ -123,41 +151,22 @@ export class FciService {
     for (const repo of this.config.repositories) {
       const s = this.series(repo.id);
       if (!s) continue;
+      if (JSON.parse(s.profile as string).staticAnalysis) {
+        this.syncHistory(s);
+        const state = this.db
+          .prepare("SELECT tip,error FROM fci_history_state WHERE series_id=?")
+          .get(s.id) as { tip: string | null; error: string | null };
+        if (!state.tip || state.error) continue;
+      }
       this.enqueue(s, {
         key: "baseline",
         purpose: "baseline",
         before: s.baseline_sha as string,
         after: s.baseline_sha as string,
       });
-      const results = this.db
-        .prepare(
-          `SELECT r.payload,j.issue_key,j.id,j.current_attempt_id FROM jobs j JOIN results r ON r.job_id=j.id WHERE j.repository_id=? AND j.kind='implementation' AND r.applied=1 AND j.state='succeeded'`,
-        )
-        .all(repo.id) as Array<{
-        payload: string;
-        issue_key: string;
-        id: string;
-        current_attempt_id: string;
-      }>;
-      for (const row of results) {
-        const result = JSON.parse(row.payload);
-        if (!result.git?.baseSha) continue;
-        const after = result.git.headSha ?? result.git.baseSha;
-        this.enqueue(s, {
-          key: `result:${result.resultId}`,
-          purpose: "task_result",
-          before: result.git.baseSha,
-          after,
-          issueKey: row.issue_key,
-          jobId: row.id,
-          sourceAttempt: result.attemptId ?? row.current_attempt_id,
-          prRepo: result.pullRequest?.repo ?? null,
-          prNumber: result.pullRequest?.number ?? null,
-        });
-      }
       const prs = this.db
         .prepare(
-          "SELECT p.*,o.head_sha,o.base_sha,o.base_branch,o.commits,o.merge_sha AS actual_merge_sha,o.state AS observed_state FROM pull_requests p JOIN jobs j ON j.id=p.job_id JOIN fci_pr_observations o ON lower(o.repo)=lower(p.repo) AND o.number=p.number WHERE j.repository_id=?",
+          "SELECT p.*,o.head_sha,o.base_sha,o.base_branch,o.commits,o.merge_sha AS actual_merge_sha,o.state AS observed_state FROM pull_requests p JOIN jobs j ON j.id=p.job_id JOIN fci_pr_observations o ON lower(o.repo)=lower(p.repo) AND o.number=p.number WHERE j.repository_id=? AND NOT EXISTS (SELECT 1 FROM job_inputs i WHERE i.job_id=j.id AND json_extract(i.snapshot,'$.planTask.parentKey') IS NOT NULL)",
         )
         .all(repo.id) as Row[];
       for (const p of prs) {
@@ -176,7 +185,15 @@ export class FciService {
         )
           continue;
         const merged = p.observed_state === "merged";
-        if (merged && !p.actual_merge_sha) continue;
+        if (!merged || !p.actual_merge_sha) continue;
+        if (JSON.parse(s.profile as string).staticAnalysis) {
+          const boundary = this.db
+            .prepare(
+              "SELECT automatic FROM fci_history_commits WHERE series_id=? AND sha=? AND active=1",
+            )
+            .get(s.id, p.actual_merge_sha) as { automatic: number } | undefined;
+          if (!boundary?.automatic) continue; // Backfill never reports historical Jira issues.
+        }
         const key = hash([
           p.repo,
           p.number,
@@ -187,7 +204,7 @@ export class FciService {
         ]);
         this.enqueue(s, {
           key: `pr:${key}`,
-          purpose: merged ? "merge_final" : "pr_preview",
+          purpose: "merge_final",
           before: p.base_sha as string,
           after: p.head_sha as string,
           prRepo: p.repo as string,
@@ -215,6 +232,232 @@ export class FciService {
         )
         .get(workerId, this.now()),
     );
+  }
+  private syncHistory(s: Row) {
+    this.db.prepare("INSERT OR IGNORE INTO fci_history_state(series_id)VALUES (?)").run(s.id);
+    const state = this.db
+      .prepare("SELECT * FROM fci_history_state WHERE series_id=?")
+      .get(s.id) as Row;
+    const scan = this.db
+      .prepare(
+        "SELECT id,status FROM fci_tasks WHERE series_id=? AND purpose='history_scan' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(s.id) as Row | undefined;
+    if (
+      (!scan || !["queued", "running"].includes(scan.status)) &&
+      (!state.scanned_at || Date.parse(this.now()) - Date.parse(String(state.scanned_at)) >= 60000)
+    ) {
+      this.enqueue(s, {
+        key: `scan:${Math.floor(Date.parse(this.now()) / 60000)}`,
+        purpose: "history_scan",
+        before: s.baseline_sha,
+        after: s.baseline_sha,
+      });
+    }
+    if (state.error || !state.tip) return;
+    const baseline = this.snapshot(s.id, s.baseline_sha);
+    if (!baseline || rawFci(baseline.assessment, JSON.parse(s.profile as string).weights) === null)
+      return;
+    const existingTasks = new Map(
+      (
+        this.db
+          .prepare(
+            "SELECT after_sha,status FROM fci_tasks WHERE series_id=? AND purpose='commit' AND revision=0",
+          )
+          .all(s.id) as Array<{ after_sha: string; status: string }>
+      ).map((t) => [t.after_sha, t]),
+    );
+    const commits = this.db
+      .prepare(
+        "SELECT * FROM fci_history_commits WHERE series_id=? AND active=1 AND ordinal>0 ORDER BY ordinal",
+      )
+      .all(s.id) as Row[];
+    let backfillQueued = false;
+    for (const c of commits) {
+      const automatic = Boolean(c.automatic);
+      const existing = existingTasks.get(String(c.sha));
+      if (existing) {
+        if (["queued", "running"].includes(existing.status) && !automatic) backfillQueued = true;
+        continue;
+      }
+      if (
+        !automatic &&
+        (state.mode === "paused" ||
+          Number(c.ordinal) > Number(state.through_order) ||
+          backfillQueued)
+      )
+        continue;
+      this.enqueue(s, {
+        key: `commit:${c.sha}`,
+        purpose: "commit",
+        before: String(c.sha),
+        after: String(c.sha),
+      });
+      if (!automatic) backfillQueued = true;
+    }
+  }
+  historyControl(repoId: string, action: string, sha?: string) {
+    const s = this.series(repoId);
+    if (!s || !JSON.parse(s.profile as string).staticAnalysis)
+      return fail(409, "정적 FCI를 먼저 활성화해 주세요.");
+    this.syncHistory(s);
+    if (["pause", "all", "next", "resume"].includes(action)) {
+      const state = this.db
+        .prepare("SELECT tip,through_order FROM fci_history_state WHERE series_id=?")
+        .get(s.id) as { tip: string | null; through_order: number | null };
+      if (action !== "pause" && !state.tip)
+        return fail(409, "Worker가 이력을 확인한 뒤 평가를 시작해 주세요.");
+      const missing = this.db
+        .prepare(
+          "SELECT c.ordinal FROM fci_history_commits c WHERE c.series_id=? AND c.active=1 AND c.ordinal>0 AND NOT EXISTS(SELECT 1 FROM fci_tasks t WHERE t.series_id=c.series_id AND t.after_sha=c.sha AND t.purpose='commit' AND t.status IN ('succeeded','failed','unassessable')) ORDER BY c.ordinal",
+        )
+        .all(s.id) as { ordinal: number }[];
+      const through =
+        action === "next"
+          ? missing[0]?.ordinal
+          : action === "resume"
+            ? (state.through_order ?? missing.at(-1)?.ordinal)
+            : action === "pause"
+              ? undefined
+              : missing.at(-1)?.ordinal;
+      this.db
+        .prepare(
+          "UPDATE fci_history_state SET mode=?,through_order=COALESCE(?,through_order) WHERE series_id=?",
+        )
+        .run(action === "pause" ? "paused" : "all", through ?? null, s.id);
+      this.syncHistory(s);
+      return { accepted: true };
+    }
+    if (action === "explain" && sha) {
+      const snapshot = this.snapshot(s.id, sha);
+      if (!snapshot?.assessment.structural || snapshot.assessment.structural.raw === null)
+        return fail(409, "평가를 완료한 커밋을 선택해 주세요.");
+      this.enqueue(s, {
+        key: `explain:${sha}:${hash(roleSystemPrompt("fci_analysis", this.config.prompts))}`,
+        purpose: "explain",
+        before: sha,
+        after: sha,
+      });
+      return { accepted: true };
+    }
+    return fail(400, "알 수 없는 FCI 동작입니다.");
+  }
+  historyView(repoId: string, offset = 0, limit = 100) {
+    this.sync();
+    const s = this.series(repoId);
+    if (!s) return { series: null, commits: [], total: 0, state: null };
+    const profile = JSON.parse(s.profile as string);
+    const base = this.snapshot(s.id, s.baseline_sha);
+    const baseRaw = base ? rawFci(base.assessment, profile.weights) : null;
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM fci_history_commits WHERE series_id=? AND active=1 ORDER BY ordinal LIMIT ? OFFSET ?",
+      )
+      .all(s.id, Math.min(500, Math.max(1, limit)), Math.max(0, offset)) as Row[];
+    const latest = this.db
+      .prepare(
+        "SELECT c.sha,c.ordinal,p.raw_score FROM fci_history_commits c JOIN fci_snapshots p ON p.series_id=c.series_id AND p.sha=c.sha AND p.revision=0 WHERE c.series_id=? AND c.active=1 AND p.raw_score IS NOT NULL ORDER BY c.ordinal DESC LIMIT 1",
+      )
+      .get(s.id) as { sha: string; ordinal: number; raw_score: number } | undefined;
+    return {
+      latest: latest
+        ? {
+            sha: latest.sha,
+            ordinal: latest.ordinal,
+            fci: normalizedFci(latest.raw_score, baseRaw),
+          }
+        : null,
+      series: { id: s.id, baselineSha: s.baseline_sha, profile },
+      state: this.db.prepare("SELECT * FROM fci_history_state WHERE series_id=?").get(s.id),
+      total: (
+        this.db
+          .prepare("SELECT COUNT(*) n FROM fci_history_commits WHERE series_id=? AND active=1")
+          .get(s.id) as { n: number }
+      ).n,
+      completed: (
+        this.db
+          .prepare(
+            "SELECT COUNT(*) n FROM fci_history_commits c JOIN fci_snapshots p ON p.series_id=c.series_id AND p.sha=c.sha AND p.revision=0 WHERE c.series_id=? AND c.active=1 AND p.raw_score IS NOT NULL",
+          )
+          .get(s.id) as { n: number }
+      ).n,
+      commits: rows.map((c) => {
+        const snapshot = this.snapshot(s.id, String(c.sha));
+        const previous = c.parent_sha ? this.snapshot(s.id, String(c.parent_sha)) : null;
+        const raw = snapshot ? rawFci(snapshot.assessment, profile.weights) : null;
+        const oldRaw = previous ? rawFci(previous.assessment, profile.weights) : null;
+        const task = this.db
+          .prepare(
+            "SELECT id,status,error FROM fci_tasks WHERE series_id=? AND after_sha=? AND revision=0 AND purpose IN ('commit','baseline') ORDER BY rowid DESC LIMIT 1",
+          )
+          .get(s.id, c.sha) as Row | undefined;
+        return {
+          ...c,
+          sha: String(c.sha),
+          parent_sha: c.parent_sha,
+          ordinal: Number(c.ordinal),
+          taskId: task?.id,
+          status: task?.status ?? (snapshot ? "succeeded" : "missing"),
+          error: task?.error,
+          fci: normalizedFci(raw, baseRaw),
+          delta: raw === null || oldRaw === null ? null : raw - oldRaw,
+          axes: Object.fromEntries(
+            Object.entries(snapshot?.assessment.structural?.axes ?? {}).map(([axis, value]) => {
+              const b = base?.assessment.structural?.axes[axis as "coupling"];
+              return [axis, value === null || b == null ? null : 100 + value - b];
+            }),
+          ),
+          confidence: snapshot?.assessment.structural?.confidence,
+        };
+      }),
+    };
+  }
+  historyDetail(repoId: string, sha: string) {
+    const s = this.series(repoId);
+    if (!s) return fail(404, "unknown FCI series");
+    const commit = this.db
+      .prepare("SELECT * FROM fci_history_commits WHERE series_id=? AND sha=?")
+      .get(s.id, sha) as Row | undefined;
+    if (!commit) return fail(404, "unknown commit");
+    const snapshot = this.snapshot(s.id, sha);
+    const previous = commit.parent_sha ? this.snapshot(s.id, String(commit.parent_sha)) : null;
+    const repo = this.config.repositories.find((r) => r.id === repoId);
+    const remote = repo?.cloneUrl?.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/)?.[1];
+    const findings = snapshot?.assessment.structural
+      ? structuralFindings(
+          snapshot.facts as unknown as FciFacts,
+          previous?.facts as unknown as FciFacts | undefined,
+        )
+      : [];
+    const axes = snapshot?.assessment.structural?.axes;
+    const before = previous?.assessment.structural?.axes;
+    findings.sort(
+      (a, b) =>
+        Math.abs((axes?.[b.axis] ?? 0) - (before?.[b.axis] ?? 0)) -
+        Math.abs((axes?.[a.axis] ?? 0) - (before?.[a.axis] ?? 0)),
+    );
+    return {
+      commit,
+      snapshot,
+      previous,
+      jiraBaseUrl: this.config.jira.baseUrl,
+      findings: findings.slice(0, 3).map((f) => ({
+        ...f,
+        url: remote
+          ? `https://github.com/${remote}/blob/${f.sha ?? sha}/${f.path.split("/").map(encodeURIComponent).join("/")}#L${f.line}`
+          : null,
+      })),
+      explanations: this.db
+        .prepare(
+          "SELECT id,status,error,outcome FROM fci_tasks WHERE series_id=? AND after_sha=? AND purpose='explain' ORDER BY rowid DESC",
+        )
+        .all(s.id, sha),
+      prs: this.db
+        .prepare(
+          "SELECT pr_repo,pr_number,issue_key FROM fci_tasks WHERE series_id=? AND after_sha=? AND purpose='merge_final' UNION SELECT p.repo AS pr_repo,p.number AS pr_number,p.issue_key FROM pull_requests p JOIN fci_pr_observations o ON lower(o.repo)=lower(p.repo) AND o.number=p.number JOIN jobs j ON j.id=p.job_id WHERE j.repository_id=? AND o.merge_sha=? AND o.state='merged'",
+        )
+        .all(s.id, sha, repoId, sha),
+    };
   }
   next(
     workerId: string,
@@ -250,7 +493,6 @@ export class FciService {
       const policy = this.config.workers.find((w) => w.workerId === workerId && w.enabled);
       if (!policy) return null;
       const provider = providers.find((p) => p.id === policy.providerId);
-      if (!provider?.model) return null;
       const pending = this.db
         .prepare(
           "SELECT t.*,s.repository_id,s.baseline_sha,s.profile_key,s.profile FROM fci_tasks t JOIN fci_series s ON s.id=t.series_id WHERE t.status='queued' AND t.superseded=0 ORDER BY CASE WHEN t.purpose='baseline' THEN 0 ELSE 1 END,t.created_at,t.rowid",
@@ -266,18 +508,62 @@ export class FciService {
         if (current?.id !== t.series_id) continue;
         const profile = JSON.parse(t.profile as string);
         if (
-          profile.model !== provider.model ||
-          (provider.type && profile.providerType !== provider.type)
+          !profile.staticAnalysis &&
+          (!provider?.model ||
+            profile.model !== provider.model ||
+            (provider.type && profile.providerType !== provider.type))
         )
           continue;
+        if (t.purpose === "explain" && !provider) continue;
+        if (profile.staticAnalysis && t.purpose === "commit") {
+          const state = this.db
+            .prepare("SELECT * FROM fci_history_state WHERE series_id=?")
+            .get(t.series_id) as Row;
+          if (state.error) continue;
+          const c = this.db
+            .prepare(
+              "SELECT ordinal,active,automatic FROM fci_history_commits WHERE series_id=? AND sha=?",
+            )
+            .get(t.series_id, t.after_sha) as
+            | { ordinal: number; active: number; automatic: number }
+            | undefined;
+          const retried =
+            Number(t.revision) > 0 ||
+            Boolean(
+              this.db.prepare("SELECT 1 FROM fci_attempts WHERE task_id=? LIMIT 1").get(t.id),
+            );
+          if (
+            !c?.active ||
+            (!retried &&
+              !c.automatic &&
+              (state.mode === "paused" || c.ordinal > Number(state.through_order)))
+          )
+            continue;
+        }
         const repo = this.config.repositories.find((r) => r.id === t.repository_id);
         const task = FciTaskSchema.parse({
           id: t.id,
           attemptId: requestId,
           leaseToken: randomUUID(),
           repositoryId: t.repository_id,
-          providerId: provider.id,
-          model: provider.model,
+          providerId: provider?.id ?? policy.providerId,
+          model: profile.staticAnalysis ? "static" : provider?.model,
+          staticAnalysis: profile.staticAnalysis ?? false,
+          ...(t.purpose === "explain"
+            ? {
+                explanationSnapshot: this.snapshot(t.series_id as string, t.after_sha),
+                explanationPrevious: (() => {
+                  const c = this.db
+                    .prepare(
+                      "SELECT parent_sha FROM fci_history_commits WHERE series_id=? AND sha=?",
+                    )
+                    .get(t.series_id, t.after_sha) as { parent_sha: string } | undefined;
+                  return c
+                    ? (this.snapshot(t.series_id as string, c.parent_sha) ?? undefined)
+                    : undefined;
+                })(),
+              }
+            : {}),
           providerType: profile.providerType,
           seriesId: t.series_id,
           profileKey: t.profile_key,
@@ -289,8 +575,11 @@ export class FciService {
           prRepo: t.pr_repo,
           prNumber: t.pr_number,
           issueKey: t.issue_key,
-          systemPrompt: profile.systemPrompt,
-          weights: profile.weights,
+          systemPrompt:
+            t.purpose === "explain"
+              ? roleSystemPrompt("fci_analysis", this.config.prompts)
+              : profile.systemPrompt,
+          weights: profile.weights ?? {},
           timeoutMs: repo?.fci?.timeoutMs ?? 600000,
           revision: t.revision,
           mergeSha: t.merge_sha,
@@ -471,6 +760,55 @@ export class FciService {
     if (outcome.snapshots.some((s) => s.model !== profile.model))
       return fail(400, "FCI model differs from profile");
     this.db.transaction(() => {
+      if (t.purpose === "history_scan") {
+        const parsed = z
+          .object({
+            tip: ShaSchema,
+            baselineSha: ShaSchema,
+            commits: z.array(
+              z.object({
+                sha: ShaSchema,
+                parent: ShaSchema.nullable(),
+                title: z.string(),
+                date: z.string(),
+              }),
+            ),
+          })
+          .safeParse(outcome.change);
+        if (outcome.status === "succeeded" && parsed.success) {
+          const { tip, commits } = parsed.data;
+          if (
+            !parsed.data.baselineSha.startsWith(series.baseline_sha) ||
+            commits[0]?.sha !== parsed.data.baselineSha ||
+            commits.at(-1)?.sha !== tip ||
+            commits.some((c, i) => i > 0 && c.parent !== commits[i - 1]?.sha)
+          )
+            return fail(400, "Invalid first-parent history");
+          this.db
+            .prepare("UPDATE fci_series SET baseline_sha=? WHERE id=?")
+            .run(parsed.data.baselineSha, series.id);
+          this.db
+            .prepare("UPDATE fci_history_commits SET active=0 WHERE series_id=?")
+            .run(series.id);
+          const state = this.db
+            .prepare("SELECT initial_tip FROM fci_history_state WHERE series_id=?")
+            .get(series.id) as { initial_tip: string | null };
+          const insert = this.db.prepare(
+            "INSERT INTO fci_history_commits(series_id,sha,parent_sha,ordinal,title,committed_at,active,automatic)VALUES(?,?,?,?,?,?,1,?) ON CONFLICT(series_id,sha) DO UPDATE SET ordinal=excluded.ordinal,active=1",
+          );
+          commits.forEach((c, i) =>
+            insert.run(series.id, c.sha, c.parent, i, c.title, c.date, state.initial_tip ? 1 : 0),
+          );
+          this.db
+            .prepare(
+              "UPDATE fci_history_state SET tip=?,initial_tip=COALESCE(initial_tip,?),scanned_at=?,error=NULL WHERE series_id=?",
+            )
+            .run(tip, tip, this.now(), series.id);
+        } else
+          this.db
+            .prepare("UPDATE fci_history_state SET scanned_at=?,error=? WHERE series_id=?")
+            .run(this.now(), outcome.reason ?? "이력 조회 실패", series.id);
+      }
       this.db.prepare("DELETE FROM fci_snapshot_claims WHERE task_id=? AND token=?").run(id, token);
       this.db
         .prepare("UPDATE fci_attempts SET result_id=?,outcome=? WHERE id=?")
@@ -512,6 +850,8 @@ export class FciService {
   retry(id: string, force = false) {
     const t = this.db.prepare("SELECT * FROM fci_tasks WHERE id=?").get(id) as Row | undefined;
     if (!t) return fail(404, "unknown FCI analysis");
+    if (["task_result", "pr_preview"].includes(t.purpose))
+      return fail(409, "Pre-merge analysis is retired; evaluate the merged parent PR instead");
     const original = t.envelope ? FciTaskSchema.parse(JSON.parse(t.envelope as string)) : null;
     if (t.status === "running") return fail(409, "analysis is running");
     if (force) {
@@ -599,7 +939,7 @@ export class FciService {
       report: this.db.prepare("SELECT * FROM fci_reports WHERE task_id=?").get(id) ?? null,
     };
   }
-  view(repositoryId?: string) {
+  view(repositoryId?: string, summaryOnly = false) {
     this.sync();
     const series = this.db
       .prepare(
@@ -608,7 +948,7 @@ export class FciService {
       .all(...(repositoryId ? [repositoryId] : [])) as Row[];
     const tasks = this.db
       .prepare(
-        `SELECT t.id FROM fci_tasks t JOIN fci_series s ON s.id=t.series_id ${repositoryId ? "WHERE s.repository_id=?" : ""} ORDER BY t.created_at DESC,t.rowid DESC`,
+        `SELECT t.id,t.series_id,s.repository_id,t.purpose,t.status,t.after_sha FROM fci_tasks t JOIN fci_series s ON s.id=t.series_id ${repositoryId ? "WHERE s.repository_id=?" : ""} ORDER BY t.created_at DESC,t.rowid DESC`,
       )
       .all(...(repositoryId ? [repositoryId] : [])) as { id: string }[];
     return {
@@ -623,7 +963,8 @@ export class FciService {
         fci: r.fci ?? { enabled: false },
       })),
       series: series.map((s) => ({ ...s, profile: JSON.parse(s.profile as string) })),
-      analyses: tasks.map((t) => this.detail(t.id)),
+      records: summaryOnly ? tasks : [],
+      analyses: summaryOnly ? [] : tasks.map((t) => this.detail(t.id)),
     };
   }
   forJob(jobId: string) {
@@ -651,6 +992,30 @@ export class FciService {
         d.after.assessment.summary,
         ...d.after.assessment.unverified.map((x) => `미검증: ${x}`),
       );
+      if (d.after.assessment.structural) {
+        const axes = d.after.assessment.structural.axes;
+        const old = d.before?.assessment.structural?.axes;
+        for (const [axis, title] of Object.entries({
+          coupling: "의존성",
+          complexity: "복잡도",
+          duplication: "중복",
+          ripple: "변경 파급",
+        }))
+          lines.push(
+            `${title}: ${n(old?.[axis as keyof typeof axes] ?? null)} → ${n(axes[axis as keyof typeof axes])}`,
+          );
+        for (const f of structuralFindings(
+          d.after.facts as unknown as FciFacts,
+          d.before?.facts as unknown as FciFacts | undefined,
+        ).slice(0, 3))
+          lines.push(
+            `${f.explanation}\n근거: ${d.pr_repo ? `https://github.com/${d.pr_repo}/blob/${d.after.sha}/${f.path.split("/").map(encodeURIComponent).join("/")}#L${f.line}` : `${f.path}:${f.line}`}\n개선: ${f.suggestion}`,
+          );
+        lines.push(
+          "정적 평가는 테스트를 실행하지 않습니다. 연결된 통합 검증 결과를 별도로 확인하세요.",
+        );
+        return lines.join("\n");
+      }
       for (const axis of FCI_AXES) {
         const a = d.after.assessment.axes[axis];
         const b = d.before?.assessment.axes[axis];
@@ -672,11 +1037,12 @@ export class FciService {
   async report(jira: JiraGateway) {
     const reports = this.db
       .prepare(
-        "SELECT r.task_id,t.issue_key,s.repository_id FROM fci_reports r JOIN fci_tasks t ON t.id=r.task_id JOIN fci_series s ON s.id=t.series_id WHERE r.status='pending' AND t.superseded=0",
+        "SELECT r.task_id,t.issue_key,s.repository_id,t.series_id FROM fci_reports r JOIN fci_tasks t ON t.id=r.task_id JOIN fci_series s ON s.id=t.series_id WHERE r.status='pending' AND t.superseded=0",
       )
-      .all() as { task_id: string; issue_key: string; repository_id: string }[];
+      .all() as { task_id: string; issue_key: string; repository_id: string; series_id: string }[];
     for (const r of reports) {
-      if (!this.enabled(r.repository_id)) continue;
+      if (!this.enabled(r.repository_id) || this.series(r.repository_id)?.id !== r.series_id)
+        continue;
       try {
         const marker = `[GGJIRA:FCI:${r.task_id}]`;
         const comments = await jira.getComments(r.issue_key);

@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import type { z } from "zod";
+import { z } from "zod";
 import { z as schema } from "zod";
 import {
   AdminAddWorkerRequestSchema,
@@ -71,6 +71,8 @@ export interface RouterServerDeps {
   workerService?: WorkerService;
   /** Bearer token for `/api/v1/admin/*`. Admin routes are not registered without it. */
   adminToken?: string;
+  /** Explicit temporary bypass for same-origin web UI requests arriving over loopback only. */
+  localUiWithoutToken?: boolean;
   /** Enables the admin routes beyond pairing codes (workers, jobs, reports, sync, backup). */
   adminService?: AdminService;
   /** Where the web UI's static files live; defaults to the repo's `web/router-ui/`. */
@@ -102,6 +104,22 @@ export function tokensEqual(presented: string | undefined, expected: string): bo
   const a = Buffer.from(presented, "utf-8");
   const b = Buffer.from(expected, "utf-8");
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function localUiRequest(request: FastifyRequest, requireHeader = true): boolean {
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.raw.socket.remoteAddress ?? ""))
+    return false;
+  if (requireHeader && request.headers["x-ggjira-local-ui"] !== "1") return false;
+  const site = headerValue(request.headers["sec-fetch-site"]);
+  if (site && !["same-origin", "none"].includes(site)) return false;
+  try {
+    const host = new URL(`${request.protocol}://${headerValue(request.headers.host)}`);
+    if (!["localhost", "127.0.0.1", "[::1]"].includes(host.hostname)) return false;
+    const origin = headerValue(request.headers.origin);
+    return !origin || new URL(origin).origin === host.origin;
+  } catch {
+    return false;
+  }
 }
 
 function sendError(reply: FastifyReply, status: number, body: ApiErrorResponse): FastifyReply {
@@ -145,7 +163,13 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
     }
   });
 
-  app.get("/health", async () => ({ status: "ok", mode: "router" }));
+  app.get("/health", async (request) => ({
+    status: "ok",
+    mode: "router",
+    ...(deps.localUiWithoutToken && localUiRequest(request, false)
+      ? { localUiWithoutToken: true }
+      : {}),
+  }));
   registerWebUi(app, deps.webUiRoot);
 
   app.post("/webhooks/jira", { bodyLimit: JIRA_WEBHOOK_BODY_LIMIT }, async (request, reply) => {
@@ -228,7 +252,7 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
   const service = deps.workerService;
   if (service) registerWorkerRoutes(app, service);
   if (deps.adminToken && (service || deps.adminService)) {
-    registerAdminRoutes(app, deps.adminToken, service, deps.adminService);
+    registerAdminRoutes(app, deps.adminToken, service, deps.adminService, deps.localUiWithoutToken);
   }
 
   return app;
@@ -393,11 +417,15 @@ function registerAdminRoutes(
   adminToken: string,
   service: WorkerService | undefined,
   admin: AdminService | undefined,
+  localUiWithoutToken = false,
 ): void {
   app.register(
     async (scope) => {
       scope.addHook("onRequest", async (request, reply) => {
-        if (!tokensEqual(bearerToken(request), adminToken)) {
+        if (
+          !tokensEqual(bearerToken(request), adminToken) &&
+          !(localUiWithoutToken && localUiRequest(request))
+        ) {
           return sendError(reply, 401, {
             error: "unauthenticated",
             message: "admin token required",
@@ -418,7 +446,37 @@ function registerAdminRoutes(
       );
 
       if (!admin) return;
-      scope.get("/fci", async () => admin.fci().view());
+      scope.get<{ Querystring: { summary?: string } }>("/fci", async (request) =>
+        admin.fci().view(undefined, request.query.summary === "1"),
+      );
+      scope.get<{ Params: { id: string }; Querystring: { offset?: string; limit?: string } }>(
+        "/repositories/:id/fci/history",
+        async (request) =>
+          admin
+            .fci()
+            .historyView(
+              request.params.id,
+              Number(request.query.offset) || 0,
+              Number(request.query.limit) || 100,
+            ),
+      );
+      scope.get<{ Params: { id: string; sha: string } }>(
+        "/repositories/:id/fci/commits/:sha",
+        async (request) =>
+          admin
+            .fci()
+            .historyDetail(request.params.id, parseBody(ShaSchema, { parsed: request.params.sha })),
+      );
+      scope.post<{ Params: { id: string } }>("/repositories/:id/fci/control", async (request) => {
+        const body = parseBody(
+          z.object({
+            action: z.enum(["all", "next", "pause", "resume", "explain"]),
+            sha: ShaSchema.optional(),
+          }),
+          request.body,
+        );
+        return admin.fci().historyControl(request.params.id, body.action, body.sha);
+      });
       scope.get<{ Params: { id: string } }>("/fci/:id", async (request) =>
         admin.fci().detail(request.params.id),
       );
@@ -450,6 +508,16 @@ function registerAdminRoutes(
 
       type IdParams = { Params: { id: string } };
       scope.get("/status", async () => admin.status());
+      scope.get<{ Querystring: { offset?: string; limit?: string } }>("/tasks", async (request) => {
+        const query = parseBody(
+          z.object({
+            offset: z.coerce.number().int().min(0).default(0),
+            limit: z.coerce.number().int().min(1).max(100).default(30),
+          }),
+          { parsed: request.query },
+        );
+        return admin.tasks(query.offset, query.limit);
+      });
 
       scope.get("/workers", async () => ({ workers: admin.listWorkers() }));
       scope.post("/workers", async (request, reply) =>
@@ -528,9 +596,16 @@ function registerAdminRoutes(
         admin.issueReviews(request.params.key),
       );
       scope.get<{
-        Querystring: { class?: string; state?: string; assignee?: string; parent?: string };
+        Querystring: {
+          class?: string;
+          state?: string;
+          assignee?: string;
+          parent?: string;
+          issue?: string;
+        };
       }>("/reviews", async (request) =>
         admin.reviewQueue({
+          ...(request.query.issue ? { issueKey: request.query.issue } : {}),
           ...(request.query.class ? { reviewClass: request.query.class } : {}),
           ...(request.query.state
             ? { states: request.query.state.split(",").filter(Boolean) }

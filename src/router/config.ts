@@ -127,6 +127,7 @@ const DatabaseConfigSchema = z.object({
 });
 
 const HttpConfigSchema = z.object({
+  localUiWithoutToken: z.boolean().optional(),
   host: z.string().min(1).default("127.0.0.1"),
   port: z.number().int().positive().default(8787),
 });

@@ -178,6 +178,7 @@ export class RouterDaemon {
       now: this.now,
       workerService: this.workerService,
       adminToken: deps.adminToken,
+      localUiWithoutToken: this.config.http.localUiWithoutToken === true,
       adminService: this.adminService,
       ...(deps.github?.webhookSecret
         ? {

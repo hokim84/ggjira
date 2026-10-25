@@ -45,6 +45,7 @@ import {
   storeApproval,
 } from "./issue-check.js";
 import { integrationEvidence } from "./lifecycle.js";
+import { publishedImplementation } from "./assembly.js";
 import { syncPlanningRequest } from "./planning-requests.js";
 import { pressureRank, usagePressure } from "./usage-routing.js";
 import {
@@ -225,6 +226,7 @@ async function reconcileIssue(
         ? "implementation"
         : undefined,
       deps.now(),
+      deps.config.repositories.find((r) => r.id === workspace.repositoryId)?.baseBranch ?? "main",
     );
   } catch (error) {
     if (error instanceof PlanMetadataError || error instanceof NotDelegatedError) {
@@ -240,6 +242,9 @@ async function reconcileIssue(
     throw error;
   }
   const { kind, requirements, planTask, approvalId, inputHash } = approval;
+  if (approval.assembly)
+    approval.assembly.baseBranch =
+      deps.config.repositories.find((r) => r.id === workspace.repositoryId)?.baseBranch ?? "main";
   const quality =
     kind === "quality_review" || kind === "integration_check"
       ? await checkContext(
@@ -268,23 +273,46 @@ async function reconcileIssue(
     dependencyKeys,
   );
   let integration: ApprovalSnapshot["integration"];
-  if (planTask) {
-    const parent = getActivePlanDeployment(deps.db, planTask.parentKey);
+  const groupParentKey = planTask?.parentKey ?? issue.parentKey;
+  if (groupParentKey && kind === "implementation") {
+    const parent = getActivePlanDeployment(deps.db, groupParentKey);
     const review = parent && getPlanReview(deps.db, parent.planReviewId);
     if (review) {
       const baseBranch =
         deps.config.repositories.find((repo) => repo.id === workspace.repositoryId)?.baseBranch ??
         "main";
       const evidence = dependencyKeys.map((key) => integrationEvidence(deps.db, key, baseBranch));
-      dependencyKeys.forEach((key, index) => {
+      const resultCommits: string[] = [];
+      for (const [index, key] of dependencyKeys.entries()) {
         const latest = latestImplementation(deps.db, key);
         const noChange = latest && verifiedNoChange(JSON.parse(latest.payload));
-        if (!evidence[index] && !noChange && !unresolvedDependencies.includes(key))
+        const result = await publishedImplementation(deps.db, deps.jira, workspace, key);
+        const published =
+          result?.git?.headSha && result?.artifacts?.some((a: string) => a.startsWith("pushed:"));
+        if (!evidence[index] && published && result?.git?.headSha)
+          resultCommits.push(result.git.headSha);
+        if (!evidence[index] && !noChange && !published && !unresolvedDependencies.includes(key))
           unresolvedDependencies.push(key);
-      });
+      }
+      const previous = latestImplementation(deps.db, issue.key);
+      const priorResult = previous ? JSON.parse(previous.payload) : null;
+      if (
+        !integrationEvidence(deps.db, issue.key, baseBranch) &&
+        priorResult?.git?.headSha &&
+        priorResult?.artifacts?.some((a: string) => a.startsWith("pushed:"))
+      )
+        resultCommits.push(priorResult.git.headSha);
+      const aggregate = deps.db
+        .prepare(
+          "SELECT t.head_sha FROM pull_requests p JOIN review_targets t ON t.attempt_id=p.attempt_id WHERE p.issue_key=? AND p.state='open' AND t.superseded_by IS NULL ORDER BY p.updated_at DESC LIMIT 1",
+        )
+        .get(groupParentKey) as { head_sha: string } | undefined;
+      if (aggregate?.head_sha) resultCommits.push(aggregate.head_sha);
       integration = {
+        parentKey: groupParentKey,
         baseBranch,
         mergeCommits: evidence.flatMap((item) => (item ? [item.mergeSha] : [])),
+        resultCommits,
       };
     }
   }
@@ -385,6 +413,10 @@ async function reconcileIssue(
       now,
     });
     report.jobsCreated.push(job.id);
+    if (approval.assembly)
+      deps.db
+        .prepare("INSERT INTO assembly_runs VALUES (?,?,?,?)")
+        .run(job.id, issue.key, approval.assembly.cycleId, JSON.stringify(approval.assembly));
     deps.db
       .prepare("INSERT INTO job_inputs VALUES (?,?)")
       .run(job.id, JSON.stringify(getApproval(deps.db, issue.key)?.inputSnapshot));

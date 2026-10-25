@@ -198,7 +198,7 @@ describe("immutable repository facts and merge boundaries", () => {
     const after = await collectFciFacts(repo, wording);
     expect(after.files).toEqual(initial.files);
     const body =
-      "export function repeated(x: number) { let value = x; if (x > 0) { value += 10; } else { value -= 20; } for (let i = 0; i < x; i++) value += i; return value; }\n";
+      "export function repeated(x: number) { let value = x; if (x > 0) { value += 10; } else { value -= 20; } for (let i = 0; i < x; i++) { value += i; if (value > 100) value -= 2; } return value; }\n";
     commit("app.ts", body);
     const duplicate = commit("copy.ts", body);
     expect((await collectFciFacts(repo, duplicate)).duplicateBodies).toHaveLength(1);
@@ -282,7 +282,12 @@ describe("immutable repository facts and merge boundaries", () => {
           {
             id: "repo1",
             baseBranch: "main",
-            fci: FciConfigSchema.parse({ enabled: true, baselineSha: base, modelId: "test-model" }),
+            fci: FciConfigSchema.parse({
+              enabled: true,
+              ruleVersion: "fci-v1",
+              baselineSha: base,
+              modelId: "test-model",
+            }),
           },
         ],
       },
@@ -382,7 +387,12 @@ describe("independent FCI queue, cache and reporting", () => {
           {
             id: "repo1",
             baseBranch: "main",
-            fci: FciConfigSchema.parse({ enabled: true, baselineSha: base, modelId: "test-model" }),
+            fci: FciConfigSchema.parse({
+              enabled: true,
+              ruleVersion: "fci-v1",
+              baselineSha: base,
+              modelId: "test-model",
+            }),
           },
         ],
       },
@@ -462,14 +472,41 @@ describe("independent FCI queue, cache and reporting", () => {
     expect(d.afterFci).toBe(100);
     expect(service.snapshot(task.seriesId, base)).not.toBeNull();
   });
+  it("never queues implementation-result analysis, even for a successful published child", () => {
+    baseline();
+    createJob(router.db, {
+      id: "child-result",
+      issueKey: "KAN-2",
+      workspaceId: "ws1",
+      repositoryId: "repo1",
+      kind: "implementation",
+      approvalId: "approved",
+      state: "succeeded",
+      now: router.clock.now(),
+    });
+    router.db
+      .prepare(
+        "INSERT INTO results (id,job_id,attempt_id,payload,received_at,applied) VALUES (?,?,?,?,?,1)",
+      )
+      .run(
+        "child-result-id",
+        "child-result",
+        "child-attempt",
+        JSON.stringify({ status: "succeeded", git: { baseSha: base, headSha: head } }),
+        router.clock.now(),
+      );
+    service.sync();
+    expect(next()).toBeNull();
+    expect(service.view().analyses.map((a) => a.purpose)).toEqual(["baseline"]);
+  });
   it("invalidates previews for head and target changes, excludes closed PRs from confirmed history", () => {
     baseline();
     pr();
     pr("open", 1, "4".repeat(40));
     pr("open", 1, "4".repeat(40), "5".repeat(40));
     const previews = service.view().analyses.filter((a) => a.purpose === "pr_preview");
-    expect(previews).toHaveLength(3);
-    expect(previews.filter((a) => !a.superseded)).toHaveLength(1);
+    expect(previews).toHaveLength(0);
+    expect(next()).toBeNull();
     pr("closed", 1, "4".repeat(40), "5".repeat(40));
     expect(service.view().analyses.filter((a) => a.purpose === "merge_final")).toHaveLength(0);
     expect(
@@ -495,7 +532,7 @@ describe("independent FCI queue, cache and reporting", () => {
   });
   it("separates analysis retry, explicit revisions and failed Jira reporting without re-running code", async () => {
     baseline();
-    pr();
+    pr("merged", 1, head, base, merge);
     let t = next();
     if (!t) throw new Error("missing preview");
     service.finish("worker-1", t.id, t.leaseToken, "failed", {
@@ -529,7 +566,7 @@ describe("independent FCI queue, cache and reporting", () => {
   });
   it("retains failed reporting for its own retry and marks missing axes as unavailable", async () => {
     baseline();
-    pr();
+    pr("merged", 1, head, base, merge);
     const t = next();
     if (!t) throw new Error("missing");
     service.finish("worker-1", t.id, t.leaseToken, "partial", {
@@ -595,7 +632,7 @@ describe("independent FCI queue, cache and reporting", () => {
     const first = next();
     if (!first) throw new Error("baseline missing");
     expect(service.lookup("worker-1", first.id, first.leaseToken, "session", base)).toBeNull();
-    pr();
+    pr("merged", 1, head, base, merge);
     const second = service.next("worker-2", "session-2", "parallel", [
       { id: "default", model: "test-model", type: "codex" },
     ]);

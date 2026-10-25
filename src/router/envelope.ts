@@ -129,12 +129,17 @@ export function buildJobEnvelope(
       ? { planningContext: toPlanningContext(job.id, approval.inputSnapshot) }
       : job.kind === "integration_check"
         ? { qualityContext: snapshot.quality }
-        : {
-            executionContract: toExecutionContract(job.id, approval.inputSnapshot),
-            ...(snapshot.integration ? { integration: snapshot.integration } : {}),
-          }),
+        : job.kind === "assemble_pr"
+          ? { assembly: snapshot.assembly }
+          : {
+              executionContract: toExecutionContract(job.id, approval.inputSnapshot),
+              ...(snapshot.planTask || snapshot.integration?.parentKey
+                ? { deferPullRequest: true }
+                : {}),
+              ...(snapshot.integration ? { integration: snapshot.integration } : {}),
+            }),
     systemPrompt:
-      job.kind === "integration_check"
+      job.kind === "integration_check" || job.kind === "assemble_pr"
         ? "Run trusted integration validation without an AI call."
         : roleSystemPrompt(job.kind, config.prompts),
     timeoutMs: config.execution.timeoutMs,

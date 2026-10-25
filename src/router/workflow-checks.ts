@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { assemblyContext, latestAssembly } from "./assembly.js";
 import type Database from "better-sqlite3";
 import type { JobResult } from "../contracts/envelope.js";
 import type { QualityContext } from "../contracts/quality.js";
@@ -48,6 +49,17 @@ export function sourceKey(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+export function verifiedImplementation(result: JobResult): boolean {
+  return (
+    result.status === "succeeded" &&
+    result.implementation?.outcome === "completed" &&
+    !!result.implementation.verification.length &&
+    result.implementation.verification.every((v) => v.status === "pass" && !!v.evidence.trim()) &&
+    !result.implementation.scopeDeviations?.length &&
+    result.scopeCheck?.outsideAllowed.length === 0
+  );
+}
+
 export async function checkContext(
   db: Database.Database,
   jira: JiraGateway,
@@ -62,6 +74,41 @@ export async function checkContext(
   const review = deployment && getPlanReview(db, deployment.planReviewId);
   const plan = review && getReviewedPlan(db, review.id);
   const own = latestImplementation(db, issue.key);
+  const aggregate = latestAssembly(db, issue.key);
+  const ownNewer =
+    own &&
+    aggregate &&
+    db
+      .prepare(
+        "SELECT 1 FROM jobs WHERE id=(SELECT job_id FROM results WHERE id=?) AND rowid>(SELECT rowid FROM jobs WHERE id=?)",
+      )
+      .get(own.id, aggregate.id);
+  if (deployment?.taskIds.length && !ownNewer) {
+    const current = await assemblyContext(db, jira, workspace, issue, baseBranch);
+    if (!current || !aggregate || JSON.parse(aggregate.context).cycleId !== current.cycleId) return;
+    const result = JSON.parse(aggregate.payload) as JobResult;
+    const integrated = integrationEvidence(db, issue.key, baseBranch);
+    const unchanged =
+      current.children.every((c) => c.noChange || c.integratedMergeSha) && !result.pullRequest;
+    if (!unchanged && (!integrated || integrated.resultId !== aggregate.resultId)) return;
+    const expectedSha = unchanged ? result.git?.headSha : integrated?.mergeSha;
+    if (!expectedSha) return;
+    return {
+      cycleId: sourceKey([current.cycleId, aggregate.resultId, expectedSha]),
+      policyVersion: 1,
+      planVersion: deployment.planVersion,
+      objective: `${issue.summary}\n${requirementDescription(issue.description)}`,
+      acceptance: plan?.acceptanceCriteria?.length ? plan.acceptanceCriteria : [issue.summary],
+      verification: plan?.verification.length
+        ? plan.verification
+        : ["Verify the integrated parent result."],
+      integration: { baseBranch, mergeCommits: unchanged ? [] : [expectedSha] },
+      expectedSha,
+      resultIds: [aggregate.resultId, ...current.children.map((c) => c.resultId)],
+      previousFindings: [],
+      verificationOnly: true,
+    };
+  }
   if (deployment && !own) {
     const request = latestPlanningRequest(db, issue.key);
     if (
@@ -176,6 +223,7 @@ export async function checkContext(
     integration: { baseBranch, mergeCommits: merges },
     resultIds: results,
     previousFindings: [],
+    ...(merges.length ? { expectedSha: merges.at(-1) } : {}),
     verificationOnly: !reviewOnly,
   };
 }

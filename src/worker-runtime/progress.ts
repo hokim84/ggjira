@@ -35,6 +35,7 @@ const KIND: Record<JobKind, string> = {
   implementation: "구현",
   quality_review: "품질 평가",
   integration_check: "통합 검증",
+  assemble_pr: "부모 통합 PR 생성",
 };
 const STAGE: Record<ExecutionStage, string> = {
   preparing: "작업 환경 준비 중",

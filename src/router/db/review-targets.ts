@@ -248,6 +248,7 @@ export interface ReviewQueueItem {
 }
 
 export interface ReviewQueueFilter {
+  issueKey?: string;
   reviewClass?: ReviewClass;
   /** Default: `pending` and `held`, the items still waiting on a human. */
   states?: readonly ReviewQueueState[];
@@ -317,10 +318,10 @@ export function listReviewQueue(
        FROM review_targets t
        LEFT JOIN approvals a ON a.issue_key = t.issue_key
        LEFT JOIN results r ON r.id = t.id
-       WHERE t.superseded_by IS NULL AND t.final_state <> 'cancelled'
+       WHERE t.superseded_by IS NULL AND t.final_state <> 'cancelled' AND (? IS NULL OR t.issue_key = ?)
        ORDER BY t.created_at DESC, t.rowid DESC`,
     )
-    .all() as Array<Record<string, unknown>>;
+    .all(filter.issueKey ?? null, filter.issueKey ?? null) as Array<Record<string, unknown>>;
   const items: ReviewQueueItem[] = [];
   for (const row of rows) {
     const target = toTarget(row);

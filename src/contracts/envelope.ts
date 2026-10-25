@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AssemblyContextSchema } from "./assembly.js";
 import { PlanSchema } from "../pm/plan.js";
 import { ExecutionRecordSchema } from "./execution.js";
 import {
@@ -80,6 +81,8 @@ export const JobEnvelopeSchema = z.object({
   /** The approved scope contract, for `kind: "implementation"` jobs only (ADR 0036). */
   executionContract: ExecutionContractSchema.optional(),
   integration: GitIntegrationSchema.optional(),
+  assembly: AssemblyContextSchema.optional(),
+  deferPullRequest: z.boolean().optional(),
   qualityContext: QualityContextSchema.optional(),
   systemPrompt: z.string().min(1),
   timeoutMs: z.number().int().positive(),

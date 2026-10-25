@@ -1,388 +1,621 @@
 import { admin } from "./api.js";
 import { errorNotice, fill, h, notice } from "./dom.js";
 
-const AXES = {
-  coupling: "모듈 의존성·결합도",
-  complexity: "제어 흐름·구조 복잡도",
-  verification: "테스트·검증 어려움",
-  ripple: "변경 파급·인터페이스 결합",
-  history: "Git 이력의 변경 위험",
+const AXES = { coupling: "의존성", complexity: "복잡도", duplication: "중복", ripple: "변경 파급" };
+const COLORS = {
+  fci: "#527beb",
+  coupling: "#c28b18",
+  complexity: "#d56780",
+  duplication: "#8b67ce",
+  ripple: "#20998b",
 };
-const DEFAULT_WEIGHTS = {
-  coupling: 0.25,
-  complexity: 0.2,
-  verification: 0.25,
-  ripple: 0.2,
-  history: 0.1,
-};
-const number = (v) => (v === null || v === undefined ? "평가 불가" : Number(v).toFixed(2));
-const label = (s) =>
+const n = (value) => (value == null ? "미평가" : Number(value).toFixed(1));
+const label = (value) =>
   ({
+    missing: "미평가",
     queued: "대기",
-    running: "분석 중",
-    succeeded: "분석 완료",
+    running: "평가 중",
+    succeeded: "평가 완료",
     failed: "실패",
     unassessable: "평가 불가",
-  })[s] ?? s;
-function disclosure(title, ...content) {
-  return h("details", {}, h("summary", {}, title), content);
-}
-function chart(items, value, title) {
-  const points = items.map(value);
-  const known = points.filter((v) => v !== null && v !== undefined);
-  const wrap = h("section", {}, h("h3", {}, title));
-  if (!known.length)
-    return h(
-      "div",
-      {},
-      h("h3", {}, title),
-      h(
-        "p",
-        { class: "muted" },
-        "표시할 평가값이 없습니다. 실패·평가 불가 값은 0으로 그리지 않습니다.",
-      ),
-    );
+  })[value] ?? value;
+const details = (title, ...body) => h("details", {}, h("summary", {}, title), body);
+
+function graph(commits, selected, onSelect) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 800 220");
+  svg.setAttribute("viewBox", "0 0 1000 340");
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", title);
+  svg.setAttribute("aria-label", "커밋 순서에 따른 FCI. 점을 선택하면 상세 설명을 엽니다.");
   svg.style.width = "100%";
-  const min = Math.min(80, ...known) - 5;
-  const max = Math.max(120, ...known) + 5;
-  function el(tag, attrs, text) {
+  const add = (tag, attrs, text) => {
     const node = document.createElementNS(svg.namespaceURI, tag);
     for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
     if (text) node.textContent = text;
     svg.append(node);
     return node;
+  };
+  const value = (c, axis) => (axis === "fci" ? c.fci : c.axes[axis]);
+  const values = commits
+    .flatMap((c) => selected.map((axis) => value(c, axis)))
+    .filter((v) => v != null);
+  const min = Math.min(90, ...values) - 5;
+  const max = Math.max(110, ...values) + 5;
+  const x = (i) => 65 + (900 * i) / Math.max(1, commits.length - 1);
+  const y = (v) => 280 - ((v - min) * 250) / (max - min);
+  const clickable = (node, c) => {
+    node.addEventListener("click", () => onSelect(c));
+    node.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onSelect(c);
+      }
+    });
+  };
+  for (const v of [min, 100, max]) {
+    add("line", {
+      x1: 55,
+      x2: 980,
+      y1: y(v),
+      y2: y(v),
+      stroke: "#8994a5",
+      "stroke-dasharray": "3 5",
+      opacity: 0.5,
+    });
+    add("text", { x: 5, y: y(v) + 4, fill: "currentColor", "font-size": 13 }, n(v));
   }
-  const y = (v) => 190 - ((v - min) / (max - min)) * 160;
-  el("line", {
-    x1: 45,
-    y1: y(100),
-    x2: 785,
-    y2: y(100),
-    stroke: "#a1a9b6",
-    "stroke-dasharray": "4 4",
-  });
-  el("text", { x: 0, y: y(100), fill: "#546072", "font-size": 12 }, "100");
-  let previous = null;
-  points.forEach((v, i) => {
-    const x = 55 + (i * 720) / Math.max(1, points.length - 1);
-    if (v === null || v === undefined) {
-      previous = null;
-      el("text", { x, y: 210, fill: "#a54e28", "font-size": 10 }, "미평가");
-      return;
-    }
-    if (previous && items[i].before_sha === items[i - 1]?.after_sha)
-      el("line", {
-        x1: previous.x,
-        y1: previous.y,
-        x2: x,
-        y2: y(v),
-        stroke: "#3667cb",
+  for (const axis of selected) {
+    let previous = null;
+    commits.forEach((c, i) => {
+      const v = value(c, axis);
+      if (v == null) {
+        previous = null;
+        return;
+      }
+      if (previous && c.parent_sha === commits[i - 1]?.sha)
+        add("line", {
+          x1: previous.x,
+          x2: x(i),
+          y1: previous.y,
+          y2: y(v),
+          stroke: COLORS[axis],
+          "stroke-width": axis === "fci" ? 3 : 1.5,
+        });
+      const dot = add("circle", {
+        cx: x(i),
+        cy: y(v),
+        r: axis === "fci" ? 5 : 3,
+        fill: c.confidence === "low" ? "var(--bg, #fff)" : COLORS[axis],
+        stroke: COLORS[axis],
         "stroke-width": 2,
+        tabindex: 0,
+        role: "button",
+        "aria-label": `${c.sha.slice(0, 7)} ${axis === "fci" ? "FCI" : AXES[axis]} ${n(v)}`,
       });
-    const link = document.createElementNS(svg.namespaceURI, "a");
-    link.setAttribute(
-      "href",
-      `#/repositories?repository=${encodeURIComponent(items[i].repository_id)}&series=${encodeURIComponent(items[i].series_id)}&analysis=${encodeURIComponent(items[i].id)}`,
-    );
-    const dot = document.createElementNS(svg.namespaceURI, "circle");
-    dot.setAttribute("cx", String(x));
-    dot.setAttribute("cy", String(y(v)));
-    dot.setAttribute("r", "5");
-    dot.setAttribute("fill", "#3667cb");
-    const tip = document.createElementNS(svg.namespaceURI, "title");
-    tip.textContent = `${items[i].pr_repo ?? "기준"} #${items[i].pr_number ?? ""}: ${number(v)}`;
-    dot.append(tip);
-    link.append(dot);
-    svg.append(link);
-    previous = { x, y: y(v) };
+      clickable(dot, c);
+      const title = document.createElementNS(svg.namespaceURI, "title");
+      title.textContent = `${c.sha.slice(0, 7)} ${c.title}: ${n(v)}${c.confidence === "low" ? " · 낮은 신뢰도" : ""}`;
+      dot.append(title);
+      previous = { x: x(i), y: y(v) };
+    });
+  }
+  commits.forEach((c, i) => {
+    if (c.fci == null)
+      clickable(
+        add(
+          "text",
+          {
+            x: x(i),
+            y: 305,
+            fill: "currentColor",
+            "text-anchor": "middle",
+            tabindex: 0,
+            role: "button",
+            "aria-label": `${c.sha.slice(0, 7)} ${label(c.status)}`,
+          },
+          "◇",
+        ),
+        c,
+      );
   });
-  wrap.append(svg);
-  return wrap;
+  add(
+    "text",
+    { x: 65, y: 332, fill: "currentColor", "font-size": 12 },
+    commits[0]?.sha.slice(0, 7) ?? "시작 커밋",
+  );
+  add(
+    "text",
+    { x: 980, y: 332, fill: "currentColor", "font-size": 12, "text-anchor": "end" },
+    commits.at(-1)?.sha.slice(0, 7) ?? "",
+  );
+  return svg;
 }
+
 export async function renderFci(root) {
-  const view = await admin("GET", "/fci");
   const params = new URLSearchParams(location.hash.split("?")[1] ?? "");
-  const selected = params.get("repository") ?? view.repositories[0]?.id;
-  const repo = view.repositories.find((r) => r.id === selected);
-  fill(
-    root,
-    h("h1", {}, "저장소 FCI"),
-    notice("info", view.notice),
-    h(
-      "p",
-      {},
-      "전체 저장소 상태를 측정하며 PR별 위험 점수를 누적하지 않습니다. FCI = 100 + 현재 원점수 − 기준 원점수.",
-    ),
-  );
-  const choose = h(
-    "select",
-    {
-      "aria-label": "저장소",
-      onchange: (e) => {
-        location.hash = `#/repositories?repository=${encodeURIComponent(e.target.value)}`;
-      },
-    },
-    view.repositories.map((r) =>
-      h("option", { value: r.id, selected: r.id === selected }, r.displayName ?? r.id),
-    ),
-  );
-  root.append(choose);
-  if (!repo) return;
-  const cfg = repo.fci ?? {};
-  const enabled = h("input", { type: "checkbox", checked: cfg.enabled });
+  const view = await admin("GET", "/fci?summary=1");
+  const repo =
+    view.repositories.find((r) => r.id === params.get("repository")) ?? view.repositories[0];
+  fill(root, h("h1", {}, "저장소 FCI"));
+  if (!repo) {
+    root.append(h("p", {}, "저장소를 먼저 연결해 주세요."));
+    return;
+  }
+  const prefix = `/repositories/${encodeURIComponent(repo.id)}/fci`;
+  const navigate = (offset = 0) => {
+    location.hash = `#/repositories?repository=${encodeURIComponent(repo.id)}&offset=${offset}`;
+  };
+  if (view.repositories.length > 1)
+    root.append(
+      h(
+        "select",
+        {
+          "aria-label": "저장소",
+          onchange: (e) => {
+            location.hash = `#/repositories?repository=${encodeURIComponent(e.target.value)}`;
+          },
+        },
+        view.repositories.map((r) =>
+          h("option", { value: r.id, selected: r.id === repo.id }, r.displayName ?? r.id),
+        ),
+      ),
+    );
+  const enabled = h("input", { type: "checkbox", checked: repo.fci.enabled });
   const baseline = h("input", {
-    value: cfg.baselineSha ?? "",
-    pattern: "[a-f0-9]{40}",
-    placeholder: "40자리 커밋 SHA",
+    value: repo.fci.baselineSha ?? "",
+    placeholder: "시작 커밋 SHA",
+    spellcheck: false,
+    "aria-label": "시작 커밋",
+    required: true,
+    pattern: "[a-fA-F0-9]{7,40}",
   });
-  const model = h("input", {
-    value: cfg.modelId ?? "",
-    placeholder: "Worker provider에 명시한 모델 ID",
-  });
-  const version = h("input", { value: cfg.ruleVersion ?? "fci-v1" });
-  const providerType = h(
-    "select",
-    {},
-    ["codex", "claude-code"].map((type) =>
-      h("option", { value: type, selected: type === (cfg.providerType ?? "codex") }, type),
-    ),
-  );
-  const weights = Object.fromEntries(
-    Object.keys(AXES).map((axis) => [
-      axis,
-      h("input", {
-        type: "number",
-        min: 0,
-        max: 100,
-        step: 0.1,
-        value: 100 * (cfg.weights ?? DEFAULT_WEIGHTS)[axis],
-      }),
-    ]),
-  );
-  const result = h("div");
-  const save = h("button", { type: "submit", class: "btn btn-primary" }, "설정·기준 SHA 등록");
-  const form = h(
+  const settings = h(
     "form",
     {
       onsubmit: async (e) => {
         e.preventDefault();
-        save.disabled = true;
         try {
-          await admin("PUT", `/repositories/${encodeURIComponent(repo.id)}/fci`, {
+          await admin("PUT", prefix, {
             enabled: enabled.checked,
-            ...(baseline.value ? { baselineSha: baseline.value } : {}),
-            ...(model.value ? { modelId: model.value } : {}),
-            ruleVersion: version.value,
-            providerType: providerType.value,
-            weights: Object.fromEntries(
-              Object.entries(weights).map(([a, input]) => [a, Number(input.value) / 100]),
-            ),
-            timeoutMs: cfg.timeoutMs ?? 600000,
+            baselineSha: baseline.value.trim().toLowerCase(),
+            ruleVersion: "fci-static-v2",
           });
           await renderFci(root);
         } catch (error) {
-          fill(result, errorNotice(error));
-        } finally {
-          save.disabled = false;
+          settings.append(errorNotice(error));
         }
       },
     },
-    h("label", {}, enabled, " FCI 활성화 (기본 비활성화)"),
-    h(
-      "div",
-      { class: "grid" },
-      h("label", {}, "추적 기준 SHA (명시적 등록)", baseline),
-      h("label", {}, "분석 모델 ID", model),
-      h("label", {}, "기존 AI provider 종류", providerType),
-      h("label", {}, "평가 규칙 버전", version),
-    ),
+    h("label", {}, enabled, " FCI 사용"),
+    h("label", {}, "시작 커밋 ", baseline),
+    h("button", { class: "btn", type: "submit" }, "적용"),
     h(
       "p",
       { class: "muted" },
-      "Worker의 provider 모델 ID와 일치해야 합니다. 기준·가중치·프롬프트·모델 변경은 별도 시계열로 보관됩니다. 기존 리뷰 추가 지침은 자동 이전하지 않습니다.",
-    ),
-    h(
-      "div",
-      { class: "grid" },
-      Object.entries(AXES).map(([axis, title]) => h("label", {}, `${title} (%)`, weights[axis])),
-    ),
-    h("div", { class: "form-actions" }, save),
-    result,
-  );
-  root.append(disclosure("분석 설정·기준 등록", form));
-  const series = view.series.filter((s) => s.repository_id === repo.id);
-  const seriesId = params.get("series") ?? series[0]?.id;
-  root.append(
-    h(
-      "label",
-      {},
-      "시계열",
-      h(
-        "select",
-        {
-          "aria-label": "시계열",
-          onchange: (e) => {
-            location.hash = `#/repositories?repository=${encodeURIComponent(repo.id)}&series=${encodeURIComponent(e.target.value)}`;
-          },
-        },
-        series.map((s) =>
-          h(
-            "option",
-            { value: s.id, selected: s.id === seriesId },
-            `${s.profile.ruleVersion} / ${s.profile.model} / ${s.baseline_sha.slice(0, 12)} / ${s.created_at}`,
-          ),
-        ),
-      ),
+      `대상 브랜치: ${repo.baseBranch} · 언어 자동 감지 · AI 없이 구조 평가`,
     ),
   );
-  const analyses = view.analyses.filter((a) => a.series_id === seriesId);
-  const confirmed = analyses
-    .filter((a) => a.revision === 0 && !a.superseded && a.purpose === "merge_final")
-    .sort(
-      (a, b) =>
-        (a.outcome?.change?.targetOrder ?? Number.MAX_SAFE_INTEGER) -
-        (b.outcome?.change?.targetOrder ?? Number.MAX_SAFE_INTEGER),
-    );
-  const baselinePoint = analyses.find((a) => a.purpose === "baseline" && a.revision === 0);
-  const timeline = baselinePoint ? [baselinePoint, ...confirmed] : confirmed;
-  if (!cfg.enabled) root.append(notice("warn", "FCI 비활성화 상태입니다. 기존 이력만 표시합니다."));
-  root.append(chart(timeline, (a) => a.afterFci, "확정 FCI · 병합 순서"));
-  root.append(
-    disclosure(
-      "축별 확정 추이",
-      Object.entries(AXES).map(([axis, title]) =>
-        chart(
-          timeline,
-          (a) => {
-            const current = a.after?.assessment.axes[axis].grade;
-            const base = a.baseline?.assessment.axes[axis].grade;
-            return current == null || base == null ? null : 100 + 25 * (current - base);
-          },
-          title,
-        ),
-      ),
-    ),
-  );
+  root.append(repo.fci.enabled ? details("시작점 변경·사용 설정", settings) : settings);
   root.append(
     h(
       "p",
       { class: "muted" },
-      "연속된 병합 전후 SHA가 일치하지 않는 지점은 선을 연결하지 않습니다. 추적 외 변경·누락 구간은 PR의 Δ에 합산하지 않습니다.",
+      "시작점은 100입니다. 높아질수록 구조상 변경 부담이 큽니다. 실제 개발 비용이나 장애 확률을 뜻하지 않습니다.",
     ),
   );
-  root.append(h("h2", {}, "분석 기록 · 잠정 / 확정 / 실패 / 평가 불가"));
-  for (const analysis of analyses) {
-    const a = analysis;
-    const actions = h("div", { class: "form-actions" });
-    for (const [action, title] of [
-      ["retry", "분석만 재시도"],
-      ["reanalyze", "명시적 재분석"],
-      ["report-retry", "보고만 재시도"],
-    ])
-      actions.append(
+  const archive = details("보관된 분석·평가 버전");
+  archive.addEventListener("toggle", () => {
+    if (!archive.open || archive.dataset.loaded) return;
+    archive.dataset.loaded = "true";
+    for (const record of (view.records ?? []).filter(
+      (r) => r.repository_id === repo.id && !["history_scan", "explain"].includes(r.purpose),
+    ))
+      archive.append(
         h(
           "button",
           {
             class: "btn",
-            type: "button",
-            disabled: a.status === "running",
             onclick: async () => {
               try {
-                await admin("POST", `/fci/${a.id}/${action}`, {});
-                await renderFci(root);
+                const analysis = await admin("GET", `/fci/${record.id}`);
+                archive.append(
+                  h(
+                    "section",
+                    { class: "panel" },
+                    h(
+                      "h3",
+                      {},
+                      `${analysis.profile.ruleVersion} · ${record.after_sha.slice(0, 7)}`,
+                    ),
+                    h("p", {}, `FCI ${n(analysis.beforeFci)} → ${n(analysis.afterFci)}`),
+                    details(
+                      "근거·이전 평가 기록",
+                      h("pre", { class: "preview" }, JSON.stringify(analysis, null, 2)),
+                    ),
+                  ),
+                );
               } catch (error) {
-                actions.after(errorNotice(error));
+                archive.append(errorNotice(error));
               }
             },
           },
-          title,
+          `${record.after_sha.slice(0, 7)} · ${label(record.status)} · ${record.purpose}`,
         ),
       );
-    const section = h(
-      "section",
-      { class: "panel", id: `analysis-${a.id}` },
-      h(
-        "h3",
-        {},
-        `${a.purpose === "merge_final" ? "확정 대상" : a.purpose === "baseline" ? "기준점" : "잠정·예상"} · ${label(a.status)}${a.superseded ? " · 오래된 결과" : ""}${a.revision ? " · 재분석 revision" : ""}`,
+  });
+  root.append(archive);
+  if (!repo.fci.enabled) return;
+  if (repo.fci.ruleVersion !== "fci-static-v2") {
+    root.append(
+      notice(
+        "info",
+        "기존 AI 평가는 보관됩니다. 설정에서 적용을 누르면 정적 FCI를 새로 시작합니다.",
       ),
-      h("p", {}, `FCI ${number(a.beforeFci)} → ${number(a.afterFci)} / ΔFCI ${number(a.delta)}`),
-      h("p", {}, `원점수 ${number(a.rawBefore)} → ${number(a.rawAfter)}`),
-      h("code", {}, `${a.before_sha} → ${a.after_sha}`),
-      a.pr_repo
-        ? h(
+    );
+    return;
+  }
+  const offset = Math.max(0, Number(params.get("offset")) || 0);
+  const history = await admin("GET", `${prefix}/history?offset=${offset}&limit=100`);
+  const commits = history.commits;
+  const selectedCommit = params.get("commit");
+  if (selectedCommit && !commits.some((c) => c.sha === selectedCommit)) {
+    try {
+      const detail = await admin("GET", `${prefix}/commits/${encodeURIComponent(selectedCommit)}`);
+      const targetOffset = Math.floor(detail.commit.ordinal / 100) * 100;
+      if (offset !== targetOffset) {
+        location.hash = `#/repositories?repository=${encodeURIComponent(repo.id)}&offset=${targetOffset}&commit=${encodeURIComponent(selectedCommit)}`;
+        return;
+      }
+    } catch (error) {
+      root.append(errorNotice(error));
+    }
+  }
+  const progress = h("p", { role: "status" });
+  const latest = h("p", { class: "fci-latest" });
+  const errors = h("div");
+  const controlButtons = [];
+  const updateSummary = (v) => {
+    progress.textContent = `${v.completed ?? 0} / ${v.total}개 평가 완료`;
+    latest.textContent = v.latest
+      ? `최근 평가 FCI ${n(v.latest.fci)} · ${v.latest.sha.slice(0, 7)}${v.latest.ordinal < v.total - 1 ? ` · 이후 ${v.total - 1 - v.latest.ordinal}개 미평가` : ""}`
+      : "표시할 평가값이 없습니다.";
+    fill(errors, v.state?.error ? notice("error", v.state.error) : null);
+    for (const button of controlButtons)
+      button.disabled = v.total < 2 || v.completed >= v.total || Boolean(v.state?.error);
+  };
+  updateSummary(history);
+  root.append(latest, progress, errors);
+  const actions = h("div", { class: "form-actions fci-controls" });
+  for (const [action, title] of [
+    ["all", "미평가 모두 평가"],
+    ["next", "다음 커밋 평가"],
+    ["pause", "일시정지"],
+  ]) {
+    const button = h(
+      "button",
+      {
+        class: "btn",
+        type: "button",
+        disabled:
+          action !== "pause" &&
+          (history.total < 2 ||
+            history.completed >= history.total ||
+            Boolean(history.state?.error)),
+        onclick: async () => {
+          try {
+            await admin("POST", `${prefix}/control`, { action });
+            await renderFci(root);
+          } catch (error) {
+            actions.after(errorNotice(error));
+          }
+        },
+      },
+      title,
+    );
+    actions.append(button);
+    if (action !== "pause") controlButtons.push(button);
+  }
+  actions.append(h("button", { class: "btn", onclick: () => renderFci(root) }, "새로고침"));
+  root.append(actions);
+  const panel = h("section", { class: "panel fci-detail", "aria-live": "polite" });
+  const select = async (c) => {
+    try {
+      const d = await admin("GET", `${prefix}/commits/${c.sha}`);
+      const snapshot = d.snapshot;
+      const score = snapshot?.assessment.structural;
+      fill(
+        panel,
+        h("h2", {}, `${c.sha.slice(0, 7)} · ${c.title}`),
+        h(
+          "p",
+          {},
+          `${label(c.status)} · FCI ${n(c.fci)} · 직전 대비 ${c.delta == null ? "—" : `${c.delta > 0 ? "+" : ""}${n(c.delta)}`}`,
+        ),
+        h("p", { class: "muted" }, c.committed_at),
+        c.error ? notice("error", c.error) : null,
+      );
+      if (score) {
+        const before = d.previous?.assessment.structural;
+        const changes = Object.keys(AXES)
+          .map((axis) => ({
+            axis,
+            delta:
+              score.axes[axis] == null || before?.axes[axis] == null
+                ? null
+                : score.axes[axis] - before.axes[axis],
+          }))
+          .sort((a, b) => Math.abs(b.delta ?? 0) - Math.abs(a.delta ?? 0));
+        panel.append(
+          h(
+            "p",
+            {},
+            changes
+              .map(
+                (v) =>
+                  `${AXES[v.axis]} ${v.delta == null ? "—" : `${v.delta > 0 ? "+" : ""}${n(v.delta)}`}`,
+              )
+              .join(" · "),
+          ),
+          h(
+            "p",
+            {},
+            `분석 범위 ${Math.round(score.coverage * 100)}% · 신뢰도 ${{ high: "높음", medium: "보통", low: "낮음" }[score.confidence]} · 테스트 실행 안 함`,
+          ),
+        );
+        panel.append(
+          details(
+            "분석 한계",
+            score.reasons.map((r) => h("p", {}, r)),
+          ),
+        );
+        for (const f of d.findings ?? [])
+          panel.append(
+            h(
+              "p",
+              {},
+              h("strong", {}, `${AXES[f.axis]}: `),
+              f.explanation,
+              " · ",
+              f.url
+                ? h(
+                    "a",
+                    { href: f.url, target: "_blank", rel: "noreferrer" },
+                    `${f.path}:${f.line}`,
+                  )
+                : h("code", {}, `${f.path}:${f.line}`),
+            ),
+            h("p", { class: "muted" }, f.suggestion),
+          );
+        panel.append(
+          h(
+            "button",
+            {
+              class: "btn",
+              disabled: score.raw == null,
+              onclick: async () => {
+                try {
+                  await admin("POST", `${prefix}/control`, { action: "explain", sha: c.sha });
+                  await select(c);
+                } catch (error) {
+                  panel.append(errorNotice(error));
+                }
+              },
+            },
+            "AI로 설명",
+          ),
+        );
+      }
+      for (const explanation of d.explanations) {
+        const output = explanation.outcome ? JSON.parse(explanation.outcome) : null;
+        panel.append(
+          h("p", {}, `AI 설명: ${label(explanation.status)}`),
+          h(
+            "pre",
+            { class: "preview" },
+            output?.change?.explanation ?? explanation.error ?? "Worker 대기 중",
+          ),
+        );
+        if (explanation.status === "failed")
+          panel.append(
+            h(
+              "button",
+              {
+                class: "btn",
+                onclick: async () => {
+                  await admin("POST", `/fci/${explanation.id}/retry`, {});
+                  await select(c);
+                },
+              },
+              "설명 재시도",
+            ),
+          );
+      }
+      for (const pr of d.prs)
+        panel.append(
+          h(
             "p",
             {},
             h(
               "a",
               {
-                href: `https://github.com/${a.pr_repo}/pull/${a.pr_number}`,
+                href: `https://github.com/${pr.pr_repo}/pull/${pr.pr_number}`,
                 target: "_blank",
                 rel: "noreferrer",
               },
-              `${a.pr_repo} #${a.pr_number}`,
+              `PR #${pr.pr_number}`,
             ),
-          )
-        : null,
-      a.issue_key ? h("p", {}, `Jira: ${a.issue_key} / 실행: ${a.job_id ?? "없음"}`) : null,
-      a.error ? notice("error", a.error) : null,
-      a.after
-        ? h(
-            "div",
-            {},
-            h("p", {}, a.after.assessment.summary),
-            ...Object.entries(AXES).map(([axis, title]) => {
-              const value = a.after.assessment.axes[axis];
-              return disclosure(
-                `${title}: ${value.grade ?? "평가 불가"} · 신뢰도 ${value.confidence}`,
-                h("p", {}, value.explanation),
-                value.evidence.map((e) =>
+            pr.issue_key
+              ? [
+                  " · ",
                   h(
-                    "p",
-                    {},
-                    a.pr_repo
-                      ? h(
-                          "a",
-                          {
-                            href: `https://github.com/${a.pr_repo}/blob/${a.after.sha}/${e.path.split("/").map(encodeURIComponent).join("/")}#L${e.line}`,
-                            target: "_blank",
-                            rel: "noreferrer",
-                          },
-                          `${e.path}:${e.line}`,
-                        )
-                      : h("code", {}, `${e.path}:${e.line}`),
-                    ` — ${e.explanation}`,
+                    "a",
+                    {
+                      href: `${d.jiraBaseUrl.replace(/\/$/, "")}/browse/${encodeURIComponent(pr.issue_key)}`,
+                      target: "_blank",
+                      rel: "noreferrer",
+                    },
+                    pr.issue_key,
                   ),
-                ),
-                value.uncertainties.map((u) => h("p", {}, u)),
-              );
-            }),
-            h("h4", {}, "FCI 개선 우선순위"),
-            a.after.assessment.priorities.map((p) => h("p", {}, `${p.priority}: ${p.suggestion}`)),
-            h("h4", {}, "불확실성·미검증"),
-            a.after.assessment.unverified.map((u) => h("p", {}, u)),
-          )
-        : null,
-      actions,
-      disclosure(
-        "관측값·평가 버전·테스트·재시도 근거",
-        h("pre", { class: "preview" }, JSON.stringify(a, null, 2)),
+                ]
+              : null,
+          ),
+        );
+      if (["failed", "unassessable"].includes(c.status) && c.taskId)
+        panel.append(
+          h(
+            "button",
+            {
+              class: "btn",
+              onclick: async () => {
+                await admin("POST", `/fci/${c.taskId}/retry`, {});
+                await renderFci(root);
+              },
+            },
+            "평가 재시도",
+          ),
+        );
+      if (c.status === "succeeded" && c.taskId)
+        panel.append(
+          details(
+            "재분석",
+            h("p", {}, "새 평가 기록을 추가합니다. 기존 그래프의 정규 결과는 유지합니다."),
+            h(
+              "button",
+              {
+                class: "btn",
+                onclick: async () => {
+                  try {
+                    await admin("POST", `/fci/${c.taskId}/reanalyze`, {});
+                    panel.append(
+                      notice(
+                        "info",
+                        "재분석을 요청했습니다. 보관된 분석에서 결과를 확인할 수 있습니다.",
+                      ),
+                    );
+                  } catch (error) {
+                    panel.append(errorNotice(error));
+                  }
+                },
+              },
+              "명시적 재분석",
+            ),
+          ),
+        );
+      panel.append(
+        details(
+          "원점수·규칙·전체 관측",
+          h("pre", { class: "preview" }, JSON.stringify(d, null, 2)),
+        ),
+      );
+      panel.scrollIntoView({ block: "nearest" });
+    } catch (error) {
+      fill(panel, errorNotice(error));
+    }
+  };
+  const chartRoot = h("div", {
+    class: "fci-chart",
+    tabindex: 0,
+    "aria-label": "FCI 그래프 가로 스크롤",
+  });
+  const selected = new Set(["fci"]);
+  const legend = h("div", { class: "form-actions fci-legend" });
+  for (const [axis, title] of Object.entries({ fci: "종합 FCI", ...AXES }))
+    legend.append(
+      h(
+        "label",
+        {},
+        h("input", {
+          type: "checkbox",
+          checked: selected.has(axis),
+          onchange: (e) => {
+            if (e.target.checked) selected.add(axis);
+            else selected.delete(axis);
+            fill(chartRoot, graph(commits, [...selected], select));
+          },
+        }),
+        h("span", {
+          "aria-hidden": "true",
+          style: `display:inline-block;width:14px;height:3px;background:${COLORS[axis]}`,
+        }),
+        ` ${title}`,
       ),
     );
-    root.append(section);
+  root.append(legend, chartRoot);
+  fill(chartRoot, graph(commits, [...selected], select));
+  const emptyNotice = h("p", {}, "Worker가 시작 커밋과 대상 브랜치 이력을 확인 중입니다.");
+  emptyNotice.hidden = commits.length > 0;
+  root.append(emptyNotice);
+  const rangeLabel = h(
+    "span",
+    {},
+    `${history.total ? offset + 1 : 0}–${Math.min(offset + 100, history.total)} / ${history.total}`,
+  );
+  const nextPage = h(
+    "button",
+    {
+      class: "btn",
+      disabled: offset + 100 >= history.total,
+      onclick: () => navigate(offset + 100),
+    },
+    "다음 100개",
+  );
+  const commitList = details("커밋 목록");
+  const updateList = () =>
+    fill(
+      commitList,
+      h("summary", {}, "커밋 목록"),
+      commits.map((c) =>
+        h(
+          "button",
+          { class: "btn", onclick: () => select(c) },
+          `${c.sha.slice(0, 7)} ${c.title} · ${label(c.status)}`,
+        ),
+      ),
+    );
+  updateList();
+  root.append(
+    h(
+      "div",
+      { class: "form-actions" },
+      h(
+        "button",
+        {
+          class: "btn",
+          disabled: offset === 0,
+          onclick: () => navigate(Math.max(0, offset - 100)),
+        },
+        "이전 100개",
+      ),
+      rangeLabel,
+      nextPage,
+    ),
+    commitList,
+    panel,
+  );
+  if (selectedCommit) {
+    const selected = commits.find((c) => c.sha === selectedCommit);
+    if (selected) await select(selected);
   }
-  const analysisId = params.get("analysis");
-  if (analysisId) root.querySelector(`#analysis-${CSS.escape(analysisId)}`)?.scrollIntoView();
-  if (view.pollErrors?.length)
-    root.append(
-      notice(
-        "error",
-        "PR 분석 메타데이터 조회 실패",
-        h("pre", {}, JSON.stringify(view.pollErrors, null, 2)),
-      ),
-    );
+  let graphVersion = JSON.stringify(commits);
+  const refresh = async () => {
+    if (!progress.isConnected) return;
+    try {
+      const updated = await admin("GET", `${prefix}/history?offset=${offset}&limit=100`);
+      if (!progress.isConnected) return;
+      updateSummary(updated);
+      emptyNotice.hidden = updated.total > 0;
+      rangeLabel.textContent = `${updated.total ? offset + 1 : 0}–${Math.min(offset + 100, updated.total)} / ${updated.total}`;
+      nextPage.disabled = offset + 100 >= updated.total;
+      const version = JSON.stringify(updated.commits);
+      if (version !== graphVersion) {
+        graphVersion = version;
+        commits.splice(0, commits.length, ...updated.commits);
+        updateList();
+        fill(chartRoot, graph(commits, [...selected], select));
+      }
+    } catch {
+      progress.textContent = "평가 상태 갱신에 실패했습니다. 새로고침으로 다시 확인하세요.";
+    }
+    if (progress.isConnected) setTimeout(refresh, 4000);
+  };
+  setTimeout(refresh, 4000);
 }

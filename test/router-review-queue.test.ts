@@ -132,6 +132,9 @@ describe("review queue", () => {
     expect((await queue("?class=immediate")).map((item) => item.target.id)).toEqual([two]);
     expect((await queue("?assignee=user-1")).map((item) => item.target.id)).toEqual([one]);
     expect((await queue("?parent=kan-9")).map((item) => item.target.id)).toEqual([two]);
+    expect((await queue("?issue=kan-1")).map((item) => item.target.id)).toEqual([one]);
+    expect((await queue("?issue=KAN-2")).map((item) => item.target.id)).toEqual([two]);
+    expect(await queue("?issue=KAN-999")).toEqual([]);
     expect((await router.adminCall("GET", "/reviews?state=bogus")).statusCode).toBe(400);
     expect((await router.adminCall("GET", "/status")).json()).toMatchObject({
       reviews: { waiting: 2 },

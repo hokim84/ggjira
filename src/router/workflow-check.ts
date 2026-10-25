@@ -49,7 +49,7 @@ export function routerWorkflowHops(workflow: WorkflowStatus): WorkflowHop[] {
       to: workflow.integrationPendingStatus,
     },
     {
-      label: "변경 없는 작업 완료",
+      label: "자식 구현·자체 검증 완료 / 변경 없는 작업 완료",
       from: workflow.inProgressStatus,
       to: workflow.implementationCompleteStatus,
     },

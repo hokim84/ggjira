@@ -8,7 +8,7 @@ const ATTENTION_KINDS = {
   failed: "실행 실패",
   decision_needed: "결정 필요",
   scope_deviation: "범위 이탈",
-  review_required: "개별 검토 필요",
+  review_required: "결과에 주의사항 있음",
   report_blocked: "Jira 반영 막힘",
   plan_approval_refused: "계획 승인 아님",
   unassigned: "담당자 없음",
@@ -18,7 +18,7 @@ const ATTENTION_KINDS = {
 const JOB_STATE_LABELS = {
   waiting: "대기(조건)",
   queued: "큐",
-  leased: "임대",
+  leased: "실행 준비 중",
   running: "실행 중",
   cancel_requested: "취소 요청",
   succeeded: "성공",
@@ -65,9 +65,19 @@ function attentionList(items) {
 }
 
 export async function renderDashboard(root) {
-  const [status, attention] = await Promise.all([
+  if (
+    root.contains(document.activeElement) &&
+    document.activeElement.matches("input,textarea,select")
+  )
+    return;
+  const offset = Math.max(
+    0,
+    Number(new URLSearchParams(location.hash.split("?")[1] ?? "").get("offset")) || 0,
+  );
+  const [status, attention, tasks] = await Promise.all([
     admin("GET", "/status"),
     admin("GET", "/attention"),
+    admin("GET", `/tasks?offset=${offset}&limit=30`),
   ]);
   const { jobs, workers, queue, webhooks, reports, recoveryRequired } = status;
   fill(
@@ -95,14 +105,42 @@ export async function renderDashboard(root) {
       card("막힌 Jira 보고", reports.blocked, reports.blocked ? "bad" : null),
       card("복구 필요 작업", recoveryRequired, recoveryRequired ? "bad" : null),
       card("확인 필요", status.attention.open, status.attention.open ? "bad" : null),
-      h(
-        "a",
-        { href: "#/reviews", class: "card-link" },
-        card("검토 대기", status.reviews?.waiting ?? 0, status.reviews?.waiting ? "warn" : null),
-      ),
     ),
     h("h2", {}, "확인 필요 항목"),
     attentionList(attention.items),
+    h(
+      "p",
+      {},
+      "Jira에서 계획·구현을 승인한 뒤 이곳에서 진행을 확인하세요. 부모 PR을 GitHub에서 병합하면 통합 검증이 진행되며, Done은 Jira에서 직접 처리합니다.",
+    ),
+    h("h2", {}, "작업 목록"),
+    h(
+      "p",
+      { class: "muted" },
+      "Router가 추적한 이슈별 마지막 실행입니다. 항목을 열면 현재 Jira 상태·대기 이유·다음 행동을 확인할 수 있습니다.",
+    ),
+    taskSearch(),
+    taskRows(tasks.items),
+    h(
+      "div",
+      { class: "form-actions" },
+      offset
+        ? h("a", { href: `#/?offset=${Math.max(0, offset - 30)}`, class: "btn" }, "이전 작업")
+        : null,
+      h(
+        "span",
+        {},
+        `${tasks.total ? offset + 1 : 0}–${Math.min(offset + 30, tasks.total)} / ${tasks.total}`,
+      ),
+      offset + 30 < tasks.total
+        ? h("a", { href: `#/?offset=${offset + 30}`, class: "btn" }, "다음 작업")
+        : null,
+    ),
+    h(
+      "a",
+      { href: "#/config/diagnostics" },
+      "작업이 시작되지 않거나 병합을 인식하지 못하나요? 연동 진단",
+    ),
     h("h2", {}, "작업 상태"),
     Object.keys(jobs).length === 0
       ? h("p", { class: "muted" }, "아직 작업이 없습니다.")
@@ -113,6 +151,96 @@ export async function renderDashboard(root) {
             card(JOB_STATE_LABELS[state] || state, count),
           ),
         ),
+  );
+}
+
+function taskSearch() {
+  const input = h("input", { placeholder: "예: KAN-12", "aria-label": "작업 키", required: true });
+  return h(
+    "form",
+    {
+      class: "inline-form",
+      onsubmit: (e) => {
+        e.preventDefault();
+        const key = input.value.trim().toUpperCase();
+        if (key) openIssue(key);
+      },
+    },
+    h("label", {}, "다른 작업 찾기 ", input),
+    h("button", { type: "submit", class: "btn" }, "작업 상세 열기"),
+  );
+}
+function taskNext(task) {
+  if (["failed", "timed_out"].includes(task.state))
+    return "실패 원인을 확인한 뒤 Jira 담당자가 ‘재시도’ 댓글을 남기세요.";
+  if (task.state === "recovery_required")
+    return "이전 실행의 종료·보고 여부를 작업 상세에서 확인하세요.";
+  if (["running", "leased", "queued"].includes(task.state))
+    return "실행이 끝나기를 기다리세요. 작업 상세에서 진행을 확인할 수 있습니다.";
+  if (task.state === "waiting")
+    return "의존 작업·승인 조건을 기다립니다. 작업 상세에서 대기 이유를 확인하세요.";
+  if (task.state === "cancelled" || task.state === "cancel_requested")
+    return "중단 상태입니다. Jira에서 현재 승인 상태를 확인하세요.";
+  if (task.resultStatus === "needs_decision")
+    return "Jira의 질문을 읽고 담당자가 선택지 번호로 답변하세요.";
+  if (task.kind === "planning")
+    return "Jira에서 계획을 읽고 실행할 개별 작업을 AI 구현으로 옮기세요.";
+  if (task.kind === "integration_check")
+    return "통합 검증 결과와 Jira의 완료 처리 여부를 작업 상세에서 확인하세요.";
+  if (task.pullRequest?.state === "open") return "GitHub에서 PR을 검토하고 병합하세요.";
+  if (task.pullRequest?.state === "merged")
+    return "병합 기록이 있습니다. 작업 상세에서 통합 검증·완료 상태를 확인하세요.";
+  if (task.pullRequest?.state === "closed")
+    return "PR이 병합 없이 닫혔습니다. 작업 상세에서 후속 조치를 확인하세요.";
+  if (task.parentKey)
+    return "자식 구현 결과가 보존됐습니다. 다른 자식 완료와 부모 PR 생성을 기다리세요.";
+  return "실행 결과와 다음 단계를 작업 상세에서 확인하세요.";
+}
+function taskRows(items) {
+  if (!items.length)
+    return h(
+      "p",
+      { class: "muted" },
+      "아직 추적한 작업이 없습니다. Jira에서 작업을 AI 계획 또는 AI 구현으로 옮기면 표시됩니다.",
+    );
+  const kinds = {
+    planning: "계획",
+    implementation: "구현",
+    assemble_pr: "부모 PR 생성",
+    integration_check: "통합 검증",
+    quality_review: "이전 AI 리뷰",
+  };
+  return h(
+    "div",
+    { class: "task-list" },
+    items.map((task) =>
+      h(
+        "article",
+        { class: "panel" },
+        h(
+          "h3",
+          {},
+          h("a", { href: `#/tasks?issue=${encodeURIComponent(task.issueKey)}` }, task.issueKey),
+          task.title ? ` · ${task.title}` : "",
+        ),
+        h(
+          "p",
+          {},
+          `${kinds[task.kind] ?? task.kind} · ${JOB_STATE_LABELS[task.state] ?? task.state} · ${relativeTime(task.updatedAt)}`,
+        ),
+        h("p", {}, taskNext(task)),
+        task.attention.map((a) =>
+          h("p", { class: "hint" }, `${ATTENTION_KINDS[a.kind] ?? a.kind}: ${a.reason}`),
+        ),
+        task.pullRequest
+          ? h(
+              "a",
+              { href: task.pullRequest.url, target: "_blank", rel: "noreferrer" },
+              `PR #${task.pullRequest.number}`,
+            )
+          : null,
+      ),
+    ),
   );
 }
 
