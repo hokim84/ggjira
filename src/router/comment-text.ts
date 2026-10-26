@@ -81,6 +81,7 @@ export interface CommentText {
     agentRisk: (area: string, description: string) => string;
     acceptanceChecks: string;
     verificationStatus: (status: string) => string;
+    verificationMethod: (method: string) => string;
     summary: string;
     noSummary: string;
     changes: string;
@@ -194,6 +195,8 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
             return `검토할 커밋이 없습니다(${review.commit.location ?? "위치 모름"}). 결과 자체로 판단하세요`;
           case "commit_unknown":
             return "워커가 이 결과의 커밋을 보고하지 않았습니다(이전 버전 워커)";
+          case "no_trusted_validation":
+            return "워커 검증 명령이 실행되지 않았습니다. AI 자체 보고만 근거입니다";
         }
       },
       ordinaryQueue: "일반 검토 대기열에 올렸습니다.",
@@ -214,6 +217,8 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       acceptanceChecks: "완료 조건 확인:",
       verificationStatus: (status) =>
         ({ pass: "통과", fail: "실패", not_verified: "미검증" })[status] ?? status,
+      verificationMethod: (method) =>
+        ({ executed: "실행", inspected: "코드 확인" })[method] ?? method,
       summary: "요약:",
       noSummary: "(요약 없음)",
       changes: "변경:",
@@ -371,6 +376,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       agentRisk: (area, description) => `- agent: ${area} — ${description}`,
       acceptanceChecks: "Acceptance checks:",
       verificationStatus: (status) => status,
+      verificationMethod: (method) => method,
       summary: "Summary:",
       noSummary: "(no summary)",
       changes: "Changes:",

@@ -59,6 +59,7 @@ docker compose -f docker-compose.test.yml run --rm --build check   # Linux에서
 
 1. `npm run check`가 통과한다.
 2. 바꾼 동작을 실제 명령으로 확인했다(해당 테스트 파일, 필요하면 `docs/runbook.md`의 수동 절차).
+   어떤 테스트를 돌릴지는 `docs/runbook.md` §46의 표를 따르고, 실행하지 못한 검사는 못 했다고 보고한다.
 3. 아키텍처나 결정이 바뀌었다면 `docs/architecture.md`, `docs/decisions/`, 실패 진단 방법이
    바뀌었다면 `docs/runbook.md`를 같은 커밋/PR에서 갱신했다.
 4. 외부 서비스(Jira, Claude Code CLI)에 대한 실제 호출은 자동 테스트에 넣지 않는다.

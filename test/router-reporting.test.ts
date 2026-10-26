@@ -233,6 +233,56 @@ describe("Router Jira reporting journal", () => {
     expect(log).toContain(`ggjira job: ${envelope.jobId}`);
   });
 
+  it("logs the agent's checks and the worker's validation output, not in the comment", async () => {
+    const envelope = await startJob("KAN-1");
+    await process();
+    await submit(envelope, {
+      status: "failed",
+      summary: "broke",
+      failureReason: 'Validation command failed: "npm test" exited 1: 2 failed',
+      validation: ['"npm test" exited 1: 2 failed'],
+    });
+    await process();
+
+    const comment = commentsOn("KAN-1")[0] ?? "";
+    expect(comment).toContain("[GGJ-301]");
+    expect(comment).not.toContain("Acceptance Checks:");
+    const log = readFileSync(failureLogOf(comment), "utf-8");
+    expect(log).toContain("Acceptance Checks:\n- pass: Works — Verified the requested outcome");
+    expect(log).toContain('Validation:\n- "npm test" exited 1: 2 failed');
+  });
+
+  const methodChecks = {
+    outcome: "completed",
+    summary: "Verified no change required",
+    noChangeReason: "Existing implementation already meets the request",
+    verification: [
+      { acceptance: "Works", status: "pass", method: "executed", evidence: "npm test: 12 passed" },
+      { acceptance: "Typed", status: "pass", method: "inspected", evidence: "src/a.ts:3" },
+    ],
+  };
+
+  it("says how each check was made (ADR 0059)", async () => {
+    const envelope = await startJob("KAN-1");
+    await process();
+    await submit(envelope, { implementation: methodChecks, validation: ['"npm test" passed'] });
+    await process();
+    const comment = commentsOn("KAN-1")[0] ?? "";
+    expect(comment).toContain("- 통과(실행): Works — npm test: 12 passed");
+    expect(comment).toContain("- 통과(코드 확인): Typed — src/a.ts:3");
+    expect(comment).not.toContain("워커 검증 명령이 실행되지 않았습니다");
+  });
+
+  it("names a result that only the agent's own report backs (ADR 0059)", async () => {
+    const envelope = await startJob("KAN-1");
+    await process();
+    await submit(envelope, { implementation: methodChecks });
+    await process();
+    expect(commentsOn("KAN-1")[0]).toContain(
+      "- 워커 검증 명령이 실행되지 않았습니다. AI 자체 보고만 근거입니다",
+    );
+  });
+
   it("never overrides a status a human set while the job ran", async () => {
     const envelope = await startJob("KAN-1");
     await process();

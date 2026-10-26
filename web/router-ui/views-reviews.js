@@ -2,7 +2,13 @@
 
 import { admin } from "./api.js";
 import { errorNotice, fill, h, notice, relativeTime } from "./dom.js";
-import { COMMIT_LABELS, JUDGMENT_LABELS, REVIEW_CLASS, RISK_LABELS } from "./views-issues.js";
+import {
+  COMMIT_LABELS,
+  JUDGMENT_LABELS,
+  REVIEW_CLASS,
+  RISK_LABELS,
+  verificationSummary,
+} from "./views-issues.js";
 
 const REVIEWER_KEY = "ggjira.router.reviewer";
 
@@ -171,11 +177,7 @@ export function renderIssueReview(root, ctx, issueKey) {
           ),
         ),
         h("dt", {}, "검증 결과"),
-        h(
-          "dd",
-          {},
-          v.reported ? `통과 ${v.pass} · 실패 ${v.fail} · 미검증 ${v.notVerified}` : "보고 없음",
-        ),
+        h("dd", {}, verificationSummary(v)),
         h("dt", {}, "위험"),
         h(
           "dd",

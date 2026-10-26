@@ -22,7 +22,14 @@ export function fakeImplementationReport(overrides: Record<string, unknown> = {}
     outcome: "completed",
     summary: "Fake worker completed successfully.",
     scopeDeviations: [],
-    verification: [{ acceptance: "The change works", status: "pass", evidence: "npm run test" }],
+    verification: [
+      {
+        acceptance: "The change works",
+        status: "pass",
+        method: "executed",
+        evidence: "npm run test",
+      },
+    ],
     ...overrides,
   };
 }

@@ -50,6 +50,20 @@ describe("ImplementationReportSchema", () => {
     });
     expect(parsed.success).toBe(false);
   });
+
+  it("keeps the check method, and reads a missing or unknown one as unreported (ADR 0059)", () => {
+    const parse = (method: unknown) =>
+      ImplementationReportSchema.parse({
+        outcome: "completed",
+        summary: "done",
+        verification: [{ acceptance: "x", status: "pass", evidence: "npm test", method }],
+      }).verification[0];
+    expect(parse("executed")).toMatchObject({ method: "executed" });
+    expect(parse("inspected")).toMatchObject({ method: "inspected" });
+    expect(parse(undefined)?.method).toBeUndefined();
+    // A made-up value does not discard the finished report; it is just not counted.
+    expect(parse("static")).toEqual({ acceptance: "x", status: "pass", evidence: "npm test" });
+  });
 });
 
 describe("results from a protocol-2 worker before M4 (T14)", () => {

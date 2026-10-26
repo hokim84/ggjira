@@ -14,6 +14,17 @@ import { buildImplementSystemPrompt } from "../src/worker/prompt.js";
 
 import { ADMIN_TOKEN, RouterHarness } from "./helpers/router-harness.js";
 
+it("asks every implement agent for honest, agent-neutral evidence (ADR 0059)", () => {
+  const prompt = buildImplementSystemPrompt();
+  expect(prompt).toContain("Set method to executed when you ran a command");
+  expect(prompt).toContain("never describe a run that did not happen");
+  expect(prompt).toContain("first make a check that fails because of the bug");
+  expect(prompt).toContain("do not add fixes for causes you did not confirm");
+  expect(prompt).toContain("look for its consumers");
+  // Every provider gets the same text: it must not lean on one agent's tools.
+  expect(prompt).not.toMatch(/Claude|Codex|Bash|npm|vitest/);
+});
+
 it("serves current built-in prompts only to an authenticated administrator", async () => {
   const router = new RouterHarness();
   const app = router.app;

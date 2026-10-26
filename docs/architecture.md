@@ -132,12 +132,15 @@ Router와 Worker는 버전 불일치를 실행 전에 거절한다. 구현 envel
 provider의 최종 구조화 응답(`ImplementationReport`: outcome, 이탈, 결정, acceptance별 검증)을 받고, 커밋
 전에 변경 경로를 `allowedPaths`와 대조한다. 결정 필요·의미상 이탈·경로 이탈이면 commit·push·PR 없이
 patch와 worktree를 남기고 `needs_decision`으로 보고한다. 보고를 읽을 수 없거나 검증 근거가 없거나 실패한
-검증이 있으면 `failed`다.
+검증이 있으면 `failed`다. 검증 항목마다 확인 방식 `method`(`executed`: 실행해 결과를 봄, `inspected`: 코드·문서를
+읽고 판단)를 받는다. provider 스키마는 이를 요구하지만 Zod는 선택 필드로 받아 과거 결과와 잘못된 값도 읽는다(ADR 0059).
+커밋 뒤 워커의 `validateCommand`는 job의 취소 신호와 `timeoutMs`로 제한해 실행하고, 출력은 `validation`에 남는다.
 
 결과는 `git {base/head, committed}`와 에이전트의 의미상 위험(`risks`)도 담는다(ADR 0040). Router는 적용한
 결과마다 검토 대상(`review_targets`: issue·job·attempt·승인 id·입력 해시·base/head·분류와 근거)을 결과 저장과
 같은 트랜잭션에서 남기고, 같은 이슈의 이전 대상은 이력으로 돌린다(`src/router/review-gate.ts`). 분류는
-`immediate`(실패·결정·이탈·고위험·`not_verified`·커밋 없음·커밋 미보고) 또는 `standard`다. 고위험은 workspace
+`immediate`(실패·결정·이탈·고위험·`not_verified`·커밋 없음·커밋 미보고·워커 검증 명령 미실행
+`no_trusted_validation`) 또는 `standard`다. `method`는 집계만 하고 분류에 쓰지 않는다(ADR 0059). 고위험은 workspace
 `review.highRiskPaths`와 실제 변경 경로의 대조, 그리고 에이전트 보고로 판단하고, 규칙 해시를 설정 버전으로 남긴다.
 PR 머지는 그 머지의 head가 최신 대상의 head와 같을 때만(또는 head를 비교할 수 없을 때) 완료로 옮기고,
 `review_records`에 actor·인증·head·일치 여부를 남긴다. 사람의 판단(확인·보류·재작업 요청)도 검토 화면·CLI에서

@@ -56,6 +56,7 @@ describe("attention items", () => {
           headSha: "b".repeat(40),
           committed: true,
         },
+        validation: ['"npm test" passed'],
         ...overrides,
       },
       worker.token,

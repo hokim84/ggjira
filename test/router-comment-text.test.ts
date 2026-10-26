@@ -58,6 +58,9 @@ describe("comment text", () => {
     expect(text.reason({ code: "not_verified", detail: "" }, review({}))).toBe(
       "완료 조건 2개가 검증되지 않았습니다",
     );
+    expect(text.reason({ code: "no_trusted_validation", detail: "" }, review({}))).toBe(
+      "워커 검증 명령이 실행되지 않았습니다. AI 자체 보고만 근거입니다",
+    );
     expect(text.riskUnknown(review({}))).toBe(
       "고위험 확인: 알 수 없음 — workspace에 review.highRiskPaths가 없습니다.",
     );

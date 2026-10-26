@@ -421,13 +421,25 @@ async function executeWithProvider(
       });
     }
     deps.onProgress?.("validating");
-    const validated = await runValidateCommand(repository.validateCommand, cwd);
+    // Bounded like the integration check (quality.ts): a hung command must not outlive the lease.
+    const validated = await runValidateCommand(repository.validateCommand, cwd, {
+      signal: deps.signal,
+      timeoutMs: envelope.timeoutMs,
+    });
     validation.push(validated.summary);
+    if (validated.stopped === "cancelled") {
+      return cancelled("Stopped during validation: Router asked to cancel or the lease was lost.", {
+        ...committed,
+        changes,
+        validation,
+      });
+    }
     if (!validated.ok) {
       return {
         status: "failed",
         summary: report.summary,
         failureReason: `Validation command failed: ${validated.summary}`,
+        ...(validated.stopped === "timeout" ? { timedOut: true } : {}),
         changes,
         validation,
         ...reported,

@@ -4,6 +4,8 @@ import { killProcessTree } from "./spawn.js";
 export interface ValidateResult {
   ok: boolean;
   summary: string;
+  /** Set when the command did not finish on its own: the timeout fired or the signal aborted. */
+  stopped?: "timeout" | "cancelled";
 }
 
 /** Runs `workspace.validateCommand` inside the worktree after the worker finishes. */
@@ -12,7 +14,8 @@ export async function runValidateCommand(
   cwd: string,
   options: { signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<ValidateResult> {
-  if (options.signal?.aborted) return { ok: false, summary: "validation cancelled" };
+  if (options.signal?.aborted)
+    return { ok: false, summary: "validation cancelled", stopped: "cancelled" };
   return await new Promise((resolve) => {
     const child = spawn(command, {
       cwd,
@@ -21,16 +24,19 @@ export async function runValidateCommand(
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    let stopped = false;
-    const stop = () => {
-      stopped = true;
+    let stopped: ValidateResult["stopped"];
+    const stopFor = (reason: "timeout" | "cancelled") => {
+      stopped ??= reason;
       if (child.pid) killProcessTree(child.pid, true);
     };
-    const timer = options.timeoutMs ? setTimeout(stop, options.timeoutMs) : undefined;
-    options.signal?.addEventListener("abort", stop, { once: true });
+    const onAbort = () => stopFor("cancelled");
+    const timer = options.timeoutMs
+      ? setTimeout(() => stopFor("timeout"), options.timeoutMs)
+      : undefined;
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     const cleanup = () => {
       if (timer) clearTimeout(timer);
-      options.signal?.removeEventListener("abort", stop);
+      options.signal?.removeEventListener("abort", onAbort);
     };
     const chunks: string[] = [];
     child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk.toString("utf-8")));
@@ -49,6 +55,7 @@ export async function runValidateCommand(
           : code === 0
             ? `"${command}" passed`
             : `"${command}" exited ${code}${tail ? `: ${tail}` : ""}`,
+        ...(stopped ? { stopped } : {}),
       });
     });
   });

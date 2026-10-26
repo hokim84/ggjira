@@ -506,6 +506,21 @@ function failureSteps(
     summary || "(no summary)",
   ];
   if (input.result.blockingIssue) full.push("", "Blocking Issue:", input.result.blockingIssue);
+  // The agent's own checks and the worker's trusted command, so the log shows which one failed.
+  const checks = input.result.implementation?.verification ?? [];
+  if (checks.length > 0) {
+    full.push(
+      "",
+      "Acceptance Checks:",
+      ...checks.map(
+        (check) =>
+          `- ${check.status}${check.method ? ` (${check.method})` : ""}: ${check.acceptance} — ${check.evidence}`,
+      ),
+    );
+  }
+  if (input.result.validation?.length) {
+    full.push("", "Validation:", ...input.result.validation.map((line) => `- ${line}`));
+  }
   const evidence = input.result.localEvidence;
   if (evidence) {
     // ADR 0036: the run stopped before commit; say where its changes were kept.
@@ -596,7 +611,7 @@ function successComment(input: ResultJournalInput): string {
       text.acceptanceChecks,
       ...verification.map(
         (entry) =>
-          `- ${text.verificationStatus(entry.status)}: ${entry.acceptance} — ${entry.evidence}`,
+          `- ${text.verificationStatus(entry.status)}${entry.method ? `(${text.verificationMethod(entry.method)})` : ""}: ${entry.acceptance} — ${entry.evidence}`,
       ),
     );
   }

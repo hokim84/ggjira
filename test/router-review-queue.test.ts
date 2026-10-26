@@ -19,6 +19,7 @@ const committed = {
     headSha: HEAD,
     committed: true,
   },
+  validation: ['"npm test" passed'],
 };
 const noCommit = { git: { repository: "none", committed: false } };
 
@@ -126,6 +127,7 @@ describe("review queue", () => {
     expect(immediate?.result.summary).toBe("changed KAN-2");
     expect(immediate?.target.assessment.reasons.map((reason) => reason.code)).toEqual([
       "no_commit",
+      "no_trusted_validation",
     ]);
 
     expect((await queue("?class=standard")).map((item) => item.target.id)).toEqual([one]);

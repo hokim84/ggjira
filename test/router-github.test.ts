@@ -103,6 +103,7 @@ describe("GitHub pull request → Jira done", () => {
         status: "succeeded",
         summary: "done",
         branch: "ggjira/KAN-1-abc",
+        validation: ['"npm test" passed'],
         ...(pullRequest ? { pullRequest } : {}),
         ...(git ? { git } : {}),
       },

@@ -40,6 +40,7 @@ function result(overrides: Partial<JobResult> = {}): JobResult {
       outsideAllowed: [],
     },
     git: { repository: "git", baseBranch: "main", baseSha: BASE, headSha: HEAD, committed: true },
+    validation: ['"npm test" passed'],
     ...overrides,
   };
 }
@@ -159,8 +160,60 @@ describe("assessResult", () => {
       }),
     );
     expect(review.reviewClass).toBe("immediate");
-    expect(review.verification).toMatchObject({ pass: 1, notVerified: 1 });
+    expect(review.verification).toMatchObject({ pass: 1, notVerified: 1, executed: 0 });
     expect(review.reasons.map((reason) => reason.code)).toEqual(["not_verified"]);
+  });
+
+  it("counts how the checks were made without letting it decide the class (ADR 0059)", () => {
+    const base = result();
+    const review = assess(
+      result({
+        implementation: {
+          ...(base.implementation as NonNullable<JobResult["implementation"]>),
+          verification: [
+            { acceptance: "It works", status: "pass", method: "executed", evidence: "npm test" },
+            { acceptance: "It is typed", status: "pass", method: "inspected", evidence: "a.ts:3" },
+            { acceptance: "It is fast", status: "pass", evidence: "older worker" },
+          ],
+        },
+      }),
+    );
+    expect(review.verification).toEqual({
+      reported: true,
+      pass: 3,
+      fail: 0,
+      notVerified: 0,
+      executed: 1,
+      inspected: 1,
+    });
+    expect(review.reviewClass).toBe("standard");
+  });
+
+  it("reviews individually a result that only the agent's own report backs (ADR 0059)", () => {
+    const { validation: _ignored, ...unvalidated } = result();
+    const review = assess(unvalidated as JobResult);
+    expect(review.reviewClass).toBe("immediate");
+    expect(review.reasons).toEqual([
+      {
+        code: "no_trusted_validation",
+        detail: "no worker validation command ran; only the agent's own report backs this result",
+      },
+    ]);
+    expect(assess(result({ validation: [] })).reasons.map((reason) => reason.code)).toEqual([
+      "no_trusted_validation",
+    ]);
+    // A decision or a failure is already individual; the missing command adds nothing there.
+    expect(
+      assess({ ...unvalidated, status: "needs_decision" } as JobResult).reasons.map((r) => r.code),
+    ).toEqual(["decision_needed"]);
+    expect(
+      assessResult({
+        kind: "implementation",
+        finalState: "failed",
+        result: { ...unvalidated, status: "failed" } as JobResult,
+        workspace,
+      }).reasons.map((reason) => reason.code),
+    ).toEqual(["failed"]);
   });
 
   it("classifies decisions, scope deviations and failures as needing attention", () => {

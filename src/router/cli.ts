@@ -629,8 +629,13 @@ function printReviewQueue(io: CliIo, items: ReviewQueueItem[]): void {
     if (item.issue.summary) io.out(`    ${item.issue.summary}`);
     if (item.result.summary) io.out(`    result: ${item.result.summary}`);
     const v = target.assessment.verification;
-    if (v.reported)
-      io.out(`    acceptance: ${v.pass} pass, ${v.fail} fail, ${v.notVerified} not verified`);
+    if (v.reported) {
+      const methods =
+        v.executed !== undefined ? `; ${v.executed} executed, ${v.inspected ?? 0} inspected` : "";
+      io.out(
+        `    acceptance: ${v.pass} pass, ${v.fail} fail, ${v.notVerified} not verified${methods}`,
+      );
+    }
     for (const reason of target.assessment.reasons) io.out(`    needs review: ${reason.detail}`);
     if (item.result.pullRequest) io.out(`    pull request: ${item.result.pullRequest.url}`);
     if (item.judgment) {

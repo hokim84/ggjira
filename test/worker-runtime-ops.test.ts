@@ -89,6 +89,7 @@ describe("worker operations", () => {
     expect(items).toEqual([
       { level: "fail", message: expect.stringContaining("missing-credential.json") },
       { level: "ok", message: expect.stringContaining('repository "repo1": git repository') },
+      { level: "warn", message: expect.stringContaining('repository "repo1": no validateCommand') },
       { level: "ok", message: expect.stringContaining('provider "default"') },
       { level: "fail", message: expect.stringContaining("ECONNREFUSED") },
     ]);

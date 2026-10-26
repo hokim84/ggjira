@@ -48,6 +48,15 @@ export const JUDGMENT_LABELS = {
   "judgment.rework": "재작업 요청",
 };
 
+/** One line for a review assessment's verification tally; the method counts exist only on
+ *  assessments recorded after ADR 0059. */
+export function verificationSummary(v) {
+  if (!v.reported) return "보고 없음";
+  const methods =
+    v.executed !== undefined ? ` (실행 ${v.executed} · 코드 확인 ${v.inspected ?? 0})` : "";
+  return `통과 ${v.pass} · 실패 ${v.fail} · 미검증 ${v.notVerified}${methods}`;
+}
+
 export const COMMIT_LABELS = {
   committed: "커밋",
   no_commit: "커밋 없음",
@@ -246,13 +255,7 @@ function reviewSection(targets, records) {
           : null,
       ),
       h("dt", {}, "검증 결과"),
-      h(
-        "dd",
-        {},
-        assessment.verification.reported
-          ? `통과 ${assessment.verification.pass} · 실패 ${assessment.verification.fail} · 미검증 ${assessment.verification.notVerified}`
-          : "보고 없음",
-      ),
+      h("dd", {}, verificationSummary(assessment.verification)),
       assessment.reasons.length ? h("dt", {}, "사유") : null,
       assessment.reasons.length
         ? h(

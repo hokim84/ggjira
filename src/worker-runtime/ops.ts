@@ -289,6 +289,13 @@ export async function runWorkerCheck(
             message: `repository "${repo.id}": ${repo.path} is not a git repository; jobs edit it in place, one at a time`,
           },
     );
+    if (!repo.validateCommand) {
+      // ADR 0059: without it Router marks every implementation result for individual review.
+      items.push({
+        level: "warn",
+        message: `repository "${repo.id}": no validateCommand; implementation results carry only the agent's own report and are marked for individual review`,
+      });
+    }
   }
 
   for (const provider of config.providers) {

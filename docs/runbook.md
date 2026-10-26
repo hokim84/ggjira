@@ -762,7 +762,7 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 | `GGJ-203` | AI CLI 로그인 안 됨·거부 | 워커 머신에서 `codex login`/`claude` 로그인 |
 | `GGJ-204` | AI CLI가 오류를 내고 끝남(원인 문구 포함) | 문구대로 고침. 원문은 로그 파일 |
 | `GGJ-205` | AI CLI가 종료 코드만 남기고 끝남 | 로그 파일과 워커 로그 `data/worker-logs/<jobId>-<attemptId>.jsonl` 확인 |
-| `GGJ-301` | 워커 검증 명령(`validateCommand`) 실패 | 로그 파일의 명령 출력 확인 |
+| `GGJ-301` | 워커 검증 명령(`validateCommand`) 실패 | 로그 파일의 `Validation:`·`Acceptance Checks:` 확인. 명령이 job 시간을 넘기면 `GGJ-105`(§45) |
 | `GGJ-302` | 완료 조건 검증 실패 | 계획의 완료 조건이나 구현을 고쳐 다시 요청 |
 | `GGJ-303` | AI가 검증 근거 없이 완료 보고 | 다시 요청. 반복되면 계획의 Verification을 구체적으로 |
 | `GGJ-401` | 계획을 적용할 수 없음(작업 수 초과, 완료 조건 없음 등) | 원인 문구대로 요청을 고쳐 다시 계획 |
@@ -964,3 +964,56 @@ Jira 댓글로 전달된다. 실행·커밋·과거 판단 기록과 PR 병합 S
 유형과 GitHub PR 조회 권한을 읽기 전용으로 확인하며, 코드를 실행하거나 자동 수정하지 않는다.
 병합 후 통합 검증 및 FCI와 구분한다. 구 URL `#/issues`, `#/reviews`, `#/check`는 각각 작업 상세,
 대시보드, 설정의 연동 진단으로 연결한다. 이 변경에 DB 마이그레이션이나 Worker 프로토콜 변경은 없다.
+
+## 45. 신뢰 검증과 검증 방식 (ADR 0059)
+
+구현 결과의 근거는 두 가지다. AI가 스스로 보고한 완료 조건 확인(`verification`)과, 워커가 커밋 뒤 직접 실행한
+`repositories[].validateCommand` 출력(`validation`)이다. 뒤의 것만 GGJIRA가 만든 증거다.
+
+- **댓글·작업 상세에 "워커 검증 명령이 실행되지 않았습니다. AI 자체 보고만 근거입니다"
+  (`no_trusted_validation`)**: 그 워커의 저장소 설정에 `validateCommand`가 없다. `worker start`로 만든 설정은
+  기본값이 `null`이라 모든 구현 결과가 개별 검토 대상과 확인 필요 항목이 된다. 워커 머신의
+  `worker.config.json`에서 `repositories[].validateCommand`에 저장소의 검사 명령(예: `npm run check`,
+  `dotnet test`)을 넣고 `npm run dev -- worker check`로 경고가 사라졌는지 본 뒤 워커를 재시작한다. 이 사유는
+  자동 완료·부모 PR 조립을 막지 않는다.
+- **검증 명령이 오래 걸림**: 명령은 job의 취소 신호와 별도의 `timeoutMs` 한도로 실행된다(AI 실행 시간과
+  따로 센다). 한도를 넘기면 `GGJ-105` 시간 초과, Router가 취소하거나 임대를 잃으면 `cancelled`로 끝나고 push하지
+  않는다. 커밋은 워커의 job 브랜치에 남는다.
+- **완료 조건 줄의 `(실행)`·`(코드 확인)`**: AI가 보고한 확인 방식이다. `실행`은 명령·테스트를 돌려 결과를 봤다는
+  뜻이고, `코드 확인`은 코드·문서를 읽고 판단했다는 뜻이다. 명령을 실행할 수 없는 에이전트(예: 기본 도구의 Claude
+  Code)는 `코드 확인`을 써야 한다. 표시가 없으면 업그레이드 전 결과이거나 AI가 알 수 없는 값을 보냈다. 방식은
+  집계(`router reviews`, 작업 상세)에만 쓰이고 검토 분류를 바꾸지 않는다.
+- 기본 구현 지침에 이 규칙이 들어 있다. 업그레이드 전에 발급된 attempt는 이전 지침을 그대로 쓴다.
+
+## 46. GGJIRA 자체 변경 검증 절차
+
+GGJIRA 코드를 바꾼 사람·AI 에이전트(Claude Code, Codex 등)가 완료를 보고하기 전에 따른다. CLAUDE.md
+"완료의 정의"의 2번을 구체화한 것이다.
+
+규칙:
+
+- Jira는 `FakeJiraGateway`만, 네트워크는 `127.0.0.1` loopback만, 파일은 테스트가 만드는 임시 디렉터리만 쓴다.
+- 실제 `router.config.json`, `router.env`, 워커 credential, 실제 Jira·AI CLI를 쓰지 않는다. 실제 연동 확인은
+  사람이 `router check`·`worker check`로 따로 한다.
+- 실행한 명령과 결과(통과 수, 실패 메시지)를 그대로 보고한다. 실행하지 못한 검사는 못 했다고 쓴다.
+
+1단계 — 바꾼 영역의 테스트 파일을 하나씩 실행한다(`npx vitest run test/<file>`). Windows에서 멈추면 §13을 따른다.
+
+| 바꾼 곳 | 실행할 테스트 | 볼 것 |
+|---|---|---|
+| `src/contracts/*` | `contracts-implementation`, `contracts-schemas`, `contracts-state-machines` | JSON Schema와 Zod 일치, 과거 결과 파싱 |
+| `src/router/review-gate.ts`, 검토·확인 필요 | `router-review-gate`, `router-review-queue`, `router-attention` | 분류(`immediate`/`standard`)와 사유 코드 |
+| Jira 댓글 문구·보고 | `router-comment-text`, `router-reporting` | 댓글 본문, 실패 로그 파일 내용 |
+| 역할 지침 | `router-prompts` | 기본 지침 문구, envelope의 `systemPrompt` |
+| 워커 실행·검증 명령 | `worker-scope`, `worker-push`, `worker-runtime-runner` | 단계 순서(commit·validate·push), 실패 시 push 없음 |
+| 통합 검증 | `worker-quality-review`, `router-board-workflow` | 고정 SHA 검증, 상태 이동 |
+| 워커 계층 경계 | `worker-runtime-no-jira` | `src/worker-runtime`이 Jira·Router DB를 import하지 않음 |
+| Router + Worker 전체 | `router-integration`, `router-daemon` | loopback HTTP로 계획→승인→구현→보고가 한 번씩 |
+
+2단계 — `npm run check`. Windows에서 멈추거나 `spawn EFTYPE`(§13)만 실패하면
+`docker compose -f docker-compose.test.yml run --rm --build check`로 Linux에서 전체를 확인한다.
+
+3단계 — 동작이 바뀌었으면 위 표의 테스트에 실패 → 수정 → 통과를 보이는 사례를 추가한다. 웹 UI만 바꾼 경우는
+자동 테스트가 없으므로, 바꾼 화면 파일과 확인 방법을 보고에 적는다.
+
+정리 — 테스트는 임시 디렉터리를 스스로 지운다. 중단된 실행이 남긴 `ggjira-*` 임시 폴더는 OS 임시 디렉터리에서 지운다.

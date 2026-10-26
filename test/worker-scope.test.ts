@@ -134,13 +134,23 @@ describe("implementation scope checks (ADR 0036)", () => {
   async function run(
     provider: WorkerProvider,
     job: JobEnvelope = envelope(),
+    options: { validateCommand?: string; abortDuringValidation?: boolean } = {},
   ): Promise<{ outcome: ExecutionOutcome; stages: string[] }> {
     const stages: string[] = [];
+    const abort = new AbortController();
     const config = WorkerConfigSchema.parse({
       configVersion: 5,
       routerUrl: "http://127.0.0.1:8787",
       credentialPath: path.join(dir, "credential.json"),
-      repositories: [{ id: "repo1", path: clone, pushRemote: "origin", createPullRequest: false }],
+      repositories: [
+        {
+          id: "repo1",
+          path: clone,
+          pushRemote: "origin",
+          createPullRequest: false,
+          ...(options.validateCommand ? { validateCommand: options.validateCommand } : {}),
+        },
+      ],
       providers: [{ id: "default", type: "claude-code" }],
       dataDir: path.join(dir, "data"),
       logPath: path.join(dir, "logs"),
@@ -149,9 +159,12 @@ describe("implementation scope checks (ADR 0036)", () => {
       config,
       createProvider: () => provider,
       worktreesRoot: path.join(dir, "data", "worktrees"),
-      signal: new AbortController().signal,
+      signal: abort.signal,
       authorize: async (stage) => {
         stages.push(stage);
+        if (stage === "validate" && options.abortDuringValidation) {
+          setTimeout(() => abort.abort(), 300);
+        }
         return true;
       },
     });
@@ -357,6 +370,65 @@ describe("implementation scope checks (ADR 0036)", () => {
     expect(outcome.failureReason).toBeTruthy();
     expectStoppedBeforeCommit(outcome, stages);
     expect(existsSync(outcome.localEvidence?.patchFile as string)).toBe(true);
+  });
+
+  describe("trusted validation command", () => {
+    const editing = () =>
+      new ScriptedProvider(
+        (cwd) => writeFileSync(path.join(cwd, "src", "a.ts"), "export const a = 2;\n"),
+        fakeSuccessResult(),
+      );
+    const hang = 'node -e "setInterval(Date.now, 1000)"';
+
+    it("runs after the commit and reports its summary", async () => {
+      const command = 'node -e "process.exit(0)"';
+      const { outcome, stages } = await run(editing(), envelope(), { validateCommand: command });
+
+      expect(outcome.status).toBe("succeeded");
+      expect(stages).toEqual(["commit", "validate", "push"]);
+      expect(outcome.validation).toEqual([`"${command}" passed`]);
+    });
+
+    it("fails without pushing when the command fails, keeping the commit", async () => {
+      const { outcome, stages } = await run(editing(), envelope(), {
+        validateCommand: 'node -e "process.exit(3)"',
+      });
+
+      expect(outcome.status).toBe("failed");
+      expect(outcome.failureReason).toMatch(/^Validation command failed: .*exited 3/);
+      expect(outcome.timedOut).toBeUndefined();
+      expect(outcome.git?.committed).toBe(true);
+      expect(stages).toEqual(["commit", "validate"]);
+      expect(remoteBranches()).not.toContain("ggjira/");
+    });
+
+    it("stops a running command when Router cancels or the lease is lost", async () => {
+      const { outcome, stages } = await run(editing(), envelope(), {
+        validateCommand: hang,
+        abortDuringValidation: true,
+      });
+
+      expect(outcome.status).toBe("cancelled");
+      expect(outcome.summary).toContain("Stopped during validation");
+      expect(outcome.validation).toEqual(["validation cancelled or timed out"]);
+      expect(stages).toEqual(["commit", "validate"]);
+      expect(remoteBranches()).not.toContain("ggjira/");
+    });
+
+    it("times out a hung command with the job's timeout", async () => {
+      const { outcome } = await run(
+        editing(),
+        { ...envelope(), timeoutMs: 500 },
+        { validateCommand: hang },
+      );
+
+      expect(outcome.status).toBe("failed");
+      expect(outcome.timedOut).toBe(true);
+      expect(outcome.failureReason).toBe(
+        "Validation command failed: validation cancelled or timed out",
+      );
+      expect(remoteBranches()).not.toContain("ggjira/");
+    });
   });
 
   it("reports the path check as not done in a non-git workspace", async () => {
