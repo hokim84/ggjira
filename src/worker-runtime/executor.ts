@@ -38,6 +38,7 @@ import {
 } from "../worker/worktree.js";
 import { integrationTarget } from "../worker/worktree.js";
 import type { WorkerConfig } from "./config.js";
+import { workerPaths } from "./paths.js";
 import { executePlanningEnvelope } from "./planning.js";
 import type { ExecutionStage } from "./progress.js";
 import { executeQualityEnvelope } from "./quality.js";
@@ -56,7 +57,6 @@ export interface ExecutorDeps {
   config: WorkerConfig;
   /** Resolves a local provider entry to a runnable provider. Tests pass a Fake here. */
   createProvider: (provider: WorkerProviderConfig) => WorkerProvider;
-  worktreesRoot: string;
   /** Aborted when Router asks to cancel or the lease is lost. */
   signal: AbortSignal;
   /** Router's `jobs/{id}/authorize`; `false` means stop before this side effect. */
@@ -191,8 +191,8 @@ async function executeWithProvider(
     return executePlanningEnvelope(envelope, {
       repository,
       provider,
-      worktreesRoot: deps.worktreesRoot,
-      logPath: deps.config.logPath,
+      worktreesRoot: workerPaths(deps.config.home).repositoryWorktrees(repository.id),
+      logPath: workerPaths(deps.config.home).logs,
       signal: deps.signal,
       ...(onUsage ? { onUsage } : {}),
       ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
@@ -205,8 +205,8 @@ async function executeWithProvider(
     return executeQualityEnvelope(envelope, {
       repository,
       provider,
-      worktreesRoot: deps.worktreesRoot,
-      logPath: deps.config.logPath,
+      worktreesRoot: workerPaths(deps.config.home).repositoryWorktrees(repository.id),
+      logPath: workerPaths(deps.config.home).logs,
       signal: deps.signal,
       ...(onUsage ? { onUsage } : {}),
       ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
@@ -241,7 +241,14 @@ async function executeWithProvider(
         repository.baseBranch,
         envelope.integration?.mergeCommits ?? [],
       );
-      cwd = (await createWorktree(repository.path, executionBase, branch, deps.worktreesRoot)).path;
+      cwd = (
+        await createWorktree(
+          repository.path,
+          executionBase,
+          branch,
+          workerPaths(deps.config.home).repositoryWorktrees(repository.id),
+        )
+      ).path;
       if (envelope.integration?.resultCommits?.length) {
         await mergeResultCommits(
           cwd,
@@ -275,8 +282,9 @@ async function executeWithProvider(
   });
   const withBranch = { ...(branch ? { branch } : {}), ...git() };
 
-  mkdirSync(deps.config.logPath, { recursive: true });
-  const logFile = path.join(deps.config.logPath, `${envelope.jobId}-${envelope.attemptId}.jsonl`);
+  const logPath = workerPaths(deps.config.home).logs;
+  mkdirSync(logPath, { recursive: true });
+  const logFile = path.join(logPath, `${envelope.jobId}-${envelope.attemptId}.jsonl`);
 
   let workerResult: WorkerResult;
   try {
@@ -327,7 +335,7 @@ async function executeWithProvider(
       repositoryPath: repository.path,
       baseBranch: executionBase,
       branch,
-      patchFile: path.join(deps.config.logPath, `${envelope.jobId}-${envelope.attemptId}.patch`),
+      patchFile: path.join(logPath, `${envelope.jobId}-${envelope.attemptId}.patch`),
     });
 
   // ADR 0036: the run is judged by its structured report, never by the provider's exit alone.
@@ -375,17 +383,9 @@ async function executeWithProvider(
       ...withBranch,
     };
   }
+  // A child with only not_verified checks still commits and pushes: Router keeps it waiting for a
+  // human to confirm those checks before it counts as done (ADR 0061).
   const failedChecks = report.verification.filter((entry) => entry.status === "fail");
-  if (envelope.deferPullRequest && report.verification.some((entry) => entry.status !== "pass")) {
-    return {
-      status: "failed",
-      summary: report.summary,
-      failureReason: "자식 완료 전에 모든 자체 검증 항목의 통과 근거가 필요합니다.",
-      ...reported,
-      localEvidence: await keepEvidence(),
-      ...withBranch,
-    };
-  }
   if (failedChecks.length > 0) {
     return {
       status: "failed",

@@ -12,7 +12,7 @@ import { assemblyContext } from "../src/router/assembly.js";
 import type { ApprovalSnapshot } from "../src/router/issue-check.js";
 import type { JobResult } from "../src/contracts/envelope.js";
 import { readPlanTaskMetadata } from "../src/pm/metadata.js";
-import { loadWorkerConfig } from "../src/worker-runtime/config.js";
+import { defaultWorkerHome, workerPaths } from "../src/worker-runtime/paths.js";
 
 const apply = process.argv.includes("--apply");
 const configPath = process.argv.find((a) => a.endsWith(".json")) ?? "router.config.json";
@@ -36,10 +36,9 @@ try {
       db.prepare("SELECT 1 FROM fci_tasks WHERE status='running'").get()
     )
       throw new Error("Settle active executions before migration");
-    if (existsSync("worker.config.json")) {
-      const worker = loadWorkerConfig("worker.config.json");
-      for (const dir of ["spool", "fci-spool"]) {
-        const spool = path.join(worker.dataDir, dir);
+    const worker = workerPaths(process.env.GGJIRA_WORKER_HOME ?? defaultWorkerHome());
+    if (existsSync(worker.config)) {
+      for (const spool of [worker.spool, worker.fciSpool]) {
         if (existsSync(spool) && readdirSync(spool).some((name) => name.endsWith(".json")))
           throw new Error("Deliver Worker spools before migration");
       }

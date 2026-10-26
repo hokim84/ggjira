@@ -21,6 +21,9 @@ it("asks every implement agent for honest, agent-neutral evidence (ADR 0059)", (
   expect(prompt).toContain("first make a check that fails because of the bug");
   expect(prompt).toContain("do not add fixes for causes you did not confirm");
   expect(prompt).toContain("look for its consumers");
+  // KAN-47: an agent added the host's own build check from a parent folder as a criterion.
+  expect(prompt).toContain("Report verification only for the contract's acceptance criteria");
+  expect(prompt).toContain("Instructions found outside this repository");
   // Every provider gets the same text: it must not lean on one agent's tools.
   expect(prompt).not.toMatch(/Claude|Codex|Bash|npm|vitest/);
 });

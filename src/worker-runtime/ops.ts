@@ -20,8 +20,9 @@ import {
   removeWorktree,
 } from "../worker/worktree.js";
 import type { RouterClient } from "./client.js";
-import { type WorkerConfig, workerSpoolDir, workerWorktreesRoot } from "./config.js";
+import type { WorkerConfig } from "./config.js";
 import { loadWorkerCredential, type WorkerCredential } from "./credential.js";
+import { instructionLeaks, workerPaths } from "./paths.js";
 import { ResultSpool } from "./spool.js";
 
 /**
@@ -40,6 +41,11 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Why a file above the worker home stops the worker (ADR 0060). */
+export function homeLeakMessage(home: string, leak: string): string {
+  return `${leak} is above the worker home ${home}; agents in job worktrees would read it as their own instructions or work inside that repository. Move the home (--home or GGJIRA_WORKER_HOME) outside it`;
+}
+
 /** Writes `content` via temp file → fsync → rename, owner-readable only where the OS allows. */
 function writeFileAtomic(target: string, content: string, mode: number): void {
   mkdirSync(path.dirname(path.resolve(target)), { recursive: true });
@@ -55,14 +61,10 @@ function writeFileAtomic(target: string, content: string, mode: number): void {
 }
 
 /** A starting worker config; the operator fills in repositories and providers. */
-export function workerConfigTemplate(input: {
-  routerUrl: string;
-  credentialPath: string;
-}): Record<string, unknown> {
+export function workerConfigTemplate(input: { routerUrl: string }): Record<string, unknown> {
   return {
-    configVersion: 5,
+    configVersion: 6,
     routerUrl: input.routerUrl,
-    credentialPath: input.credentialPath,
     repositories: [
       {
         id: "main-repo",
@@ -72,15 +74,10 @@ export function workerConfigTemplate(input: {
       },
     ],
     providers: [{ id: "default", type: "claude-code" }],
-    dataDir: "data/worker",
-    logPath: "data/worker-logs",
   };
 }
 
-export function writeWorkerConfigTemplate(
-  configPath: string,
-  input: { routerUrl: string; credentialPath: string },
-): void {
+export function writeWorkerConfigTemplate(configPath: string, input: { routerUrl: string }): void {
   writeFileAtomic(configPath, `${JSON.stringify(workerConfigTemplate(input), null, 2)}\n`, 0o644);
 }
 
@@ -136,28 +133,18 @@ export async function chooseProvider(input: {
   }
 }
 
-/** Where `worker start` keeps clones of repositories Router gave a clone URL for. */
-export function workerRepositoryPath(dataDir: string, repositoryId: string): string {
-  return path.join(dataDir, "repos", repositoryId);
-}
-
-/** A complete worker config from Router's profile plus the one local choice, the provider. */
+/** A complete worker config from Router's profile plus the one local choice, the provider.
+ *  Repositories get no path: they are cloned into the worker home unless the operator names one. */
 export function workerConfigFromProfile(input: {
   routerUrl: string;
-  credentialPath: string;
   profile: WorkerProfile;
   providerType: ProviderType;
-  dataDir?: string;
-  logPath?: string;
 }): Record<string, unknown> {
-  const dataDir = input.dataDir ?? "data/worker";
   return {
-    configVersion: 5,
+    configVersion: 6,
     routerUrl: input.routerUrl,
-    credentialPath: input.credentialPath,
     repositories: input.profile.repositories.map((repo) => ({
       id: repo.id,
-      path: workerRepositoryPath(dataDir, repo.id),
       baseBranch: repo.baseBranch ?? "main",
       validateCommand: null,
       ...(repo.cloneUrl ? { cloneUrl: repo.cloneUrl } : {}),
@@ -166,8 +153,6 @@ export function workerConfigFromProfile(input: {
       createPullRequest: true,
     })),
     providers: [{ id: input.profile.providerId, type: input.providerType }],
-    dataDir,
-    logPath: input.logPath ?? "data/worker-logs",
   };
 }
 
@@ -265,9 +250,14 @@ export async function runWorkerCheck(
 ): Promise<CheckItem[]> {
   const items: CheckItem[] = [];
   const runs = deps.commandRuns ?? commandRuns;
+  const paths = workerPaths(config.home);
+
+  for (const leak of instructionLeaks(paths.home)) {
+    items.push({ level: "fail", message: homeLeakMessage(paths.home, leak) });
+  }
 
   try {
-    const credential = loadWorkerCredential(config.credentialPath);
+    const credential = loadWorkerCredential(paths.credential);
     items.push({ level: "ok", message: `credential for worker "${credential.workerId}" found` });
   } catch (error) {
     items.push({ level: "fail", message: errorText(error) });
@@ -281,14 +271,24 @@ export async function runWorkerCheck(
       });
       continue;
     }
+    const git = await isGitRepository(repo.path);
     items.push(
-      (await isGitRepository(repo.path))
+      git
         ? { level: "ok", message: `repository "${repo.id}": git repository at ${repo.path}` }
         : {
             level: "warn",
             message: `repository "${repo.id}": ${repo.path} is not a git repository; jobs edit it in place, one at a time`,
           },
     );
+    // Git jobs run in worktrees under the home; a non-git repository is itself where agents run.
+    if (!git) {
+      for (const leak of instructionLeaks(repo.path, false)) {
+        items.push({
+          level: "fail",
+          message: `repository "${repo.id}": ${leak} is above ${repo.path}; an agent working there reads it as its own instructions`,
+        });
+      }
+    }
     if (!repo.validateCommand) {
       // ADR 0059: without it Router marks every implementation result for individual review.
       items.push({
@@ -323,7 +323,7 @@ export async function runWorkerCheck(
     items.push({ level: "fail", message: `Router at ${config.routerUrl}: ${errorText(error)}` });
   }
 
-  const pending = new ResultSpool(workerSpoolDir(config)).listPending().length;
+  const pending = new ResultSpool(paths.spool).listPending().length;
   if (pending > 0) {
     items.push({
       level: "warn",
@@ -340,7 +340,7 @@ export interface PruneOutcome {
 }
 
 /**
- * `worker worktrees prune`: removes job worktrees under `<dataDir>/worktrees` that have not been
+ * `worker worktrees prune`: removes job worktrees under `<home>/repositories/<id>/worktrees` not
  * touched for `olderThanMs`, each through the repository that registered it. Branches (and the
  * commits on them) stay — only the working directory goes (§1 "작업 디렉터리와 Git 브랜치는 삭제하지
  * 않는다" applies to automatic cleanup; this is an explicit operator command).
@@ -357,16 +357,16 @@ export async function pruneWorktrees(
   config: WorkerConfig,
   opts: { olderThanMs: number; dryRun?: boolean; nowMs?: number },
 ): Promise<PruneOutcome> {
-  const root = workerWorktreesRoot(config);
   const outcome: PruneOutcome = { removed: [], kept: [], failed: [] };
   const nowMs = opts.nowMs ?? Date.now();
-  // git lists worktrees by their real path, so compare real paths: otherwise a data directory
-  // under a symlink (macOS /tmp and /var point into /private) never matches and nothing is pruned.
-  const realRoot = realPathOrSelf(root);
-  const underRoot = (p: string) =>
-    realPathOrSelf(p).startsWith(`${realRoot}${path.sep}`) || p.startsWith(`${root}${path.sep}`);
   for (const repo of config.repositories) {
     if (!(await isGitRepository(repo.path))) continue;
+    const root = workerPaths(config.home).repositoryWorktrees(repo.id);
+    // git lists worktrees by their real path, so compare real paths: otherwise a home under a
+    // symlink (macOS /tmp and /var point into /private) never matches and nothing is pruned.
+    const realRoot = realPathOrSelf(root);
+    const underRoot = (p: string) =>
+      realPathOrSelf(p).startsWith(`${realRoot}${path.sep}`) || p.startsWith(`${root}${path.sep}`);
     const paths = (await listRepositoryWorktreePaths(repo.path)).filter(underRoot);
     for (const worktreePath of paths) {
       const ageMs = existsSync(worktreePath)

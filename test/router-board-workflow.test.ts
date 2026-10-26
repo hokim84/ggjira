@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
-import { getOpenJobForIssue } from "../src/router/db/jobs.js";
+import { getAttempt } from "../src/router/db/attempts.js";
+import { listAudit } from "../src/router/db/audit.js";
+import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
+import { latestJudgment, listReviewTargets } from "../src/router/db/review-targets.js";
 import { handlePullRequestClosed } from "../src/router/github.js";
+import { expireLeases } from "../src/router/leases.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import { WORKFLOW_TRANSITIONS, singlePlan, testWorkspace } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
@@ -306,6 +310,217 @@ describe("board workflow", () => {
     expect(await status()).toBe(w.implementationCompleteStatus);
     expect(await status("KAN-1002")).toBe(w.implementationCompleteStatus);
   });
+  it("keeps a child with unverified checks waiting until a person confirms it (ADR 0061)", async () => {
+    await publish();
+    await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
+    await finish(await start(), {
+      branch: "ggjira/first",
+      artifacts: ["pushed: origin/ggjira/first"],
+      changes: ["src/a.ts"],
+      validation: ['"npm test" passed'],
+      git: {
+        repository: "git",
+        committed: true,
+        baseBranch: "main",
+        baseSha: sha(1),
+        headSha: sha(2),
+      },
+      scopeCheck: {
+        checked: true,
+        changedPaths: [{ path: "src/a.ts", change: "modified" }],
+        outsideAllowed: [],
+      },
+      implementation: {
+        outcome: "completed",
+        summary: "Added the panel",
+        scopeDeviations: [],
+        risks: [],
+        verification: [
+          { acceptance: "Works", status: "pass", method: "executed", evidence: "npm test" },
+          {
+            acceptance: "The panel scrolls on screen",
+            status: "not_verified",
+            method: "inspected",
+            evidence: "no display on the worker",
+          },
+        ],
+      },
+    });
+    // Kept on the remote and in progress: not failed, not done, nothing to aggregate yet.
+    expect(await status("KAN-1001")).toBe(w.inProgressStatus);
+    expect((await router.jira.getIssue("KAN-1001")).labels).not.toContain("ggjira-failed");
+    const waiting = router.jira.comments.filter((c) => c.key === "KAN-1001").at(-1)?.body;
+    expect(waiting).toContain("사람 확인 대기");
+    expect(waiting).toContain("- The panel scrolls on screen");
+    await router.reconcile();
+    expect((await router.next(worker, `waiting-${++serial}`)).statusCode).toBe(204);
+
+    const humanCheck = async () =>
+      (await router.adminCall("GET", "/issues/KAN-1001")).json().delegation.humanCheck;
+    expect(await humanCheck()).toEqual(["The panel scrolls on screen"]);
+
+    const target = listReviewTargets(router.db, "KAN-1001")[0]?.id as string;
+    const judge = (action: string, note?: string) =>
+      router.adminCall("POST", `/reviews/${target}/judgments`, {
+        action,
+        ...(note ? { note } : {}),
+      });
+    // A hold records an opinion and completes nothing.
+    expect((await judge("hold", "Checking the layout first")).statusCode).toBe(201);
+    await process();
+    expect(await status("KAN-1001")).toBe(w.inProgressStatus);
+
+    expect((await judge("confirm")).statusCode).toBe(201);
+    await process();
+    expect(await status("KAN-1001")).toBe(w.implementationCompleteStatus);
+    expect(router.jira.comments.filter((c) => c.key === "KAN-1001").at(-1)?.body).toContain(
+      "사람 확인 완료",
+    );
+    expect(await humanCheck()).toBeNull();
+    const aggregate = await start();
+    expect(aggregate.kind).toBe("assemble_pr");
+    expect(aggregate.assembly?.children.map((c) => c.headSha)).toEqual([sha(2)]);
+  });
+
+  const awaitingCheck = (head: number, base = 1) => ({
+    branch: `ggjira/child-${head}`,
+    artifacts: [`pushed: origin/ggjira/child-${head}`],
+    changes: ["src/a.ts"],
+    validation: ['"npm test" passed'],
+    git: {
+      repository: "git",
+      committed: true,
+      baseBranch: "main",
+      baseSha: sha(base),
+      headSha: sha(head),
+    },
+    scopeCheck: {
+      checked: true,
+      changedPaths: [{ path: "src/a.ts", change: "modified" }],
+      outsideAllowed: [],
+    },
+    implementation: {
+      outcome: "completed",
+      summary: "Added the panel",
+      scopeDeviations: [],
+      risks: [],
+      verification: [
+        { acceptance: "Works", status: "pass", method: "executed", evidence: "npm test" },
+        {
+          acceptance: "The panel scrolls on screen",
+          status: "not_verified",
+          method: "inspected",
+          evidence: "no display on the worker",
+        },
+      ],
+    },
+  });
+
+  it("takes a person's move to implementation complete in Jira as the confirmation (ADR 0061)", async () => {
+    await publish(true);
+    await router.jira.transitionIssueToStatus("KAN-1002", w.inProgressStatus);
+    await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
+    await finish(await start(), awaitingCheck(2));
+    expect(await status("KAN-1001")).toBe(w.inProgressStatus);
+    expect(router.jira.comments.filter((c) => c.key === "KAN-1001").at(-1)?.body).toContain(
+      `이슈를 "${w.implementationCompleteStatus}"(으)로 옮기세요`,
+    );
+    // The dependent child waits while the result waits for a person.
+    await router.reconcile();
+    expect((await router.next(worker, `waiting-${++serial}`)).statusCode).toBe(204);
+
+    // The person checks it and moves the card; no Router UI involved.
+    await router.jira.transitionIssueToStatus("KAN-1001", w.implementationCompleteStatus);
+    const second = await start();
+    expect(second.issueSnapshot.key).toBe("KAN-1002");
+    expect(second.integration?.resultCommits).toContain(sha(2));
+    const target = listReviewTargets(router.db, "KAN-1001")[0]?.id as string;
+    expect(latestJudgment(router.db, target)).toMatchObject({
+      action: "judgment.confirm",
+      actor: "jira",
+      authentication: "jira-status",
+    });
+
+    await finish(second, { ...noChange, ...awaitingCheck(3, 2) });
+    await router.jira.transitionIssueToStatus("KAN-1002", w.implementationCompleteStatus);
+    const aggregate = await start();
+    expect(aggregate.kind).toBe("assemble_pr");
+    expect(aggregate.assembly?.children.map((c) => c.headSha)).toEqual([sha(2), sha(3)]);
+  });
+
+  it("does not take a manual completion of a failed or unfinished child as a confirmation", async () => {
+    await publish();
+    await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
+    const child = await start();
+    const failing = awaitingCheck(2);
+    failing.implementation.verification[1] = {
+      ...failing.implementation.verification[1],
+      status: "fail",
+    } as (typeof failing.implementation.verification)[number];
+    await finish(child, failing);
+    await router.jira.transitionIssueToStatus("KAN-1001", w.implementationCompleteStatus);
+    await router.reconcile();
+    expect((await router.next(worker, `manual-${++serial}`)).statusCode).toBe(204);
+  });
+
+  it("reruns a run left recovery_required on the assignee's 재시도 comment (ADR 0062)", async () => {
+    await router.jira.transitionIssueToStatus("KAN-1", w.inProgressStatus);
+    const lost = await start();
+    router.clock.advance(31_000);
+    expireLeases(router.db, router.clock.now());
+    expect(getJob(router.db, lost.jobId)?.state).toBe("recovery_required");
+
+    // Jira hears about it once, with what to do.
+    await router.reconcile();
+    await router.reconcile();
+    await process();
+    const notices = router.jira.comments.filter(
+      (c) => c.key === "KAN-1" && c.body.includes("실행이 멈췄는지 GGJIRA가 확인할 수 없어"),
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.body).toContain('"재시도"');
+
+    router.clock.advance(1000);
+    router.jira.seedComment("KAN-1", {
+      body: "재시도",
+      authorAccountId: "other",
+      created: router.clock.now(),
+    });
+    expect((await router.reconcile()).jobsCreated).toEqual([]);
+    expect(getJob(router.db, lost.jobId)?.state).toBe("recovery_required");
+
+    router.jira.seedComment("KAN-1", {
+      body: "재시도",
+      authorAccountId: "owner",
+      created: router.clock.now(),
+    });
+    const rerun = await start();
+    expect(rerun.jobId).not.toBe(lost.jobId);
+    expect(rerun.approvalId).not.toBe(lost.approvalId);
+    expect(getJob(router.db, lost.jobId)?.state).toBe("cancelled");
+    expect(getAttempt(router.db, lost.attemptId)?.state).toBe("superseded");
+    expect(listAudit(router.db, lost.jobId)).toContainEqual(
+      expect.objectContaining({ action: "job.resolved", actor: "jira:owner" }),
+    );
+    // The old attempt's late result is not applied to the issue.
+    const late = await router.post(
+      `/api/v1/jobs/${lost.jobId}/result`,
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        jobId: lost.jobId,
+        attemptId: lost.attemptId,
+        resultId: `late-${lost.attemptId}`,
+        status: "succeeded",
+        summary: "Late",
+        ...noChange,
+      },
+      worker.token,
+    );
+    expect(late.statusCode).not.toBe(500);
+    await process();
+    expect(await status()).toBe(w.inProgressStatus);
+  });
+
   it("withdraws an aggregate when a child is reopened, without rerunning successful siblings", async () => {
     await publish();
     await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);

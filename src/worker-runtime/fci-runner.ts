@@ -18,6 +18,7 @@ import type { WorkerProviderConfig } from "../contracts/provider.js";
 import type { WorkerProvider } from "../worker/provider.js";
 import { RouterApiError, type RouterClient } from "./client.js";
 import type { WorkerConfig } from "./config.js";
+import { workerPaths } from "./paths.js";
 import { executeFci } from "./fci.js";
 
 function save(dir: string, id: string, payload: unknown) {
@@ -34,7 +35,7 @@ function save(dir: string, id: string, payload: unknown) {
   return file;
 }
 export async function flushFciSpool(config: WorkerConfig, client: RouterClient) {
-  const dir = path.resolve(config.dataDir, "fci-spool");
+  const dir = workerPaths(config.home).fciSpool;
   mkdirSync(dir, { recursive: true });
   for (const name of readdirSync(dir).filter((n) => n.endsWith(".json"))) {
     const file = path.join(dir, name);
@@ -63,7 +64,7 @@ export async function recordFciSource(
     observedAt: string;
   },
 ) {
-  const file = save(path.resolve(config.dataDir, "fci-spool"), `source-${randomUUID()}`, {
+  const file = save(workerPaths(config.home).fciSpool, `source-${randomUUID()}`, {
     kind: "source",
     id,
     body,
@@ -82,7 +83,6 @@ export async function runFciTask(
     client: RouterClient;
     sessionId: string;
     createProvider: (config: WorkerProviderConfig) => WorkerProvider;
-    worktreesRoot: string;
   },
 ) {
   const providerConfig = deps.config.providers.find((p) => p.id === task.providerId);
@@ -118,7 +118,7 @@ export async function runFciTask(
             ...(providerConfig && (!task.staticAnalysis || task.purpose === "explain")
               ? { provider: deps.createProvider(providerConfig) }
               : {}),
-            worktreesRoot: deps.worktreesRoot,
+            worktreesRoot: workerPaths(deps.config.home).repositoryWorktrees(repository.id),
             signal: abort.signal,
             lookup: async (sha) => {
               while (!abort.signal.aborted) {
@@ -156,7 +156,7 @@ export async function runFciTask(
       resultId: randomUUID(),
       outcome,
     };
-    const file = save(path.resolve(deps.config.dataDir, "fci-spool"), `result-${body.resultId}`, {
+    const file = save(workerPaths(deps.config.home).fciSpool, `result-${body.resultId}`, {
       kind: "analysis",
       id: task.id,
       body,

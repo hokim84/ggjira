@@ -39,6 +39,8 @@ export interface CommentText {
     keptChanges: string;
     details: (logPath: string) => string;
     lostContact: string;
+    /** ADR 0062: posted once when a run is left `recovery_required`. */
+    uncertainRun: string;
     adminStopped: (admin: string) => string;
     nothingApplied: string;
   };
@@ -64,6 +66,12 @@ export interface CommentText {
     reason: (note: string) => string;
     holdNothing: string;
     reworkNext: (hint: string) => string;
+    /** ADR 0061: a confirm that completes a child waiting on unverified checks. */
+    childConfirmed: (subject: string, completeStatus: string) => string;
+  };
+  /** ADR 0061: a child result kept on the remote that waits for a human to confirm its checks. */
+  humanCheck: {
+    waiting: (checks: string[], completeStatus: string) => string;
   };
   result: {
     completed: string;
@@ -123,6 +131,8 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       keptChanges: "커밋하지 않은 변경은 워커에 보관했습니다(자세한 내용 참고).",
       details: (logPath) => `자세한 내용: Router 머신의 ${logPath}`,
       lostContact: "AI 실행이 GGJIRA Router와 연결이 끊겼습니다.",
+      uncertainRun:
+        '실행이 멈췄는지 GGJIRA가 확인할 수 없어 자동으로 다시 실행하지 않습니다(워커 종료·네트워크 단절·워커 해지). 다음: 워커가 멈춘 것을 확인한 뒤 담당자가 "재시도" 댓글을 남기면 새로 실행합니다. 이전 실행이 아직 돌고 있었다면 같은 작업이 한 번 더 실행되지만, 늦게 도착한 이전 결과는 반영하지 않습니다.',
       adminStopped: (admin) => `관리자(${admin})가 실행이 멈춘 것을 확인했습니다.`,
       nothingApplied:
         "다음: 이 실행의 결과는 이슈에 반영되지 않았습니다. 다시 실행하려면 이슈를 요청 상태로 옮기세요.",
@@ -173,6 +183,16 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       reason: (note) => `이유: ${note}`,
       holdNothing: "아무것도 승인하거나 옮기지 않았습니다. 결과는 계속 검토를 기다립니다.",
       reworkNext: (hint) => `GGJIRA가 스스로 다시 실행하지 않습니다. 다음: ${hint}.`,
+      childConfirmed: (subject, completeStatus) =>
+        `사람 확인 완료: ${subject}. AI가 확인하지 못한 항목을 사람이 확인했으므로 "${completeStatus}"(으)로 옮깁니다. 나머지 자식이 끝나면 부모 통합 PR을 만듭니다.`,
+    },
+    humanCheck: {
+      waiting: (checks, completeStatus) =>
+        [
+          "사람 확인 대기: 구현 결과 커밋은 원격에 보존했지만 AI가 다음 완료 조건을 확인하지 못했습니다.",
+          ...checks.map((check) => `- ${check}`),
+          `다음: 직접 확인한 뒤 이슈를 "${completeStatus}"(으)로 옮기세요. 그 이동이 확인으로 기록되고, 나머지 하위 작업이 끝나면 부모 PR을 만듭니다. 문제가 있으면 옮기지 말고 설명을 고쳐 다시 요청하세요.`,
+        ].join("\n"),
     },
     result: {
       completed: "구현을 완료했습니다.",
@@ -303,6 +323,8 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       keptChanges: "Uncommitted changes were kept on the worker (see the details).",
       details: (logPath) => `Details: ${logPath} on the Router machine.`,
       lostContact: "AI execution lost contact with GGJIRA Router.",
+      uncertainRun:
+        'GGJIRA cannot tell whether the run stopped (worker stopped, network lost or worker revoked), so it does not rerun it by itself. Next: once the worker is known to be stopped, the assignee comments "재시도" to start a new run. If the old run was still going, the work runs once more, but its late result is not applied.',
       adminStopped: (admin) => `An admin (${admin}) confirmed the run is stopped.`,
       nothingApplied:
         "Next: nothing from this run was applied; to run it again, move the issue back to its request status.",
@@ -354,6 +376,16 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       reason: (note) => `Reason: ${note}`,
       holdNothing: "Nothing was approved or moved. The result stays waiting for review.",
       reworkNext: (hint) => `GGJIRA does not rerun it by itself. Next: ${hint}.`,
+      childConfirmed: (subject, completeStatus) =>
+        `Confirmed by a person: ${subject}. A person checked what the agent could not, so the issue moves to "${completeStatus}". The parent PR is built once the other children finish.`,
+    },
+    humanCheck: {
+      waiting: (checks, completeStatus) =>
+        [
+          "Waiting for a person: the result commit is kept on the remote, but the agent could not verify these acceptance criteria.",
+          ...checks.map((check) => `- ${check}`),
+          `Next: check them yourself, then move the issue to "${completeStatus}". The move is recorded as your confirmation, and the parent PR is built once the other children finish. If something is wrong, do not move it; edit the description and request again.`,
+        ].join("\n"),
     },
     result: {
       completed: "Implementation completed.",

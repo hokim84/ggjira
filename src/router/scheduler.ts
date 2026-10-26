@@ -47,6 +47,8 @@ import {
 import { integrationEvidence } from "./lifecycle.js";
 import { publishedImplementation } from "./assembly.js";
 import { syncPlanningRequest } from "./planning-requests.js";
+import { insertReportBatch } from "./db/report-steps.js";
+import { buildUncertainRunSteps, uncertainRunBatchId } from "./report-journal.js";
 import { pressureRank, usagePressure } from "./usage-routing.js";
 import {
   checkContext,
@@ -678,6 +680,23 @@ function holdChangedApproval(db: Database.Database, job: JobRow, now: string): v
   });
 }
 
+/** ADR 0062: a run left `recovery_required` is announced in Jira once per attempt, so the assignee
+ *  learns it waits for them ("재시도") without the Router UI. */
+function noteUncertainRuns(deps: SchedulerDeps): void {
+  for (const job of getOpenJobs(deps.db)) {
+    if (job.state !== "recovery_required" || !job.currentAttemptId) continue;
+    if (!deps.config.workspaces.some((workspace) => workspace.id === job.workspaceId)) continue;
+    insertReportBatch(deps.db, {
+      batchId: uncertainRunBatchId(job.currentAttemptId),
+      jobId: job.id,
+      attemptId: job.currentAttemptId,
+      issueKey: job.issueKey,
+      steps: buildUncertainRunSteps(deps.config, job, job.currentAttemptId),
+      now: deps.now(),
+    });
+  }
+}
+
 async function reverifyUnseenOpenJobs(
   deps: SchedulerDeps,
   processedIssueKeys: ReadonlySet<string>,
@@ -741,6 +760,7 @@ export async function reconcileCandidates(
   }
 
   await reverifyUnseenOpenJobs(deps, processedIssueKeys, report);
+  noteUncertainRuns(deps);
   assignQueuedJobs(deps, availableWorkers, report);
   return report;
 }

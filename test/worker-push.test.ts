@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
-import { WorkerConfigSchema } from "../src/worker-runtime/config.js";
+import { resolveWorkerConfig } from "../src/worker-runtime/config.js";
 import { executeEnvelope } from "../src/worker-runtime/executor.js";
 import { fakeSuccessResult } from "../src/worker/fake.js";
 import { createPullRequest, pullRequestFromUrl } from "../src/worker/github.js";
@@ -94,17 +94,17 @@ describe("pushing the job branch", () => {
   });
 
   function config(pushRemote?: string, createPullRequest = false) {
-    return WorkerConfigSchema.parse({
-      configVersion: 5,
-      routerUrl: "http://127.0.0.1:8787",
-      credentialPath: path.join(dir, "credential.json"),
-      repositories: [
-        { id: "repo1", path: clone, createPullRequest, ...(pushRemote ? { pushRemote } : {}) },
-      ],
-      providers: [{ id: "default", type: "claude-code" }],
-      dataDir: path.join(dir, "data"),
-      logPath: path.join(dir, "logs"),
-    });
+    return resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl: "http://127.0.0.1:8787",
+        repositories: [
+          { id: "repo1", path: clone, createPullRequest, ...(pushRemote ? { pushRemote } : {}) },
+        ],
+        providers: [{ id: "default", type: "claude-code" }],
+      },
+      path.join(dir, "data"),
+    );
   }
 
   function run(pushRemote: string | undefined, authorize = async (_stage: string) => true) {
@@ -112,7 +112,6 @@ describe("pushing the job branch", () => {
     const outcome = executeEnvelope(envelope(), {
       config: config(pushRemote),
       createProvider: () => new WritingProvider(),
-      worktreesRoot: path.join(dir, "data", "worktrees"),
       signal: new AbortController().signal,
       authorize: async (stage) => {
         stages.push(stage);
@@ -169,7 +168,6 @@ describe("pushing the job branch", () => {
     const result = await executeEnvelope(envelope(), {
       config: config("origin", true),
       createProvider: () => new WritingProvider(),
-      worktreesRoot: path.join(dir, "data", "worktrees"),
       signal: new AbortController().signal,
       authorize: async () => true,
       createPullRequest: async (input) => {
@@ -202,7 +200,6 @@ describe("pushing the job branch", () => {
     const result = await executeEnvelope(envelope(), {
       config: config("origin", true),
       createProvider: () => new WritingProvider(),
-      worktreesRoot: path.join(dir, "data", "worktrees"),
       signal: new AbortController().signal,
       authorize: async () => true,
       createPullRequest: async () => {

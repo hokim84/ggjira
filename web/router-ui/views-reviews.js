@@ -328,7 +328,7 @@ export function renderIssueReview(root, ctx, issueKey) {
     root,
     notice(
       "info",
-      "선택적인 결과 확인·의견 기록입니다. 보류 의견은 실행을 멈추지 않고 수정 요청은 AI를 다시 실행하지 않습니다. 두 의견은 Jira 댓글로 전달됩니다. 실제 재실행은 Jira에서 승인하며, PR 검토·병합은 GitHub에서 진행하세요.",
+      "선택적인 결과 확인·의견 기록입니다. 보류 의견은 실행을 멈추지 않고 수정 요청은 AI를 다시 실행하지 않습니다. 두 의견은 Jira 댓글로 전달됩니다. 단, AI가 확인하지 못한 완료 조건이 있는 하위 작업은 결과 확인 기록이 그 확인을 대신해 AI 구현 완료로 옮겨집니다(Jira에서 직접 옮겨도 같습니다). 실제 재실행은 Jira에서 승인하며, PR 검토·병합은 GitHub에서 진행하세요.",
     ),
     filters,
     flashEl,

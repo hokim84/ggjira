@@ -40,6 +40,7 @@ import {
   planningFingerprint,
   syncPlanningRequest,
 } from "./planning-requests.js";
+import { closeRecoveryForRetry } from "./recovery.js";
 import { taskApprovalId } from "./report-journal.js";
 import { checkContext, checkSource, sourceKey } from "./workflow-checks.js";
 import { approvalStatusFor } from "./workflow-mode.js";
@@ -302,7 +303,8 @@ function withLatestReview(
   return requirements;
 }
 
-/** A retry comment after a settled failure creates a new durable approval, never an automatic replay. */
+/** A retry comment after a settled failure creates a new durable approval, never an automatic replay.
+ *  On a run left `recovery_required` the comment also confirms it stopped (ADR 0062). */
 async function retryApprovalId(
   db: Database.Database,
   jira: JiraGateway,
@@ -311,13 +313,13 @@ async function retryApprovalId(
 ): Promise<string> {
   const last = db
     .prepare(
-      "SELECT approval_id, state, updated_at FROM jobs WHERE issue_key=? AND (approval_id=? OR approval_id LIKE ?) ORDER BY rowid DESC LIMIT 1",
+      "SELECT id, approval_id, state, updated_at FROM jobs WHERE issue_key=? AND (approval_id=? OR approval_id LIKE ?) ORDER BY rowid DESC LIMIT 1",
     )
     .get(issue.key, base, `${base}:retry:%`) as
-    | { approval_id: string; state: string; updated_at: string }
+    | { id: string; approval_id: string; state: string; updated_at: string }
     | undefined;
   if (!last) return base;
-  if (!["failed", "timed_out"].includes(last.state)) return last.approval_id;
+  if (!["failed", "timed_out", "recovery_required"].includes(last.state)) return last.approval_id;
   const comments = await jira.getComments(issue.key);
   const reply = comments.find(
     (comment) =>
@@ -330,6 +332,8 @@ async function retryApprovalId(
   );
   if (!reply) return last.approval_id;
   db.prepare("INSERT OR IGNORE INTO workflow_retry_comments VALUES (?,?)").run(issue.key, reply.id);
+  if (last.state === "recovery_required")
+    closeRecoveryForRetry(db, last.id, `jira:${issue.assigneeAccountId}`, new Date().toISOString());
   return `${base}:retry:${reply.id}`;
 }
 

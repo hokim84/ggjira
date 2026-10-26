@@ -11,7 +11,7 @@ import { openRouterDb } from "../src/router/db/connection.js";
 import { getOpenJobForIssue, listJobs } from "../src/router/db/jobs.js";
 import { syncPlanningRequest } from "../src/router/planning-requests.js";
 import { RouterClient } from "../src/worker-runtime/client.js";
-import { WorkerConfigSchema } from "../src/worker-runtime/config.js";
+import { resolveWorkerConfig } from "../src/worker-runtime/config.js";
 import { pairWorker } from "../src/worker-runtime/ops.js";
 import { WorkerRunner } from "../src/worker-runtime/runner.js";
 import { ResultSpool } from "../src/worker-runtime/spool.js";
@@ -147,22 +147,22 @@ describe("Router with two workers over HTTP", () => {
       workerName: workerId,
       credentialPath,
     });
-    const config = WorkerConfigSchema.parse({
-      configVersion: 5,
-      routerUrl,
-      credentialPath,
-      // Plain directories: the executor edits in place, no git needed for the scenario.
-      repositories: [{ id: "repo1", path: repoDir }],
-      providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
-      dataDir: path.join(workerDir, "data"),
-    });
+    const config = resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl,
+        // Plain directories: the executor edits in place, no git needed for the scenario.
+        repositories: [{ id: "repo1", path: repoDir }],
+        providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
+      },
+      path.join(workerDir, "data"),
+    );
     const runner = new WorkerRunner({
       config,
       client: new RouterClient({ routerUrl, workerToken: credential.workerToken }),
       workerId: credential.workerId,
       spool: new ResultSpool(path.join(workerDir, "data", "spool")),
       createProvider: () => new RecordingProvider(workerId, log),
-      worktreesRoot: path.join(workerDir, "data", "worktrees"),
       heartbeatIntervalMs: 50,
     });
     const controller = new AbortController();

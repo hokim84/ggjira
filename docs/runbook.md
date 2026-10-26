@@ -57,9 +57,11 @@ for f in test/*.test.ts; do timeout 60 npx vitest run "$f" || echo "FAILED/TIMEO
 - **`recovery_required`에서 멈춘 job** — 자동 재배정하지 않는다(ADR 0021). 워커가 그 attempt의
   결과를 늦게라도 제출하면 중단 확인으로 보고, 결과는 적용하지 않은 채(`applied = 0`) job을
   `cancelled`로 닫는다. 이때 Jira에 "적용된 것 없음" 댓글이 달린다. 워커가 돌아오지 않으면 작업
-  폴더와 프로세스가 실제로 멈췄는지 워커 머신에서 확인한다. 그다음 `ggjira router jobs resolve <jobId>`
-  (닫기) 또는 `ggjira router jobs retry <jobId>`(Jira 승인 재확인 후 새 attempt)를 실행한다. 둘 다
-  `audit_log`에 남는다. `jobs cancel`은 `recovery_required`를 거부한다(중단 확인이 먼저다).
+  폴더와 프로세스가 실제로 멈췄는지 워커 머신에서 확인한다. 그다음 담당자가 Jira에 "재시도" 댓글을 남기면
+  새 승인으로 다시 실행한다(ADR 0062, 보완 조회가 그 이슈에 안내 댓글을 한 번 단다). 관리자는
+  `ggjira router jobs resolve <jobId>`(닫기) 또는 `ggjira router jobs retry <jobId>`(Jira 승인 재확인 후 새
+  attempt)를 쓸 수 있다. 모두 `audit_log`의 `job.resolved`·`job.retried`에 남는다(댓글이면 actor
+  `jira:<accountId>`). `jobs cancel`은 `recovery_required`를 거부한다(중단 확인이 먼저다).
 - **결과가 반영되지 않음** — `results.applied = 0`이면 늦게 도착한 결과다(대체된 attempt,
   이미 닫힌 job). 워커 쪽에 결과가 남아 있으면 spool 디렉터리의 `<resultId>.json`이며, 다음
   시작 때 재전송된다. `409 result_conflict`는 같은 `resultId`에 다른 내용을 보낸 것이다.
@@ -165,7 +167,7 @@ curl -s https://router.example.com/health                          # {"status":"
    `deploy/config/router.env`. 설정의 `db.path`는 `/data/router.sqlite3`, `http.host`는 `0.0.0.0`으로
    고친다. 복사한 뒤 `sudo chown 1000:1000 deploy/data/* deploy/config/*`, `chmod 600 deploy/config/router.env`.
 3. `docker compose -f docker-compose.cloudflare.yml up -d --build`. migration은 시작할 때 자동으로 된다.
-4. 각 워커의 `worker.config.json`에서 `routerUrl`을 `https://router.example.com`으로 바꾸고 재시작한다.
+4. 각 워커 홈의 `worker.config.json`에서 `routerUrl`을 `https://router.example.com`으로 바꾸고 재시작한다.
    DB를 옮겼으면 워커 토큰이 그대로라 다시 페어링하지 않아도 된다. 새 DB로 시작했으면 웹 UI > 워커에서
    재페어링 코드를 받아 `worker setup --pairing-code … --force`를 실행한다.
 5. 확인: 웹 UI의 워커가 "온라인"인지, 설정 > GitHub의 추적 중인 PR이 "확인 실패" 없이 보이는지.
@@ -222,6 +224,21 @@ npm run dev -- worker start      # 처음: Router 주소, LLM, 페어링 코드,
 npm run dev -- worker start      # 이후: 바로 실행
 ```
 
+워커의 설정·credential·clone·worktree·로그·spool은 모두 워커 홈 한 곳에 있다(ADR 0060). 기본은
+`%LOCALAPPDATA%\ggjira\worker`(Windows), `~/.ggjira/worker`(그 밖)이고 `--home <폴더>` 또는
+`GGJIRA_WORKER_HOME`으로 바꾼다. 한 머신에서 워커를 여럿 띄우려면 홈을 따로 준다.
+
+```text
+<워커 홈>/worker.config.json  credential.json  spool/  fci-spool/  logs/
+<워커 홈>/repositories/<저장소 id>/repo/        clone(설정에 path가 없을 때)
+<워커 홈>/repositories/<저장소 id>/worktrees/   작업별 worktree
+```
+
+- **`worker start`·`check`가 `… is above the worker home …`로 멈춤**: 워커 홈이나 그 상위 폴더에 `CLAUDE.md`·`AGENTS.md`·`.git`이
+  있다. 그대로 두면 작업 중인 AI가 그 파일을 자기 지침으로 읽는다(KAN-47에서 Codex가 GGJIRA의 `AGENTS.md`를 읽고
+  GGJIRA 검사를 다른 저장소의 완료 조건처럼 보고했다). GGJIRA 폴더 안을 홈으로 쓰지 말고 기본 위치나 다른
+  프로젝트 밖의 폴더를 `--home`으로 준다.
+
 - **`command not found: ggjira`**: 전역 설치 전에는 `npm run dev -- …`로 실행한다. `--` 뒤에 한 칸 띄우고
   `ggjira`라는 단어는 넣지 않는다. 설치하려면 `npm run build && npm link`.
 - **`LLM CLI를 찾지 못했습니다`**: `claude` 또는 `codex`를 설치하고 로그인한 뒤 다시 실행한다. 코드는 LLM을
@@ -235,7 +252,7 @@ npm run dev -- worker start      # 이후: 바로 실행
 - **Codex 실행 실패 `The '<model>' model is not supported when using Codex with a ChatGPT account`**: 워커
   설정 `providers[].model`에 계정이 쓸 수 없는 모델이 적혀 있다. 지우면 Codex 설정(`~/.codex/config.toml`의
   `model`)을 따른다. 예전 버전은 Codex에도 Claude 기본값 `sonnet`을 넘겼다. 원인은 워커 로그
-  `data\worker-logs\<jobId>-<attemptId>.jsonl`의 `turn.failed`에 있고, 이제 실패 요약 첫 줄에도 올라와 댓글에
+  `<워커 홈>\logs\<jobId>-<attemptId>.jsonl`의 `turn.failed`에 있고, 이제 실패 요약 첫 줄에도 올라와 댓글에
   "the AI CLI rejected the model"로 나온다(ADR 0048). 실패 로그의 `rmcp ... /mcp` 오류는 Codex 설정의 다른
   MCP 서버가 꺼져 있다는 경고일 뿐이다.
 - **워커 로그에 `Router is not reachable; retrying in 5s`**: 워커가 시작할 때나 Router가 다시 시작되는 동안
@@ -254,20 +271,20 @@ npm run dev -- worker start      # 이후: 바로 실행
   보고 원격에서 검토하고 합친다. `push failed`면 워커 머신의 git 권한(SSH 키, `gh auth login`, credential
   helper)을 확인한 뒤, 댓글에 적힌 `git push` 명령을 워커 clone 폴더에서 실행한다. push를 끄려면 워커 설정에서
   `pushRemote`를 지운다.
-- 워커 설정은 페어링 시점의 Router 정책으로 만들어진다. 나중에 저장소를 넓히면 워커의
-  `worker.config.json`도 고친다.
+- 워커 설정은 페어링 시점의 Router 정책으로 만들어진다. 나중에 저장소를 넓히면 워커 홈의
+  `worker.config.json`도 고친다. 저장소 id는 폴더 이름으로 쓰이므로 영문·숫자·`.`·`_`·`-`만 쓴다.
 
 수동 구성:
 
 ```bash
 ggjira router workers pair worker-1                      # Router 쪽: 1회용 code(10분)
-ggjira worker setup --router https://router.example.com --pairing-code <code> --config worker.config.json
-ggjira worker check --config worker.config.json          # credential, 저장소, provider CLI, Router 연결
-ggjira worker run --config worker.config.json            # Ctrl+C 1회: 현재 작업 후 종료, 2회: 즉시 종료
+ggjira worker setup --router https://router.example.com --pairing-code <code> [--home <폴더>]
+ggjira worker check [--home <폴더>]   # 홈 위치, credential, 저장소, provider CLI, Router 연결
+ggjira worker run [--home <폴더>]     # Ctrl+C 1회: 현재 작업 후 종료, 2회: 즉시 종료
 ```
 
-- `worker setup`은 token을 `credentialPath`(기본 `data/worker-credential.json`)에만 쓴다. 설정
-  파일·출력에는 남기지 않는다. 이미 있으면 `--force`가 필요하다.
+- `worker setup`은 token을 `<워커 홈>/credential.json`에만 쓴다. 설정 파일·출력에는 남기지 않는다. 이미 있으면
+  `--force`가 필요하다. 홈에 설정이 없으면 시작용 `worker.config.json`도 쓴다.
 - Router URL은 `https://`만 쓴다. `http://`는 `localhost`/`127.0.0.1` 개발용에만 허용한다.
 - **spool에 결과가 남음**(`worker check`가 경고): `worker run`을 멈춘 상태에서
   `ggjira worker results retry`로 보낸다. 세션을 새로 열기 때문에 실행 중인 `worker run`의 세션을
@@ -312,7 +329,7 @@ v5는 읽지 않는다. `ggjira run` 같은 구형 명령은 대체 명령을 �
   파일을 직접 고쳤으면 "적용 대기" 배너의 "지금 적용"(`POST /api/v1/admin/config/apply`)을 누른다.
   직전 파일은 `router.config.json.bak`에 있다. 기록은 `audit_log`의 `config.updated`/`config.applied`다.
 - **워커 정책을 뺐는데 그 워커가 작업 중이었음**: 새 세션과 새 배정만 막힌다. 실행 중이던 작업은 임대가
-  만료되어 `recovery_required`가 된다(§14). 워커 머신에서 멈췄는지 확인하고 `jobs resolve`/`retry`를 한다. Docker에서
+  만료되어 `recovery_required`가 된다(§14). 워커 머신에서 멈췄는지 확인하고 담당자의 "재시도" 댓글이나 `jobs resolve`/`retry`로 푼다. Docker에서
   저장이 `EACCES`/`EBUSY`로 실패하면 `deploy/config`가 디렉터리 마운트인지, uid 1000이 쓸 수 있는지 본다.
 - **상태 흐름 바꾸기**: Jira 워크플로를 먼저 바꾸고, 설정 > Workspace에서 "Jira에서 상태 불러오기" 후
   드롭다운으로 고른다. 아래 "Router가 하는 전이"가 모두 "연결됨"이면 저장한다. "전이 없음"은 Jira 워크플로에
@@ -502,9 +519,9 @@ sqlite3 data/router.sqlite3 "SELECT * FROM admin_holds WHERE actor = 'router:inp
 
 증거(워커 머신):
 
-- patch: `<logPath>/<jobId>-<attemptId>.patch`. 커밋하지 않은 변경 전체이고(바이너리 포함), 기준
+- patch: `<워커 홈>/logs/<jobId>-<attemptId>.patch`. 커밋하지 않은 변경 전체이고(바이너리 포함), 기준
   브랜치에서 갈라진 지점 대비다. 검토하려면 `git apply --check <patch>` 후 다른 브랜치에 적용한다.
-- worktree: `<dataDir>/worktrees/ggjira-<KEY>-<attempt>`. 변경이 stage된 상태로 남아 있다.
+- worktree: `<워커 홈>/repositories/<저장소 id>/worktrees/ggjira-<KEY>-<attempt>`. 변경이 stage된 상태로 남아 있다.
 - 정리: 댓글의 `cleanup` 줄을 따른다(`git worktree remove --force <path> && git branch -D <branch>`).
   또는 기간이 지난 뒤 `ggjira worker worktrees prune`.
 
@@ -519,9 +536,10 @@ sqlite3 data/router.sqlite3 "SELECT * FROM admin_holds WHERE actor = 'router:inp
 실패로 보고되는 경우(커밋 없음, patch 보존, `ggjira-failed` 라벨):
 
 - `final report could not be read`: provider의 최종 응답에 보고 JSON이 없거나 스키마에 맞지 않는다.
-  워커 로그 `<logPath>/<jobId>-<attemptId>.jsonl`의 마지막 result 이벤트를 본다.
+  워커 로그 `<워커 홈>/logs/<jobId>-<attemptId>.jsonl`의 마지막 result 이벤트를 본다.
 - `without any verification evidence`: `completed`인데 acceptance별 검증이 비어 있다.
-- `Verification failed: …`: 에이전트가 직접 `fail`로 판정한 acceptance가 있다.
+- `Verification failed: …`: 에이전트가 직접 `fail`로 판정한 acceptance가 있다. 하위 작업(자식)도 같다.
+  `not_verified`만 있는 자식은 실패가 아니다(§45).
 
 ### 프로토콜 2 업그레이드 순서
 
@@ -621,6 +639,8 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 - 판단: `ggjira router reviews judge <targetId> confirm|hold|rework [--note "사유"]`. 보류·재작업 요청은 사유가
   필요하고 Jira에 댓글 하나가 달린다. 확인은 Router에만 남고 `review_required` 주의 항목을 해소한다.
 - 판단은 아무것도 실행하지 않는다. 재작업 요청 뒤에도 상태 기반으로 다시 요청해야 새 실행이 시작된다. 확인했다고 완료로 가지 않는다.
+  예외: "사람 확인 대기" 댓글이 달린 하위 작업의 결과를 확인하면 그 하위 작업을 구현 완료로 옮긴다(§45, ADR 0061).
+  Jira에서 그 이슈를 직접 구현 완료로 옮겨도 같은 확인으로 기록된다.
 - 판단자 이름은 웹 UI에 적은 이름 또는 CLI의 OS 사용자 이름이다(`admin:<이름>`, `admin-token`). 공유 token 뒤의
   자기 신고다.
 - 409 `stale_review_target`: 그 사이 같은 이슈의 새 결과가 나왔거나(`currentTargetId`가 새 대상), 이슈가 다시
@@ -636,7 +656,7 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 | 파일 | 하는 일 |
 |---|---|
 | `run-router.bat` | `router serve`. 설정은 `router.config.json`(또는 `GGJIRA_ROUTER_CONFIG`). 없으면 셋업 모드(§20). 뒤에 붙인 인자는 그대로 넘긴다(예: `run-router.bat --port 8788`) |
-| `run-worker.bat` | `worker start`. 설정은 `worker.config.json`(또는 `GGJIRA_WORKER_CONFIG`). 처음에는 Router 주소·LLM·페어링 코드를 묻는다(§18) |
+| `run-worker.bat` | `worker start`. 워커 홈은 `GGJIRA_WORKER_HOME`, 없으면 `%LOCALAPPDATA%\ggjira\worker`. 처음에는 Router 주소·LLM·페어링 코드를 묻는다(§18) |
 | `run-all.bat` | Router 창을 열고 `/health`가 응답하면 Worker 창을 연다. 이미 응답하는 Router가 있으면 Worker만 연다 |
 
 - 멈추기: 각 창에서 Ctrl+C(워커는 1회: 현재 작업 후 종료, 2회: 즉시) 또는 창 닫기. 에러로 끝나면 창이 멈춰
@@ -645,8 +665,8 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 - 이 PC의 Router는 Jira 웹훅을 받을 수 없다(외부에서 127.0.0.1로 못 들어온다). 60초마다 하는 보완 조회로 요청을
   찾으므로 반영이 최대 1분 늦다. 바로 보려면 `ggjira router reconcile`을 쓴다.
 - `run-all.bat`의 포트는 Router 설정의 `http.port`(없으면 8787)에서 읽는다. 두 번 실행하면 워커가 하나 더 뜬다.
-- 실제 Jira·LLM CLI를 쓰는 실행이다. 시험만 하려면 `GGJIRA_ROUTER_CONFIG`·`GGJIRA_WORKER_CONFIG`를 없는 경로로
-  두고 띄우면 셋업 모드와 워커 첫 실행 질문까지만 간다.
+- 실제 Jira·LLM CLI를 쓰는 실행이다. 시험만 하려면 `GGJIRA_ROUTER_CONFIG`를 없는 경로로, `GGJIRA_WORKER_HOME`을
+  빈 폴더로 두고 띄우면 셋업 모드와 워커 첫 실행 질문까지만 간다.
 
 ## 34. 이전 두 상태 흐름 (ADR 0044, 0047, 과거 기록)
 
@@ -761,9 +781,9 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 | `GGJ-202` | AI 계정 사용량 한도 | 한도가 초기화된 뒤 다시 요청 |
 | `GGJ-203` | AI CLI 로그인 안 됨·거부 | 워커 머신에서 `codex login`/`claude` 로그인 |
 | `GGJ-204` | AI CLI가 오류를 내고 끝남(원인 문구 포함) | 문구대로 고침. 원문은 로그 파일 |
-| `GGJ-205` | AI CLI가 종료 코드만 남기고 끝남 | 로그 파일과 워커 로그 `data/worker-logs/<jobId>-<attemptId>.jsonl` 확인 |
+| `GGJ-205` | AI CLI가 종료 코드만 남기고 끝남 | 로그 파일과 워커 로그 `<워커 홈>/logs/<jobId>-<attemptId>.jsonl` 확인 |
 | `GGJ-301` | 워커 검증 명령(`validateCommand`) 실패 | 로그 파일의 `Validation:`·`Acceptance Checks:` 확인. 명령이 job 시간을 넘기면 `GGJ-105`(§45) |
-| `GGJ-302` | 완료 조건 검증 실패 | 계획의 완료 조건이나 구현을 고쳐 다시 요청 |
+| `GGJ-302` | 완료 조건 검증 실패(하위 작업 포함) | 계획의 완료 조건이나 구현을 고쳐 다시 요청. AI가 확인하지 못한 항목만 있으면 실패가 아니라 사람 확인 대기다(§45) |
 | `GGJ-303` | AI가 검증 근거 없이 완료 보고 | 다시 요청. 반복되면 계획의 Verification을 구체적으로 |
 | `GGJ-401` | 계획을 적용할 수 없음(작업 수 초과, 완료 조건 없음 등) | 원인 문구대로 요청을 고쳐 다시 계획 |
 | `GGJ-402` | 계획 결과에 계획 없음 | 다시 계획 요청 |
@@ -796,7 +816,8 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 5. 계획 실행 실패 후 원인을 해결하고 담당자가 **재시도** 댓글을 새로 남기면 계획만 다시 실행한다.
    이전 재시도 댓글은 다시 소비하지 않는다. 일반 댓글에 재시도라는 낱말을 포함하는 것만으로는 동작하지 않는다.
 6. 기존 실행이 취소 대기면 종료를 확인한 뒤 최신 요청을 시작한다. `recovery_required`는 자동 재실행하지 않는다.
-   워커 종료를 확인하고 `jobs resolve`/`jobs retry`로 복구한다. 실패한 Jira 반영은 `reports retry`로만 복구한다.
+   워커 종료를 확인한 뒤 담당자의 "재시도" 댓글로 다시 실행한다(관리자는 `jobs resolve`/`jobs retry`, ADR 0062).
+   실패한 Jira 반영은 `reports retry`로만 복구한다.
 7. 구현 완료·결과 검토·PR merge·하위 작업 의존성·승인 철회는 기존 정책을 유지한다. 구현 재작업은
    AI 검토로 돌아와 새 계획을 완성한 뒤 다시 승인한다. 계획 `재시도` 댓글로 구현을 재실행하지 않는다.
 
@@ -841,8 +862,8 @@ Router의 issue 화면과 부모 관리 영역에서 자식 완료 수·현재 �
 후속 티켓을 중복 생성하지 않는다. 검증은 새 대상에서 다시 수행한다.
 
 평가 실패·대상 변경은 원인을 확인한 뒤 부모 담당자의 `재시도` 댓글로 다시 요청한다.
-Worker 연결 유실로 recovery_required인 경우 관리자가 먼저 실제 프로세스 종료를 확인하고
-`jobs resolve`로 정리한 뒤 재시도한다. 불명확한 실행을 댓글만으로 재실행하지 않는다.
+Worker 연결 유실로 recovery_required인 경우 워커 머신에서 실제 프로세스 종료를 확인한 뒤 담당자가 "재시도"
+댓글을 남긴다(ADR 0062). 이전 실행이 남아 있었다면 같은 작업이 한 번 더 실행될 수 있다.
 Jira 생성·보고 실패는 기존 `reports retry` 절차로 복구한다. 생성 결과가 불명확하면 Jira를 확인한다.
 
 자식 실행 후 부모 요구사항을 수정하면 새 실행과 최종 전환을 보류한다. 실행 중 작업은 기존 계약으로 마치고,
@@ -868,7 +889,7 @@ Jira 생성·보고 실패는 기존 `reports retry` 절차로 복구한다. 생
 `완료 · Router 전송 완료`는 로컬 작업이 끝나고 Router가 결과를 수신했다는 뜻이다. Jira 게시·검토·병합 완료와는
 구분한다. `결과 보관됨, Router 전송 미완료`는 spool이 남은 상태다. 연결 복구 후 Worker 재시작 또는
 기존 `worker results retry` 절차로 전송하고, `보관 결과 N건 전송 완료`를 확인한다.
-상세 원인은 기존 JSON 로그와 `data/worker-logs/<jobId>-<attemptId>.jsonl`을 확인한다.
+상세 원인은 기존 JSON 로그와 `<워커 홈>/logs/<jobId>-<attemptId>.jsonl`을 확인한다.
 빌드 업데이트는 다음 Worker 실행부터 적용한다. 작업 중인 프로세스를 강제 재시작하지 않는다.
 
 ## 39. 칸반 진행 상태와 선택적 리뷰 (ADR 0053)
@@ -890,7 +911,7 @@ Jira 생성·보고 실패는 기존 `reports retry` 절차로 복구한다. 생
    지적은 권고다. `AI 구현`으로 수정, `AI 계획`으로 재계획하거나 `Done`으로 직접 완료한다.
    PR 머지나 AI 리뷰 결과로 자동 Done 처리하지 않는다.
 7. 실패·답변 대기는 현재 단계의 라벨과 댓글로 확인한다. 원인 해결 후 담당자의 새 `재시도` 댓글은
-   해당 실패 단계만 재실행한다. `recovery_required`는 먼저 관리자 복구 절차로 종료를 확인한다.
+   해당 실패 단계만 재실행한다. `recovery_required`도 워커 종료를 확인한 뒤 같은 "재시도" 댓글로 푼다(ADR 0062).
 8. 보드는 여덟 열(해야 할 일과 일곱 상태)을 흐름 순서로 배치하고 카드에 레이블을 표시한다.
 
 연결된 테스트 프로젝트 상태 확인은 `npx tsx tools/router-workflow-admin.ts`, 명시적 자동 구성은
@@ -984,6 +1005,12 @@ Jira 댓글로 전달된다. 실행·커밋·과거 판단 기록과 PR 병합 S
   Code)는 `코드 확인`을 써야 한다. 표시가 없으면 업그레이드 전 결과이거나 AI가 알 수 없는 값을 보냈다. 방식은
   집계(`router reviews`, 작업 상세)에만 쓰이고 검토 분류를 바꾸지 않는다.
 - 기본 구현 지침에 이 규칙이 들어 있다. 업그레이드 전에 발급된 attempt는 이전 지침을 그대로 쓴다.
+- **하위 작업에 "사람 확인 대기" 댓글**(ADR 0061): AI가 실패한 검증은 없지만 일부 완료 조건을 확인하지 못했다고
+  보고했다(예: 화면을 띄울 수 없는 워커의 GUI 조건). 결과 커밋은 원격 브랜치에 보존됐고 이슈는 작업 중에 머문다.
+  댓글에 적힌 조건을 직접 확인한 뒤 **Jira에서 이슈를 구현 완료로 옮긴다.** Router가 그 이동을 확인으로 기록하고
+  (검토 기록 actor `jira`), 이 하위 작업에 의존하는 작업과 부모 PR이 진행된다. 웹 UI 검토 화면의 "결과 확인 기록"도
+  같은 일을 한다. 실패한 결과나 승인 뒤 내용이 바뀐 결과는 손으로 옮겨도 완료로 치지 않는다. 문제가 있으면 옮기지
+  말고 설명을 고쳐 다시 요청한다. 다시 실행해도 같은 조건은 다시 미확인으로 나온다.
 
 ## 46. GGJIRA 자체 변경 검증 절차
 
@@ -1007,6 +1034,8 @@ GGJIRA 코드를 바꾼 사람·AI 에이전트(Claude Code, Codex 등)가 완�
 | 역할 지침 | `router-prompts` | 기본 지침 문구, envelope의 `systemPrompt` |
 | 워커 실행·검증 명령 | `worker-scope`, `worker-push`, `worker-runtime-runner` | 단계 순서(commit·validate·push), 실패 시 push 없음 |
 | 통합 검증 | `worker-quality-review`, `router-board-workflow` | 고정 SHA 검증, 상태 이동 |
+| 워커 홈·설정·`worker start` | `worker-runtime-config`, `worker-start`, `worker-runtime-ops`, `cli` | 모든 경로가 홈 아래, GGJIRA 폴더 안 홈 거부 |
+| 자식 완료·검토 판단·복구 | `router-board-workflow`, `router-review-queue`, `router-admin-api` | 사람 확인 대기 → Jira 이동 → 의존 작업·부모 PR, `recovery_required` → "재시도" |
 | 워커 계층 경계 | `worker-runtime-no-jira` | `src/worker-runtime`이 Jira·Router DB를 import하지 않음 |
 | Router + Worker 전체 | `router-integration`, `router-daemon` | loopback HTTP로 계획→승인→구현→보고가 한 번씩 |
 
@@ -1017,3 +1046,21 @@ GGJIRA 코드를 바꾼 사람·AI 에이전트(Claude Code, Codex 등)가 완�
 자동 테스트가 없으므로, 바꾼 화면 파일과 확인 방법을 보고에 적는다.
 
 정리 — 테스트는 임시 디렉터리를 스스로 지운다. 중단된 실행이 남긴 `ggjira-*` 임시 폴더는 OS 임시 디렉터리에서 지운다.
+
+## 47. 워커 홈 전환 (ADR 0060)
+
+워커 설정 `configVersion 5`(GGJIRA 폴더 안 `worker.config.json`, `data/worker`, `data/worker-logs`)는 더 읽지 않는다.
+`worker start`가 `… is configVersion 5 …` 오류로 멈추면 새 워커 홈으로 다시 설정한다. 자동 변환은 없다.
+
+1. Router에서 그 워커의 실행 중 작업이 없는지 본다(`ggjira router status`). 있으면 끝나기를 기다린다.
+2. 예전 위치에서 결과를 비운다: 워커를 멈춘 뒤 이전 빌드로 `worker results retry --config worker.config.json`을 실행해
+   `still waiting 0`을 확인한다. 새 빌드에는 `--config`가 없다.
+3. 새 빌드로 `npm run dev -- worker start`(또는 `run-worker.bat`)를 실행한다. 기본 홈
+   (`%LOCALAPPDATA%\ggjira\worker`)에 첫 설정을 묻는다. 웹 UI > 워커에서 재페어링 코드를 받아 입력한다.
+   저장소는 새로 clone되며, 기존 clone을 쓰려면 질문에 그 폴더 경로를 넣는다(GGJIRA 폴더 안의 clone은 쓰지 않는다).
+4. 워커 홈의 `worker.config.json`에 `repositories[].validateCommand`를 다시 넣고 `worker check`로 확인한다.
+5. 확인이 끝나면 GGJIRA 폴더의 `worker.config.json`, `data/worker-credential.json`, `data/worker/`, `data/worker-logs/`를
+   지운다. 남겨 두면 그 안의 worktree가 다시 GGJIRA 지침을 읽을 위험만 남는다.
+
+Router와 Worker를 함께 새 빌드로 재시작해야 ADR 0059·0061 동작(실패 로그의 Acceptance Checks 절, 사람 확인 대기)이
+적용된다. 이미 발급된 attempt는 이전 지침과 규칙으로 끝난다.

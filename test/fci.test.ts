@@ -21,7 +21,7 @@ import { recordPullRequest } from "../src/router/db/pull-requests.js";
 import { FciService } from "../src/router/fci-service.js";
 import { pollPullRequests } from "../src/router/github.js";
 import { RouterClient } from "../src/worker-runtime/client.js";
-import { WorkerConfigSchema } from "../src/worker-runtime/config.js";
+import { resolveWorkerConfig } from "../src/worker-runtime/config.js";
 import { executeFci, resolveFciMerge } from "../src/worker-runtime/fci.js";
 import { WorkerRunner } from "../src/worker-runtime/runner.js";
 import { ResultSpool } from "../src/worker-runtime/spool.js";
@@ -310,15 +310,15 @@ describe("immutable repository facts and merge boundaries", () => {
           });
         },
       });
-      const config = WorkerConfigSchema.parse({
-        configVersion: 5,
-        routerUrl: "http://localhost:8787",
-        credentialPath: path.join(dir, "credential.json"),
-        dataDir: path.join(dir, "worker"),
-        logPath: path.join(dir, "logs"),
-        repositories: [{ id: "repo1", path: repo, baseBranch: "main" }],
-        providers: [{ id: "default", type: "codex", model: "test-model" }],
-      });
+      const config = resolveWorkerConfig(
+        {
+          configVersion: 6,
+          routerUrl: "http://localhost:8787",
+          repositories: [{ id: "repo1", path: repo, baseBranch: "main" }],
+          providers: [{ id: "default", type: "codex", model: "test-model" }],
+        },
+        path.join(dir, "worker"),
+      );
       let calls = 0;
       const runner = new WorkerRunner({
         config,
@@ -332,7 +332,6 @@ describe("immutable repository facts and merge boundaries", () => {
             return fakeSuccessResult({ model: "test-model", structuredOutput: assessment() });
           },
         }),
-        worktreesRoot: path.join(dir, "http-worktrees"),
       });
       await runner.connect();
       expect(await runner.pollOnce()).toBe("executed");

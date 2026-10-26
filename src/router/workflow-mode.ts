@@ -33,11 +33,11 @@ export function reRequestHint(
   const { requestStatus, inProgressStatus } = workspace.workflow;
   if (language === "ko") {
     return kind === "implementation"
-      ? `원인을 해결한 뒤 담당자가 "재시도" 댓글을 남기세요. 범위를 바꾸려면 설명을 수정하고 "${inProgressStatus}"으로 다시 옮기거나 "${requestStatus}"으로 재계획하세요`
+      ? `담당자가 "재시도" 댓글을 남기세요. 범위를 바꾸려면 설명을 수정하고 "${inProgressStatus}"으로 다시 옮기거나 "${requestStatus}"으로 재계획하세요`
       : `담당자가 "재시도" 댓글을 남기거나 제목·설명을 수정하세요`;
   }
   return kind === "implementation"
-    ? `resolve the cause and ask the assignee to comment "재시도"; for a new scope, update the description and re-enter "${inProgressStatus}" or replan in "${requestStatus}"`
+    ? `ask the assignee to comment "재시도"; for a new scope, update the description and re-enter "${inProgressStatus}" or replan in "${requestStatus}"`
     : 'ask the assignee to comment "재시도" or edit the title or description';
 }
 

@@ -26,7 +26,7 @@ import type { NewReportStep } from "./db/report-steps.js";
 import { type FailureMatch, failureMessage, matchFailure } from "./failure-codes.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import type { ReviewAssessment } from "./review-gate.js";
-import { verifiedNoChange, verifiedImplementation } from "./workflow-checks.js";
+import { awaitingHumanCheck, verifiedNoChange, verifiedImplementation } from "./workflow-checks.js";
 import { approvalStatusFor, decisionTransitionTarget, reRequestHint } from "./workflow-mode.js";
 
 /**
@@ -385,6 +385,55 @@ export function buildReviewJudgmentSteps(input: {
     {
       kind: "comment",
       params: { body: [...body, "", signature(job, input.attemptId)].join("\n") },
+    },
+  ]);
+}
+
+/**
+ * ADR 0061: a person confirmed the acceptance criteria a child's agent could not verify. The
+ * confirm is the child's missing evidence, so it completes like a verified child does.
+ */
+export function buildHumanConfirmedChildSteps(input: {
+  job: JobRow;
+  workspace: WorkspaceConfig;
+  attemptId: string;
+  headSha: string | null;
+  actor: string;
+  language: MessageLanguage;
+}): NewReportStep[] {
+  const { job, workspace } = input;
+  const text = COMMENT_TEXT[input.language].reviewJudgment;
+  const complete = workspace.workflow.implementationCompleteStatus;
+  const body = [
+    text.childConfirmed(text.subject(input.attemptId, input.headSha), complete),
+    text.by(input.actor),
+  ];
+  return toNewSteps([
+    transition(job, workspace, complete, [approvalStatusFor(job.kind, workspace)]),
+    {
+      kind: "comment",
+      params: { body: [...body, "", signature(job, input.attemptId)].join("\n") },
+    },
+  ]);
+}
+
+export function uncertainRunBatchId(attemptId: string): string {
+  return `uncertain:${attemptId}`;
+}
+
+/** ADR 0062: tells the assignee in Jira that a run is `recovery_required` and how to rerun it. */
+export function buildUncertainRunSteps(
+  config: RouterConfig,
+  job: JobRow,
+  attemptId: string,
+): NewReportStep[] {
+  const text = COMMENT_TEXT[config.reporting.language].failure;
+  return toNewSteps([
+    {
+      kind: "comment",
+      params: {
+        body: [text.lostContact, text.uncertainRun, "", signature(job, attemptId)].join("\n"),
+      },
     },
   ]);
 }
@@ -950,38 +999,57 @@ function resultSteps(input: ResultJournalInput): NewReportStep[] {
     return toNewSteps(planSteps(input, result.plan));
   }
 
+  const child = Boolean(input.snapshot?.planTask || input.snapshot?.integration?.parentKey);
   return toNewSteps([
     { kind: "comment", params: { body: successComment(input) } },
     { kind: "remove-label", params: { label: input.config.reporting.failureLabel } },
-    ...((input.snapshot?.planTask || input.snapshot?.integration?.parentKey) &&
-    verifiedImplementation(input.result) &&
-    input.result.artifacts?.some((a) => a.startsWith("pushed:"))
-      ? [
-          finishTransition(input, workspace.workflow.implementationCompleteStatus),
+    ...(child && awaitingHumanCheck(input.result)
+      ? // ADR 0061: kept in progress, without the failure label, until a person confirms.
+        [
           {
             kind: "comment" as const,
             params: {
-              body: "자식 구현과 자체 테스트가 완료되어 결과 커밋을 보존했습니다. 나머지 자식이 완료되면 부모 통합 PR을 생성합니다. 병합 후 평가는 부모에서 수행합니다.",
+              body: COMMENT_TEXT[input.config.reporting.language].humanCheck.waiting(
+                (input.result.implementation?.verification ?? [])
+                  .filter((check) => check.status === "not_verified")
+                  .map((check) => check.acceptance),
+                workspace.workflow.implementationCompleteStatus,
+              ),
             },
           },
         ]
-      : input.result.pullRequest || verifiedNoChange(input.result)
+      : child &&
+          verifiedImplementation(input.result) &&
+          input.result.artifacts?.some((a) => a.startsWith("pushed:"))
         ? [
-            finishTransition(
-              input,
-              input.result.pullRequest
-                ? workspace.workflow.integrationPendingStatus
-                : workspace.workflow.implementationCompleteStatus,
-            ),
-          ]
-        : [
-            { kind: "add-label" as const, params: { label: input.config.reporting.failureLabel } },
+            finishTransition(input, workspace.workflow.implementationCompleteStatus),
             {
               kind: "comment" as const,
               params: {
-                body: "완료 보류: 변경된 코드의 PR 또는 변경이 필요 없는 작업의 검증 근거가 없습니다. 결과를 확인하고 다시 AI 구현으로 옮기세요.",
+                body: "자식 구현과 자체 테스트가 완료되어 결과 커밋을 보존했습니다. 나머지 자식이 완료되면 부모 통합 PR을 생성합니다. 병합 후 평가는 부모에서 수행합니다.",
               },
             },
-          ]),
+          ]
+        : input.result.pullRequest || verifiedNoChange(input.result)
+          ? [
+              finishTransition(
+                input,
+                input.result.pullRequest
+                  ? workspace.workflow.integrationPendingStatus
+                  : workspace.workflow.implementationCompleteStatus,
+              ),
+            ]
+          : [
+              {
+                kind: "add-label" as const,
+                params: { label: input.config.reporting.failureLabel },
+              },
+              {
+                kind: "comment" as const,
+                params: {
+                  body: "완료 보류: 변경된 코드의 PR 또는 변경이 필요 없는 작업의 검증 근거가 없습니다. 결과를 확인하고 다시 AI 구현으로 옮기세요.",
+                },
+              },
+            ]),
   ]);
 }

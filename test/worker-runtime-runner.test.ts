@@ -104,9 +104,9 @@ describe("WorkerRunner against a live Router", () => {
 
   function workerConfig(): WorkerConfig {
     return {
-      configVersion: 5,
+      configVersion: 6,
+      home: path.join(workDir, "worker-home"),
       routerUrl,
-      credentialPath: path.join(workDir, "credential.json"),
       // A plain (non-git) directory: the executor edits it directly instead of making a worktree.
       repositories: [
         {
@@ -118,8 +118,6 @@ describe("WorkerRunner against a live Router", () => {
         },
       ],
       providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
-      dataDir: path.join(workDir, "worker-data"),
-      logPath: path.join(workDir, "logs"),
     };
   }
 
@@ -155,7 +153,6 @@ describe("WorkerRunner against a live Router", () => {
       workerId: "worker-1",
       spool,
       createProvider: () => provider,
-      worktreesRoot: path.join(workDir, "worktrees"),
       heartbeatIntervalMs: 20,
       leaseLossMs: opts.leaseLossMs ?? 300,
       ...(opts.sleep ? { sleep: opts.sleep } : {}),

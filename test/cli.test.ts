@@ -145,23 +145,12 @@ describe("ggjira CLI", () => {
       const credentialPath = path.join(dir, "credential.json");
       const setup = captureIo();
       const code = await main(
-        [
-          "worker",
-          "setup",
-          "--router",
-          url,
-          "--pairing-code",
-          pairingCode,
-          "--config",
-          configPath,
-          "--credential",
-          credentialPath,
-        ],
+        ["worker", "setup", "--router", url, "--pairing-code", pairingCode, "--home", dir],
         setup,
       );
       expect(code).toBe(0);
       expect(loadWorkerCredential(credentialPath).workerId).toBe("worker-1");
-      expect(loadWorkerConfig(configPath).routerUrl).toBe(url);
+      expect(loadWorkerConfig(dir).routerUrl).toBe(url);
       // The token lives only in the credential file, never in the config or the output.
       const { workerToken } = loadWorkerCredential(credentialPath);
       expect(readFileSync(configPath, "utf-8")).not.toContain(workerToken);
@@ -174,21 +163,7 @@ describe("ggjira CLI", () => {
 
       // A second pairing with the same credential path is refused unless --force.
       const again = captureIo();
-      expect(
-        await main(
-          [
-            "worker",
-            "setup",
-            "--pairing-code",
-            "x",
-            "--config",
-            configPath,
-            "--credential",
-            credentialPath,
-          ],
-          again,
-        ),
-      ).toBe(1);
+      expect(await main(["worker", "setup", "--pairing-code", "x", "--home", dir], again)).toBe(1);
       expect(again.stderr.join("\n")).toContain("already exists");
     });
 
@@ -277,13 +252,13 @@ describe("ggjira CLI", () => {
         "http://router.example.com",
         "--pairing-code",
         "abc",
-        "--config",
-        path.join(dir, "w.json"),
+        "--home",
+        path.join(dir, "w"),
       ],
       io,
     );
     expect(code).toBe(1);
     expect(io.stderr.join("\n")).toContain("https://");
-    expect(existsSync(path.join(dir, "w.json"))).toBe(false);
+    expect(existsSync(path.join(dir, "w", "worker.config.json"))).toBe(false);
   });
 });

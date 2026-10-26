@@ -16,6 +16,7 @@ import {
 } from "../worker/worktree.js";
 import type { ExecutionOutcome, ExecutorDeps } from "./executor.js";
 import type { WorkerRepositoryConfig } from "./config.js";
+import { workerPaths } from "./paths.js";
 
 /** Deterministic Git assembly; never runs an AI or the post-merge validation command. */
 export async function executeAssembly(
@@ -40,7 +41,7 @@ export async function executeAssembly(
         repo.path,
         previous ?? base,
         `ggjira-assemble/${envelope.attemptId}`,
-        deps.worktreesRoot,
+        workerPaths(deps.config.home).repositoryWorktrees(repo.id),
       )
     ).path;
     if (previous) await mergeResultCommits(cwd, remote, [base]);

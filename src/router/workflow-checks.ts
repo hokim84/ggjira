@@ -11,6 +11,14 @@ import { requirementDescription } from "../pm/plan-render.js";
 import { computeInputHash } from "./approval.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { getActivePlanDeployment, getPlanReview, getReviewedPlan } from "./db/plan-delegation.js";
+import { resolveAttention } from "./db/attention.js";
+import { appendAudit } from "./db/audit.js";
+import {
+  appendReviewRecord,
+  judgmentRecordAction,
+  latestJudgment,
+  listReviewTargets,
+} from "./db/review-targets.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import { integrationEvidence } from "./lifecycle.js";
 import { latestPlanningRequest, planningFingerprint } from "./planning-requests.js";
@@ -58,6 +66,115 @@ export function verifiedImplementation(result: JobResult): boolean {
     !result.implementation.scopeDeviations?.length &&
     result.scopeCheck?.outsideAllowed.length === 0
   );
+}
+
+/**
+ * ADR 0061: a pushed result whose only gap is acceptance criteria the agent said it could not
+ * verify. It waits for a person to check them; a failed check is never in this state.
+ */
+export function awaitingHumanCheck(result: JobResult): boolean {
+  const verification = result.implementation?.verification ?? [];
+  return (
+    result.status === "succeeded" &&
+    result.implementation?.outcome === "completed" &&
+    verification.some((v) => v.status === "not_verified") &&
+    verification.every(
+      (v) => v.status === "not_verified" || (v.status === "pass" && !!v.evidence.trim()),
+    ) &&
+    !result.implementation.scopeDeviations?.length &&
+    result.scopeCheck?.outsideAllowed.length === 0 &&
+    !!result.git?.headSha &&
+    !!result.artifacts?.some((a) => a.startsWith("pushed:"))
+  );
+}
+
+/** Whether a person confirmed this exact result on the review screen: the issue's current review
+ *  target is the result's attempt and its latest judgment is a confirm. */
+export function humanConfirmedResult(
+  db: Database.Database,
+  issueKey: string,
+  resultId: string,
+): boolean {
+  const row = db.prepare("SELECT attempt_id FROM results WHERE id=?").get(resultId) as
+    | { attempt_id: string }
+    | undefined;
+  const current = listReviewTargets(db, issueKey)[0];
+  return (
+    !!row &&
+    current?.attemptId === row.attempt_id &&
+    current.supersededBy === null &&
+    latestJudgment(db, current.id)?.action === judgmentRecordAction("confirm")
+  );
+}
+
+/**
+ * A child result that counts as done (ADR 0061): verified by its own checks, or waiting for a
+ * human check and moved by a person to `implementationCompleteStatus` or Done. Router never moves
+ * a waiting child itself except for a review-screen confirm, so that status is the person's answer.
+ * The first time Router sees such a move it records it as a confirm.
+ */
+export function acceptedImplementation(
+  db: Database.Database,
+  workspace: WorkspaceConfig,
+  issue: { key: string; statusName: string },
+  resultId: string,
+  result: JobResult,
+): boolean {
+  if (verifiedImplementation(result)) return true;
+  const { implementationCompleteStatus, doneStatus } = workspace.workflow;
+  if (!awaitingHumanCheck(result)) return false;
+  if (issue.statusName !== implementationCompleteStatus && issue.statusName !== doneStatus)
+    return false;
+  recordStatusConfirmation(db, issue.key, resultId, issue.statusName);
+  return true;
+}
+
+/** Records a person's status move as the confirm of the result it accepted (ADR 0061), once. Jira's
+ *  own issue history says who moved it. */
+function recordStatusConfirmation(
+  db: Database.Database,
+  issueKey: string,
+  resultId: string,
+  statusName: string,
+): void {
+  if (humanConfirmedResult(db, issueKey, resultId)) return;
+  const row = db.prepare("SELECT attempt_id FROM results WHERE id=?").get(resultId) as
+    | { attempt_id: string }
+    | undefined;
+  const target = listReviewTargets(db, issueKey)[0];
+  if (!row || target?.attemptId !== row.attempt_id || target.supersededBy !== null) return;
+  const at = new Date().toISOString();
+  db.transaction(() => {
+    appendReviewRecord(db, {
+      targetId: target.id,
+      issueKey,
+      action: judgmentRecordAction("confirm"),
+      actor: "jira",
+      authentication: "jira-status",
+      headSha: target.headSha,
+      outcome: "matched",
+      detail: { attemptId: target.attemptId, commitState: target.commitState, status: statusName },
+      at,
+    });
+    resolveAttention(db, {
+      issueKey,
+      kinds: ["review_required"],
+      resolution: `moved to "${statusName}" in Jira`,
+      now: at,
+    });
+    appendAudit(db, {
+      at,
+      actor: "jira",
+      action: "review.judgment.confirm",
+      subject: issueKey,
+      detail: {
+        targetId: target.id,
+        attemptId: target.attemptId,
+        via: "status",
+        status: statusName,
+      },
+    });
+  })();
 }
 
 export async function checkContext(

@@ -1,18 +1,15 @@
 {
-  "configVersion": 5,
+  "configVersion": 6,
   "routerUrl": "https://router.example.com",
-  "credentialPath": "data/worker-credential.json",
   "repositories": [
     {
       "id": "main-repo",
-      "path": "/absolute/path/to/local/clone",
+      "cloneUrl": "https://github.com/example/main-repo.git",
       "baseBranch": "main",
       "validateCommand": "npm test",
       "pushRemote": "origin",
       "createPullRequest": true
     }
   ],
-  "providers": [{ "id": "default", "type": "claude-code" }],
-  "dataDir": "data/worker",
-  "logPath": "data/worker-logs"
+  "providers": [{ "id": "default", "type": "claude-code" }]
 }

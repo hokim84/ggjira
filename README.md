@@ -24,7 +24,7 @@ configVersion 7, Router–Worker protocol 8 기준이다.
 |---|---|---|
 | 계획 | AI 계획 → AI 계획중 | 사람이 이슈를 옮기면 AI가 계획을 세우고 Router가 하위 이슈를 만든다. AI 질문에는 번호 댓글로 답한다 |
 | 구현 승인 | AI 구현 | 사람이 하위 이슈를 하나씩 옮긴다. 간단한 작업은 계획 없이 바로 구현할 수 있다 |
-| 자식 완료 | AI 구현 완료 | AI가 구현·검증하고 결과 커밋을 원격에 남긴다. 뒤에 실행되는 자식은 앞 자식의 커밋을 이어서 쓴다 |
+| 자식 완료 | AI 구현 완료 | AI가 구현·검증하고 결과 커밋을 원격에 남긴다. AI가 확인하지 못한 조건이 있으면 사람이 확인하고 직접 옮긴다. 뒤에 실행되는 자식은 앞 자식의 커밋을 이어서 쓴다 |
 | 부모 통합 | AI 통합 대기 | 자식이 모두 끝나면 부모 PR 하나를 자동으로 만든다 |
 | 병합 후 | AI 구현 완료 → Done | 사람이 PR을 병합하고 통합 검증을 통과하면 완료된다. Done은 사람이 옮긴다 |
 
@@ -38,13 +38,17 @@ AI가 "완료했다"고 보고해도 GGJIRA는 그 말만 믿지 않는다.
   표시가 붙고, 확인 필요 항목에 올라간다. 자동 완료나 부모 PR 생성을 막지는 않는다.
 - **확인 방식 표시:** AI는 완료 조건마다 직접 실행해 봤는지(`실행`), 코드만 읽고 판단했는지(`코드 확인`)를
   밝힌다. Jira 댓글과 웹 UI에는 `통과(실행)`처럼 표시된다. AI의 자기 보고라서 판정에는 쓰지 않는다.
+- **확인하지 못한 조건은 사람이 확인:** AI가 화면 확인처럼 직접 확인할 수 없는 조건을 "미확인"으로 정직하게
+  보고하면, 하위 작업은 실패하지 않고 결과 커밋을 보존한 채 "사람 확인 대기"가 된다. 사람이 확인한 뒤 Jira에서
+  이슈를 "AI 구현 완료"로 옮기면 그 이동이 확인으로 기록된다(ADR 0061). 검증에 실패한 조건이 있으면 그대로 실패다.
 - **공통 구현 지침:** 어떤 AI든 같은 기본 지침을 받는다.
   - 하지 않은 실행을 했다고 쓰지 않는다.
+  - 실행 계약의 완료 조건만 검증한다. 저장소 밖(상위 폴더 등)의 지침은 따르지 않는다.
   - 버그를 고칠 때는 버그 때문에 실패하는 확인을 먼저 만든다.
   - 확인한 원인만 고친다.
   - 계약·저장 데이터를 바꾸면 그것을 쓰는 곳을 확인한다.
 
-워커의 `worker.config.json`에서 `repositories[].validateCommand`를 지정한다. 지정하지 않으면
+워커 홈의 `worker.config.json`에서 `repositories[].validateCommand`를 지정한다. 지정하지 않으면
 `worker check`가 경고한다. 자세한 내용은 [runbook §45](./docs/runbook.md)와
 [ADR 0059](./docs/decisions/0059-trusted-validation-and-evidence-method.md)에 있다.
 
@@ -119,8 +123,14 @@ npm run dev -- worker check      # 연결·저장소·검증 명령 점검
 ```
 
 `npm run build && npm link`로 설치하면 어디서든 `ggjira worker start`로 쓸 수 있다.
+
+워커의 설정·인증 파일·clone·작업 폴더·로그는 모두 **워커 홈** 한 곳에 둔다. 기본값은
+`%LOCALAPPDATA%\ggjira\worker`(Windows), `~/.ggjira/worker`(그 밖)이고 `--home`이나 `GGJIRA_WORKER_HOME`으로 바꾼다.
+워커 홈은 GGJIRA 폴더나 다른 프로젝트 안에 두지 않는다. 그 안에 두면 작업 중인 AI가 상위 폴더의 CLAUDE.md·AGENTS.md를
+자기 지침으로 읽기 때문에, 워커가 실행을 거부한다(ADR 0060).
+
 워커는 작업마다 기준 브랜치를 리모트에서 새로 받아 별도 worktree에서 작업한다. 받아 오지 못하면
-진행하지 않는다. 마지막으로 `worker.config.json`에 저장소별 `validateCommand`를 넣는다([AI 결과 검증](#ai-결과-검증)).
+진행하지 않는다. 마지막으로 워커 홈의 `worker.config.json`에 저장소별 `validateCommand`를 넣는다([AI 결과 검증](#ai-결과-검증)).
 
 ## 웹 UI
 
@@ -148,8 +158,9 @@ ggjira worker results retry                남은 결과 재전송
 ggjira worker worktrees prune [--older-than-days 7] [--dry-run]
 ```
 
-실행 중 연결이 끊겨 결과가 불확실한 작업은 자동으로 다시 실행하지 않는다(`recovery_required`).
-워커에서 멈췄는지 확인한 뒤 `jobs resolve`(닫기)나 `jobs retry`(새로 실행)를 쓴다.
+실행 중 연결이 끊겨 결과가 불확실한 작업은 자동으로 다시 실행하지 않는다(`recovery_required`). Router가 Jira에
+안내 댓글을 달고, 워커가 멈춘 것을 확인한 뒤 담당자가 "재시도" 댓글을 남기면 새로 실행한다(ADR 0062).
+관리자는 `jobs resolve`(닫기)나 `jobs retry`(새로 실행)를 쓸 수도 있다.
 업그레이드할 때는 Router와 Worker를 함께 갱신한다.
 
 ## 알려진 제한

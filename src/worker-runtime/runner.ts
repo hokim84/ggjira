@@ -27,7 +27,6 @@ export interface WorkerRunnerDeps {
   workerId: string;
   spool: ResultSpool;
   createProvider: (provider: WorkerProviderConfig) => WorkerProvider;
-  worktreesRoot: string;
   logger?: Logger;
   onProgress?: (event: WorkerProgress) => void;
   /** Epoch ms. Injected so tests can drive the heartbeat/lease-loss timers. */
@@ -205,7 +204,6 @@ export class WorkerRunner {
           client,
           sessionId,
           createProvider: this.deps.createProvider,
-          worktreesRoot: this.deps.worktreesRoot,
         });
         return "executed";
       }
@@ -287,7 +285,6 @@ export class WorkerRunner {
         onUsage: (provider, reading) =>
           usage.set(provider.id, this.usageEntry(provider, "job", reading)),
         createProvider: this.deps.createProvider,
-        worktreesRoot: this.deps.worktreesRoot,
         signal: abort.signal,
         onProgress: (next) => {
           if (next === stage) return;

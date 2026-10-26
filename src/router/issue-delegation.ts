@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { JobResult } from "../contracts/envelope.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PlanMetadataError, readPlanTaskMetadata } from "../pm/metadata.js";
@@ -18,6 +19,11 @@ import { integrationEvidence } from "./lifecycle.js";
 import { publishedImplementation } from "./assembly.js";
 import { latestPlanningRequest } from "./planning-requests.js";
 import { parseTaskApprovalId } from "./report-journal.js";
+import {
+  awaitingHumanCheck,
+  humanConfirmedResult,
+  latestImplementation,
+} from "./workflow-checks.js";
 
 /**
  * Where an issue stands (ADR 0044), for the admin API and the web UI. Read-only:
@@ -82,6 +88,9 @@ export interface IssueDelegationView {
   parentKey: string | null;
   /** Who cancelled the run under the current approval (`jobs cancel`), if anyone. */
   heldBy: string | null;
+  /** ADR 0061: acceptance criteria a task's agent could not verify, waiting for a person to
+   *  confirm them on the review screen; null when nothing waits. */
+  humanCheck: string[] | null;
 }
 
 export async function readIssueDelegation(
@@ -196,6 +205,17 @@ export async function readIssueDelegation(
     };
     if (issue.statusName === requestStatus && deployment.state === "active") stage = "coordinating";
   }
+  const latest = stage === "task" ? latestImplementation(db, issue.key) : undefined;
+  const latestResult = latest ? (JSON.parse(latest.payload) as JobResult) : undefined;
+  const humanCheck =
+    latest &&
+    latestResult &&
+    awaitingHumanCheck(latestResult) &&
+    !humanConfirmedResult(db, issue.key, latest.id)
+      ? (latestResult.implementation?.verification ?? [])
+          .filter((check) => check.status === "not_verified")
+          .map((check) => check.acceptance)
+      : null;
   return {
     ...(quality ? { quality } : {}),
     stage,
@@ -226,5 +246,6 @@ export async function readIssueDelegation(
       : null,
     parentKey,
     heldBy,
+    humanCheck,
   };
 }

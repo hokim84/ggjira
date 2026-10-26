@@ -2,9 +2,20 @@ import { describe, expect, it } from "vitest";
 import { COMMENT_TEXT } from "../src/router/comment-text.js";
 import { judgeMerge } from "../src/router/github.js";
 import type { ReviewAssessment } from "../src/router/review-gate.js";
+import { reRequestHint } from "../src/router/workflow-mode.js";
+import { testWorkspace } from "./helpers/router-fixtures.js";
 
 /** Router's Jira comment text (ADR 0048): Korean by default, English kept for what is recorded. */
 describe("comment text", () => {
+  it("says what to do next once, in both languages (KAN-47)", () => {
+    for (const kind of ["implementation", "planning"] as const) {
+      const ko = COMMENT_TEXT.ko.failure.next(reRequestHint(testWorkspace, kind, "ko"));
+      const en = COMMENT_TEXT.en.failure.next(reRequestHint(testWorkspace, kind, "en"));
+      expect(ko.match(/원인을/g)).toHaveLength(1);
+      expect(en.match(/cause/g)).toHaveLength(1);
+    }
+  });
+
   it("records merge judgments in the same English as before, whatever the comment language", () => {
     const target = { supersededBy: null, headSha: "a".repeat(40) } as Parameters<
       typeof judgeMerge

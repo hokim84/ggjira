@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
-import { WorkerConfigSchema, type WorkerRepositoryConfig } from "../src/worker-runtime/config.js";
+import { resolveWorkerConfig, type WorkerRepositoryConfig } from "../src/worker-runtime/config.js";
 import { executeEnvelope } from "../src/worker-runtime/executor.js";
 import { executePlanningEnvelope } from "../src/worker-runtime/planning.js";
 import { executeQualityEnvelope } from "../src/worker-runtime/quality.js";
@@ -155,15 +155,15 @@ describe("Git-pinned integration validation worker", () => {
       else
         await executeEnvelope(job, {
           ...deps,
-          config: WorkerConfigSchema.parse({
-            configVersion: 5,
-            routerUrl: "http://localhost:8787",
-            repositories: [repository],
-            providers: [{ id: "default", type: "claude-code" }],
-            dataDir: path.join(dir, "data"),
-            logPath: deps.logPath,
-            credentialPath: path.join(dir, "credential.json"),
-          }),
+          config: resolveWorkerConfig(
+            {
+              configVersion: 6,
+              routerUrl: "http://localhost:8787",
+              repositories: [repository],
+              providers: [{ id: "default", type: "claude-code" }],
+            },
+            path.join(dir, "data"),
+          ),
           createProvider: () => worker,
           authorize: async () => true,
         });

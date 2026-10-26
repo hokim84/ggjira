@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type CliIo, parseCommandArgs } from "../src/cli-io.js";
 import { CloneUrlSchema } from "../src/contracts/api.js";
 import { prepareWorkerStart } from "../src/worker-runtime/start.js";
-import { loadWorkerConfig, WorkerConfigSchema } from "../src/worker-runtime/config.js";
+import { loadWorkerConfig, resolveWorkerConfig } from "../src/worker-runtime/config.js";
 import { loadWorkerCredential } from "../src/worker-runtime/credential.js";
 import { chooseProvider, workerConfigFromProfile } from "../src/worker-runtime/ops.js";
 import { workerPolicy } from "./helpers/router-fixtures.js";
@@ -102,10 +102,10 @@ describe("chooseProvider", () => {
 
 describe("workerConfigFromProfile", () => {
   it("builds a valid worker config from Router's profile", () => {
-    const config = WorkerConfigSchema.parse(
+    const home = path.resolve("/srv/worker-home");
+    const config = resolveWorkerConfig(
       workerConfigFromProfile({
         routerUrl: "https://router.example.com",
-        credentialPath: "data/worker-credential.json",
         providerType: "codex",
         profile: {
           providerId: "default",
@@ -114,11 +114,12 @@ describe("workerConfigFromProfile", () => {
           ],
         },
       }),
+      home,
     );
     expect(config.providers).toEqual([expect.objectContaining({ id: "default", type: "codex" })]);
     expect(config.repositories[0]).toMatchObject({
       id: "repo1",
-      path: path.join("data/worker", "repos", "repo1"),
+      path: path.join(home, "repositories", "repo1", "repo"),
       baseBranch: "dev",
       cloneUrl: "git@github.com:org/repo.git",
     });
@@ -183,7 +184,8 @@ describe("worker start against a running Router", () => {
   it("text setup: asks Router address, LLM, pairing code and repository folder, then runs", async () => {
     const pairingCode = await addWorker("laptop-1");
     const workerDir = path.join(dir, "worker");
-    const configPath = path.join(workerDir, "worker.config.json");
+    const home = workerDir;
+    const configPath = path.join(home, "worker.config.json");
     const script = scripted([
       "ftp://nope", // not an allowed Router URL → asked again
       url,
@@ -193,7 +195,7 @@ describe("worker start against a running Router", () => {
       "", // Enter: clone to the default folder
     ]);
     const io = captureIo();
-    const config = await prepareWorkerStart(configPath, noFlags, io, {
+    const config = await prepareWorkerStart(home, noFlags, io, {
       ask: script.ask,
       commandRuns: () => true,
     });
@@ -207,29 +209,28 @@ describe("worker start against a running Router", () => {
     expect(script.asked.filter((q) => q.startsWith("페어링 코드"))).toHaveLength(2);
     expect(io.stderr.join("\n")).toContain("페어링 코드가 맞지 않거나 만료됐습니다");
 
-    const written = loadWorkerConfig(configPath);
+    const written = loadWorkerConfig(home);
     expect(written.providers[0]).toMatchObject({ id: "default", type: "codex" });
     const repo = written.repositories[0];
-    expect(repo?.path).toBe(path.join(workerDir, "data/worker", "repos", "repo1"));
+    expect(repo?.path).toBe(path.join(workerDir, "repositories", "repo1", "repo"));
     expect(existsSync(path.join(repo?.path ?? "", "README.md"))).toBe(true);
-    const credential = loadWorkerCredential(written.credentialPath);
+    const credential = loadWorkerCredential(path.join(workerDir, "credential.json"));
     expect(credential.workerId).toBe("laptop-1");
     expect(readFileSync(configPath, "utf-8")).not.toContain(credential.workerToken);
 
     // Second run: nothing asked, nothing re-cloned.
     const again = scripted([]);
-    expect(
-      await prepareWorkerStart(configPath, noFlags, captureIo(), { ask: again.ask }),
-    ).toBeDefined();
+    expect(await prepareWorkerStart(home, noFlags, captureIo(), { ask: again.ask })).toBeDefined();
     expect(again.asked).toEqual([]);
   });
 
   it("uses an existing local clone when Router has no clone URL for the repository", async () => {
     await router.adminCall("PUT", "/config", { ...router.config, repositories: [{ id: "repo1" }] });
     const pairingCode = await addWorker("laptop-2");
-    const configPath = path.join(dir, "w2", "worker.config.json");
+    const home = path.join(dir, "w2");
+    const configPath = path.join(home, "worker.config.json");
     const script = scripted([url, pairingCode, path.join(dir, "no-such-folder"), source]);
-    const config = await prepareWorkerStart(configPath, noFlags, captureIo(), {
+    const config = await prepareWorkerStart(home, noFlags, captureIo(), {
       ask: script.ask,
       commandRuns: (command) => command === "claude",
     });
@@ -239,9 +240,10 @@ describe("worker start against a running Router", () => {
 
   it("flags still work without a terminal", async () => {
     const pairingCode = await addWorker("server-1");
-    const configPath = path.join(dir, "w3", "worker.config.json");
+    const home = path.join(dir, "w3");
+    const configPath = path.join(home, "worker.config.json");
     const config = await prepareWorkerStart(
-      configPath,
+      home,
       parseCommandArgs(
         ["--router", url, "--pairing-code", pairingCode, "--provider", "claude-code"],
         START_OPTIONS,
@@ -249,25 +251,43 @@ describe("worker start against a running Router", () => {
       captureIo(),
     );
     expect(config?.providers[0]?.type).toBe("claude-code");
-    expect(existsSync(path.join(dir, "w3", "data/worker/repos/repo1/README.md"))).toBe(true);
+    expect(existsSync(path.join(home, "repositories", "repo1", "repo", "README.md"))).toBe(true);
+  });
+
+  it("refuses a home inside another project before asking anything (ADR 0060)", async () => {
+    const project = path.join(dir, "host");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(path.join(project, "CLAUDE.md"), "host rules");
+    const io = captureIo();
+    const script = scripted([]);
+    expect(
+      await prepareWorkerStart(path.join(project, "data", "worker"), noFlags, io, {
+        ask: script.ask,
+      }),
+    ).toBeUndefined();
+    expect(io.stderr.join("\n")).toContain(
+      `${path.join(project, "CLAUDE.md")} is above the worker home`,
+    );
+    expect(script.asked).toEqual([]);
   });
 
   it("without a terminal or flags, explains how to answer the setup", async () => {
-    await expect(
-      prepareWorkerStart(path.join(dir, "w4", "worker.config.json"), noFlags, captureIo()),
-    ).rejects.toThrow(/터미널에서 실행하면/);
+    await expect(prepareWorkerStart(path.join(dir, "w4"), noFlags, captureIo())).rejects.toThrow(
+      /터미널에서 실행하면/,
+    );
   });
 
   it("keeps the pairing code when no LLM CLI is installed", async () => {
     const pairingCode = await addWorker("laptop-3");
-    const configPath = path.join(dir, "w5", "worker.config.json");
+    const home = path.join(dir, "w5");
+    const configPath = path.join(home, "worker.config.json");
     const args = parseCommandArgs(["--router", url, "--pairing-code", pairingCode], START_OPTIONS);
     await expect(
-      prepareWorkerStart(configPath, args, captureIo(), { commandRuns: () => false }),
+      prepareWorkerStart(home, args, captureIo(), { commandRuns: () => false }),
     ).rejects.toThrow(/LLM CLI를 찾지 못했습니다/);
     expect(existsSync(configPath)).toBe(false);
 
-    const config = await prepareWorkerStart(configPath, args, captureIo(), {
+    const config = await prepareWorkerStart(home, args, captureIo(), {
       commandRuns: (command) => command === "codex",
     });
     expect(config?.providers[0]?.type).toBe("codex");
@@ -275,9 +295,10 @@ describe("worker start against a running Router", () => {
 
   it("asks for a folder later when a saved config points at a missing repository", async () => {
     const pairingCode = await addWorker("laptop-4");
-    const configPath = path.join(dir, "w6", "worker.config.json");
+    const home = path.join(dir, "w6");
+    const configPath = path.join(home, "worker.config.json");
     await prepareWorkerStart(
-      configPath,
+      home,
       parseCommandArgs(
         ["--router", url, "--pairing-code", pairingCode, "--provider", "codex"],
         START_OPTIONS,
@@ -290,13 +311,13 @@ describe("worker start against a running Router", () => {
     writeFileSync(configPath, JSON.stringify(raw));
 
     const io = captureIo();
-    expect(await prepareWorkerStart(configPath, noFlags, io)).toBeUndefined();
+    expect(await prepareWorkerStart(home, noFlags, io)).toBeUndefined();
     expect(io.stderr.join("\n")).toContain("로컬 폴더");
 
     const script = scripted([source]);
-    const config = await prepareWorkerStart(configPath, noFlags, captureIo(), { ask: script.ask });
+    const config = await prepareWorkerStart(home, noFlags, captureIo(), { ask: script.ask });
     expect(config?.repositories[0]?.path).toBe(source);
-    expect(loadWorkerConfig(configPath).repositories[0]?.path).toBe(source);
+    expect(loadWorkerConfig(home).repositories[0]?.path).toBe(source);
   });
 
   it("refuses a duplicate or invalid worker policy", async () => {

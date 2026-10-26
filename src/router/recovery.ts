@@ -95,6 +95,32 @@ export function resolveRecoveryJob(
 }
 
 /**
+ * ADR 0062: the assignee's "재시도" comment on an issue whose run is `recovery_required` stands in
+ * for the admin's stop confirmation. The job closes without a comment of its own; the caller then
+ * creates a new run under a new approval, and a late result of the old attempt is not applied.
+ */
+export function closeRecoveryForRetry(
+  db: Database.Database,
+  jobId: string,
+  actor: string,
+  now: string,
+): void {
+  db.transaction(() => {
+    const job = requireJob(db, jobId);
+    if (job.state !== "recovery_required") return;
+    confirmStop(db, job, actor, now, "superseded");
+    transitionJobState(db, job.id, "cancelled", now);
+    appendAudit(db, {
+      at: now,
+      actor,
+      action: "job.resolved",
+      subject: job.id,
+      detail: { via: "retry comment" },
+    });
+  })();
+}
+
+/**
  * `ggjira router jobs retry`: runs a failed / timed-out / recovery-required job again as a new
  * attempt (§3 "수동 재시도는 새로운 attempt를 만든다"). The issue's approval is re-checked in Jira
  * first (§3 "새 실행 전 Jira 요청 상태의 승인을 다시 확인한다"): a job whose issue a human moved

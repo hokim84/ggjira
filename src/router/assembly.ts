@@ -13,8 +13,8 @@ import { integrationEvidence } from "./lifecycle.js";
 import {
   latestImplementation,
   sourceKey,
+  acceptedImplementation,
   verifiedNoChange,
-  verifiedImplementation,
 } from "./workflow-checks.js";
 
 /** Only approved, current, published results may enter a parent's PR. Jira Done alone is no evidence. */
@@ -81,7 +81,7 @@ export async function assemblyContext(
       return;
     const result = JSON.parse(latest.payload) as JobResult;
     const noChange = verifiedNoChange(result);
-    if (!noChange && !verifiedImplementation(result)) return;
+    if (!noChange && !acceptedImplementation(db, workspace, child, latest.id, result)) return;
     const integrated = integrationEvidence(db, child.key, baseBranch);
     if (
       !result.git?.baseSha ||
@@ -200,7 +200,7 @@ export async function publishedImplementation(
     return;
   const result = JSON.parse(latest.payload) as JobResult;
   return verifiedNoChange(result) ||
-    (verifiedImplementation(result) &&
+    (acceptedImplementation(db, workspace, issue, latest.id, result) &&
       result.git?.headSha &&
       result.artifacts?.some((a) => a.startsWith("pushed:")))
     ? result

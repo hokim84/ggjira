@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { executeEnvelope, type ExecutorDeps } from "../src/worker-runtime/executor.js";
-import { WorkerConfigSchema } from "../src/worker-runtime/config.js";
+import { resolveWorkerConfig } from "../src/worker-runtime/config.js";
 import * as worktree from "../src/worker/worktree.js";
 import { fakeSuccessResult } from "../src/worker/fake.js";
 
@@ -48,30 +48,29 @@ describe("parent aggregate Git execution", () => {
     git(root, "clone", "--bare", source, "remote.git");
     git(source, "remote", "add", "origin", path.join(root, "remote.git"));
     git(root, "clone", path.join(root, "remote.git"), "worker");
-    const config = WorkerConfigSchema.parse({
-      configVersion: 5,
-      routerUrl: "http://localhost:8787",
-      credentialPath: path.join(root, "credential.json"),
-      dataDir: path.join(root, "data"),
-      logPath: path.join(root, "logs"),
-      repositories: [
-        {
-          id: "repo1",
-          path: path.join(root, "worker"),
-          baseBranch: "main",
-          pushRemote: "origin",
-          createPullRequest: true,
-          validateCommand: 'node -e "process.exit(99)"',
-        },
-      ],
-      providers: [{ id: "default", type: "codex" }],
-    });
+    const config = resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl: "http://localhost:8787",
+        repositories: [
+          {
+            id: "repo1",
+            path: path.join(root, "worker"),
+            baseBranch: "main",
+            pushRemote: "origin",
+            createPullRequest: true,
+            validateCommand: 'node -e "process.exit(99)"',
+          },
+        ],
+        providers: [{ id: "default", type: "codex" }],
+      },
+      path.join(root, "data"),
+    );
     deps = {
       config,
       createProvider: () => {
         throw new Error("Aggregate must not initialize an AI provider");
       },
-      worktreesRoot: path.join(root, "trees"),
       signal: new AbortController().signal,
       authorize: async () => true,
       createPullRequest: vi.fn(async () => ({

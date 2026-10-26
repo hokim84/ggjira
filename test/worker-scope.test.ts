@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import type { ExecutionContract } from "../src/contracts/implementation.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
-import { WorkerConfigSchema } from "../src/worker-runtime/config.js";
+import { resolveWorkerConfig } from "../src/worker-runtime/config.js";
 import { type ExecutionOutcome, executeEnvelope } from "../src/worker-runtime/executor.js";
 import { fakeImplementationReport, fakeSuccessResult } from "../src/worker/fake.js";
 import type { WorkerProvider, WorkerRequest, WorkerResult } from "../src/worker/provider.js";
@@ -138,27 +138,26 @@ describe("implementation scope checks (ADR 0036)", () => {
   ): Promise<{ outcome: ExecutionOutcome; stages: string[] }> {
     const stages: string[] = [];
     const abort = new AbortController();
-    const config = WorkerConfigSchema.parse({
-      configVersion: 5,
-      routerUrl: "http://127.0.0.1:8787",
-      credentialPath: path.join(dir, "credential.json"),
-      repositories: [
-        {
-          id: "repo1",
-          path: clone,
-          pushRemote: "origin",
-          createPullRequest: false,
-          ...(options.validateCommand ? { validateCommand: options.validateCommand } : {}),
-        },
-      ],
-      providers: [{ id: "default", type: "claude-code" }],
-      dataDir: path.join(dir, "data"),
-      logPath: path.join(dir, "logs"),
-    });
+    const config = resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl: "http://127.0.0.1:8787",
+        repositories: [
+          {
+            id: "repo1",
+            path: clone,
+            pushRemote: "origin",
+            createPullRequest: false,
+            ...(options.validateCommand ? { validateCommand: options.validateCommand } : {}),
+          },
+        ],
+        providers: [{ id: "default", type: "claude-code" }],
+      },
+      path.join(dir, "data"),
+    );
     const outcome = await executeEnvelope(job, {
       config,
       createProvider: () => provider,
-      worktreesRoot: path.join(dir, "data", "worktrees"),
       signal: abort.signal,
       authorize: async (stage) => {
         stages.push(stage);
@@ -225,6 +224,40 @@ describe("implementation scope checks (ADR 0036)", () => {
     });
   });
 
+  describe("a child's checks (ADR 0061)", () => {
+    const child = (): JobEnvelope => ({ ...envelope(), deferPullRequest: true });
+    const reporting = (status: "not_verified" | "fail") =>
+      new ScriptedProvider(
+        (cwd) => writeFileSync(path.join(cwd, "src", "a.ts"), "export const a = 2;\n"),
+        fakeSuccessResult({
+          structuredOutput: fakeImplementationReport({
+            verification: [
+              { acceptance: "The change works", status: "pass", method: "executed", evidence: "t" },
+              { acceptance: "The window scrolls", status, method: "inspected", evidence: "no UI" },
+            ],
+          }),
+        }),
+      );
+
+    it("pushes a child whose only gap is an unverified check, for a human to confirm", async () => {
+      const { outcome, stages } = await run(reporting("not_verified"), child());
+      expect(outcome.status).toBe("succeeded");
+      expect(stages).toEqual(["commit", "push"]);
+      expect(outcome.artifacts?.some((a) => a.startsWith("pushed: origin/ggjira/KAN-1"))).toBe(
+        true,
+      );
+      expect(remoteBranches()).toContain("ggjira/KAN-1");
+    });
+
+    it("fails a child with a failed check under the ordinary verification code", async () => {
+      const { outcome, stages } = await run(reporting("fail"), child());
+      expect(outcome.status).toBe("failed");
+      // GGJ-302, not the unclassified GGJ-999 KAN-47 got.
+      expect(outcome.failureReason).toBe("Verification failed: The window scrolls");
+      expectStoppedBeforeCommit(outcome, stages);
+    });
+  });
+
   it("stops before commit/push on a path outside the contract, keeping a patch", async () => {
     const provider = new ScriptedProvider((cwd) => {
       writeFileSync(path.join(cwd, "src", "a.ts"), "export const a = 2;\n");
@@ -245,7 +278,7 @@ describe("implementation scope checks (ADR 0036)", () => {
     });
     expect(outcome.execution?.usage).toBeUndefined();
     const patchFile = outcome.localEvidence?.patchFile as string;
-    expect(patchFile).toBe(path.join(dir, "logs", "job-1-attempt-12345678.patch"));
+    expect(patchFile).toBe(path.join(dir, "data", "logs", "job-1-attempt-12345678.patch"));
     const patch = readFileSync(patchFile, "utf-8");
     expect(patch).toContain("schema.sql");
     expect(patch).toContain("src/a.ts");
@@ -438,19 +471,18 @@ describe("implementation scope checks (ADR 0036)", () => {
       (cwd) => writeFileSync(path.join(cwd, "x.txt"), "x\n"),
       fakeSuccessResult(),
     );
-    const config = WorkerConfigSchema.parse({
-      configVersion: 5,
-      routerUrl: "http://127.0.0.1:8787",
-      credentialPath: path.join(dir, "credential.json"),
-      repositories: [{ id: "repo1", path: plain }],
-      providers: [{ id: "default", type: "claude-code" }],
-      dataDir: path.join(dir, "data"),
-      logPath: path.join(dir, "logs"),
-    });
+    const config = resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl: "http://127.0.0.1:8787",
+        repositories: [{ id: "repo1", path: plain }],
+        providers: [{ id: "default", type: "claude-code" }],
+      },
+      path.join(dir, "data"),
+    );
     const outcome = await executeEnvelope(envelope(), {
       config,
       createProvider: () => provider,
-      worktreesRoot: path.join(dir, "data", "worktrees"),
       signal: new AbortController().signal,
       authorize: async () => true,
     });

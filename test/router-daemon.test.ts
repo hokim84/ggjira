@@ -407,7 +407,9 @@ describe("backup and restore", () => {
       expect(getOpenJobForIssue(restored, "KAN-2")?.state).toBe("queued");
       // The unreported start step is still journaled and gets applied.
       await revived.reportTick();
-      expect(jira.comments.map((comment) => comment.key)).toEqual(["KAN-1"]);
+      // ...and the reconcile pass tells KAN-1's assignee its run waits for a "재시도" (ADR 0062).
+      expect(jira.comments.map((comment) => comment.key)).toEqual(["KAN-1", "KAN-1"]);
+      expect(jira.comments.at(-1)?.body).toContain('"재시도"');
       expect(getJob(restored, envelope.jobId)?.state).toBe("recovery_required");
     } finally {
       await revived.stop();

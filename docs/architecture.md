@@ -81,6 +81,10 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 ### 자식 승인과 부모 통합 PR (ADR 0056)
 
 자식은 각각 수동 승인하고 격리된 worktree에서 구현·자체 검증한 뒤 결과 커밋을 원격에 보존한다.
+실패한 검증이 있으면 실패다. AI가 확인하지 못한 항목(`not_verified`)만 남은 자식은 커밋을 보존한 채 작업 중에
+머물고, 사람이 확인한 뒤 Jira에서 구현 완료로 옮기면(또는 검토 화면에서 확인하면) 완료로 친다
+(`acceptedImplementation`, ADR 0061). 끊긴 실행(`recovery_required`)은 보완 조회가 Jira에 한 번 알리고, 담당자의
+"재시도" 댓글을 중단 확인으로 받아 새로 실행한다(ADR 0062). 사람의 모든 단계가 Jira에서 끝난다.
 자식별 PR은 생성하지 않으며, 선행 의존 작업의 완료 커밋을 합친 불변 SHA에서 후행 구현을 시작한다.
 모든 현재 자식의 최신 승인·검증 결과가 준비되면 일반 Worker 큐에 `assemble_pr`를 예약한다.
 이 작업은 AI 호출이나 통합 검증 없이 의존 순서로 커밋을 모아 부모 PR 하나를 게시한다.
@@ -132,7 +136,7 @@ Router와 Worker는 버전 불일치를 실행 전에 거절한다. 구현 envel
 provider의 최종 구조화 응답(`ImplementationReport`: outcome, 이탈, 결정, acceptance별 검증)을 받고, 커밋
 전에 변경 경로를 `allowedPaths`와 대조한다. 결정 필요·의미상 이탈·경로 이탈이면 commit·push·PR 없이
 patch와 worktree를 남기고 `needs_decision`으로 보고한다. 보고를 읽을 수 없거나 검증 근거가 없거나 실패한
-검증이 있으면 `failed`다. 검증 항목마다 확인 방식 `method`(`executed`: 실행해 결과를 봄, `inspected`: 코드·문서를
+검증이 있으면 `failed`다. 자식도 같다: `not_verified`만 있으면 커밋·push까지 진행한다(ADR 0061). 검증 항목마다 확인 방식 `method`(`executed`: 실행해 결과를 봄, `inspected`: 코드·문서를
 읽고 판단)를 받는다. provider 스키마는 이를 요구하지만 Zod는 선택 필드로 받아 과거 결과와 잘못된 값도 읽는다(ADR 0059).
 커밋 뒤 워커의 `validateCommand`는 job의 취소 신호와 `timeoutMs`로 제한해 실행하고, 출력은 `validation`에 남는다.
 
@@ -144,8 +148,9 @@ patch와 worktree를 남기고 `needs_decision`으로 보고한다. 보고를 �
 `review.highRiskPaths`와 실제 변경 경로의 대조, 그리고 에이전트 보고로 판단하고, 규칙 해시를 설정 버전으로 남긴다.
 PR 머지는 그 머지의 head가 최신 대상의 head와 같을 때만(또는 head를 비교할 수 없을 때) 완료로 옮기고,
 `review_records`에 actor·인증·head·일치 여부를 남긴다. 사람의 판단(확인·보류·재작업 요청)도 검토 화면·CLI에서
-현재 대상에만 `review_records`로 남는다. 판단은 기록일 뿐이며 상태 이동·머지·승인을 만들지 않고, 보류와 재작업
-요청만 Jira 댓글 하나를 남긴다(ADR 0043, `src/router/review-judgment.ts`).
+현재 대상에만 `review_records`로 남는다. 판단은 기록일 뿐이며 머지·승인·재실행을 만들지 않고, 보류와 재작업
+요청만 Jira 댓글 하나를 남긴다(ADR 0043, `src/router/review-judgment.ts`). 예외는 사람 확인을 기다리는 자식의
+확인 판단 하나로, 그 자식을 구현 완료로 옮기고 댓글을 남긴다(ADR 0061).
 
 결과의 `execution`은 provider 호출 하나를 기록한다(ADR 0042). Router는 저장한 결과마다(늦게 와 적용하지 않은
 결과 포함) `execution_records`에 결과 id 기준으로 한 번 남긴다.
@@ -202,10 +207,17 @@ result 저장 ─▶ [<resultId>]         구현 성공: 댓글 → 실패 라�
 
 ## 워커 시작 (`worker start`, ADR 0025)
 
+워커의 로컬 파일은 모두 워커 홈 하나에 있다(ADR 0060, `src/worker-runtime/paths.ts`). 기본값은
+`%LOCALAPPDATA%\ggjira\worker`(Windows) 또는 `~/.ggjira/worker`이고 `--home`·`GGJIRA_WORKER_HOME`으로 바꾼다.
+홈에는 `worker.config.json`(configVersion 6), `credential.json`, `spool/`, `fci-spool/`, `logs/`,
+저장소별 `repositories/<id>/repo`(clone)와 `repositories/<id>/worktrees`(작업별 worktree)가 있다. 홈이나 그 상위
+폴더에 `CLAUDE.md`·`AGENTS.md`·`.git`이 있으면 에이전트가 다른 프로젝트의 지침을 읽으므로 `worker start`·`run`·
+`setup`은 실행을 거부하고 `worker check`는 실패로 보고한다.
+
 `workers/register` 응답에는 워커 프로필(providerId, 저장소 id·`cloneUrl`·`baseBranch`)이
 함께 온다. `worker start`(`src/worker-runtime/start.ts`)는 처음 실행될 때 터미널에서 Router 주소, LLM CLI,
 페어링 코드, 저장소 폴더를 차례로 묻고 이 프로필로 워커 설정을 쓴다. `cloneUrl`이 있는 저장소는
-`<dataDir>/repos/<id>`에 clone하고 바로 실행한다. Router는 URL만 주고, 로컬 경로와 검증 명령은 워커가 정한다. 성공한 작업 브랜치는 워커 설정의 `pushRemote`(기본 `origin`)에 push하고,
+워커 홈의 `repositories/<id>/repo`에 clone하고 바로 실행한다. Router는 URL만 주고, 로컬 경로와 검증 명령은 워커가 정한다. 성공한 작업 브랜치는 워커 설정의 `pushRemote`(기본 `origin`)에 push하고,
 push 직전에 `authorize`(stage `push`)로 권한을 다시 확인한다(ADR 0026). GitHub 원격이고 `createPullRequest`면 워커가
 `gh`로 PR을 열어 결과에 담는다. Router는 이를 `pull_requests`에 기록하고, `/webhooks/github`(HMAC 검증) 또는
 5분 폴링으로 병합을 알게 되면 고정된 병합 SHA의 통합 검증을 예약한다. 자식 변경은 모두 완료된 뒤
