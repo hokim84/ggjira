@@ -2,7 +2,7 @@
 
 ## Context
 
-2차 구현(`GGJira_Phase2_Implementation_Plan.md`)은 PM Agent와 Implement Agent를 추가해야
+2차 구현(`docs/history/GGJira_Phase2_Implementation_Plan.md`)은 PM Agent와 Implement Agent를 추가해야
 한다. §3.1은 "PM Agent, Implement Agent 등을 서로 다른 프로그램으로 만들지 않는다 — 동일
 Runtime + Role Configuration + System Prompt = Agent Role"을 원칙으로 명시한다. 또한 §4.1은
 "PM Agent가 Worker/Implement Agent를 직접 실행하지 않는다"를 요구한다.

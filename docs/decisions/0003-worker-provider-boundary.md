@@ -2,7 +2,7 @@
 
 ## Context
 
-`writing-block.md` 원칙 6·7은 "Worker 실행 방식은 Provider 경계를 통해 교체 가능해야 하고,
+`docs/history/writing-block.md` 원칙 6·7은 "Worker 실행 방식은 Provider 경계를 통해 교체 가능해야 하고,
 초기에는 하나만 실제 구현해도 된다"고 명시한다. MVP는 구독형 Claude Code CLI를
 `child_process.spawn`으로 실행한다. 향후 Codex CLI 등 다른 Worker를 추가할 가능성이 있다.
 

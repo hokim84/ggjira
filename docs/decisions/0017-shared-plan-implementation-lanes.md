@@ -75,7 +75,7 @@ API 호출도 하나 줄어든다.
   티켓을 하나씩 `implementationStatus`로 옮기는 순간 그 하나는 바로 실행 후보가 된다.
   실사용에서 이게 문제가 되면(부분 검토 상태에서 실수로 하나를 옮기는 경우) 별도 안전장치를
   다시 논의한다.
-- 이미 실제 Jira에 배포된 v4 config가 없는 상태에서 이 결정을 내렸다(`docs/phase3-verification.md`
+- 이미 실제 Jira에 배포된 v4 config가 없는 상태에서 이 결정을 내렸다(`docs/history/phase3-verification.md`
   §9가 전부 미실행) — 그래서 `ggjira.plan.status`나 4개 필드 제거에 대한 마이그레이션
   경로를 따로 만들지 않았다. 기존 `ggjira.config.json`에 옛 필드가 남아 있어도 zod가
   조용히 무시하므로 설정 로딩 자체는 깨지지 않지만, `distribution.enabled`인 v4 config가

@@ -1,13 +1,13 @@
 # GGJIRA MVP 구현 계획
 
-> 원문: `writing-block.md`. "Codex"는 모두 Claude Code로 읽는다. 구현 실행자는 Claude Code(Sonnet).
+> 원문: `docs/history/writing-block.md`. "Codex"는 모두 Claude Code로 읽는다. 구현 실행자는 Claude Code(Sonnet).
 > 이 문서는 다른 Claude 세션이 그대로 받아 구현할 수 있도록 작성한다. 함수/클래스 단위 설계는 구현 단계에 남긴다.
 
 ---
 
 ## Context
 
-GGJIRA는 인간과 AI Agent가 Jira를 공용 작업 인터페이스로 사용하는 경량 오케스트레이션 시스템이다. 현재 저장소는 `writing-block.md` 한 파일만 있고 git도 초기화되어 있지 않다. 이번 계획의 목표는 **Jira Issue → GGJIRA → Worker(Claude Code CLI) → 결과 → Jira 기록**의 vertical slice를 최단 경로로 완성하는 실행 가능한 로드맵을 확정하는 것이다.
+GGJIRA는 인간과 AI Agent가 Jira를 공용 작업 인터페이스로 사용하는 경량 오케스트레이션 시스템이다. 현재 저장소는 `docs/history/writing-block.md` 한 파일만 있고 git도 초기화되어 있지 않다. 이번 계획의 목표는 **Jira Issue → GGJIRA → Worker(Claude Code CLI) → 결과 → Jira 기록**의 vertical slice를 최단 경로로 완성하는 실행 가능한 로드맵을 확정하는 것이다.
 
 계획 수립 중 사용자와 확정한 결정:
 
@@ -22,7 +22,7 @@ GGJIRA는 인간과 AI Agent가 Jira를 공용 작업 인터페이스로 사용�
 
 ## 1. Repository 조사 결과
 
-- 파일: `writing-block.md` 1개. 코드/설정/CI/문서 없음. git 미초기화.
+- 파일: `docs/history/writing-block.md` 1개. 코드/설정/CI/문서 없음. git 미초기화.
 - 글로벌 `~/.claude/CLAUDE.md` 없음. 프로젝트 메모리 없음.
 - 로컬 환경: Node v20.20.0, npm 11.10, Python 3.13 + uv 0.9, **Claude Code CLI 2.1.258**. pnpm/bun/go/docker/gh/codex 없음.
 - Claude Code CLI headless 옵션 확인(`claude --help`): `-p/--print`, `--output-format json|stream-json`, `--permission-mode acceptEdits|dontAsk|bypassPermissions|...`, `--allowedTools`/`--disallowedTools`, `--tools`, `--json-schema`, `--session-id`, `--resume`, `--no-session-persistence`, `--model`, `--effort`, `--append-system-prompt`, `--add-dir`, `--worktree`, `--bare`(OAuth 미사용 → 구독 인증 시 사용 금지), `--max-budget-usd`(API key 전용). `--max-turns` 옵션은 이 버전에 없음 → 상한은 GGJIRA 쪽 timeout으로 통제.

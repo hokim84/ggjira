@@ -5,7 +5,7 @@
 MVP의 `ggjira.config.json`은 `jira.jql`, `targetRepo`, `worker` 필드를 가진 단일 프로세스
 전제의 스키마였다. 2차는 Agent Identity/Role/Machine, 여러 Jira workflow 이름(claim/done/
 needs-decision/planned), 여러 Provider(claude-code/codex), pm 전용 설정(assignee, subtask
-타입 등)을 표현해야 한다(`GGJira_Phase2_Implementation_Plan.md` §5.1, §6). §6은 또한
+타입 등)을 표현해야 한다(`docs/history/GGJira_Phase2_Implementation_Plan.md` §5.1, §6). §6은 또한
 "Jira 인증 정보가 일반 설정이나 로그에 노출되지 않도록" 인증과 일반 설정을 분리할 것을
 요구한다.
 

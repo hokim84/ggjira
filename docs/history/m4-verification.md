@@ -1,6 +1,6 @@
 # M4 검증 기록과 완료 보고 — label opt-in과 간소화된 작업 흐름
 
-작성일: 2026-10-19 · 대상: `docs/M4_WORK_BACKLOG.md`의 M4-00 ~ M4-12 · 브랜치 `feat/m4-label-opt-in`
+작성일: 2026-10-19 · 대상: `docs/history/M4_WORK_BACKLOG.md`의 M4-00 ~ M4-12 · 브랜치 `feat/m4-label-opt-in`
 
 ## 1. 기준선과 범위
 
@@ -104,7 +104,7 @@ F01~F07은 하나도 구현하지 않았다. 고위험 PR의 필수 리뷰를 Gi
 
 ## 7. M4 이후 조정: 상태 위임과 계획 우선 (ADR 0044)
 
-`docs/M4_STATUS_DELEGATION_CHANGE_REVIEW.md`의 방향을 새 모드 `workflow.mode: "delegation"`으로 구현했다.
+`docs/history/M4_STATUS_DELEGATION_CHANGE_REVIEW.md`의 방향을 새 모드 `workflow.mode: "delegation"`으로 구현했다.
 legacy·label 모드와 M4의 기록·검토·보호 기능은 그대로다(label 모드는 뒤이어 §8에서 제거했다). 세부 규칙은
 사용자가 정했다.
 

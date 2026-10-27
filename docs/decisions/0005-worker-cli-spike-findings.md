@@ -2,7 +2,7 @@
 
 ## Context
 
-`writing-block.md` 원칙 8은 구독형 Claude Code CLI를 Worker로 사용할 가능성을 명시하고, 계획 §10은
+`docs/history/writing-block.md` 원칙 8은 구독형 Claude Code CLI를 Worker로 사용할 가능성을 명시하고, 계획 §10은
 "구독 인증의 비대화형 실행", "권한 프롬프트로 인한 hang", "프로세스 제어", "stream-json 형식 안정성"을
 MVP에서 반드시 검증해야 할 위험으로 꼽는다. `src/worker/claude-code-cli.ts` 구현 전후로 실제
 `claude -p ...`를 격리된 git worktree에서 두 차례(원시 spawn 1회, `worker:run` CLI 통합 1회)

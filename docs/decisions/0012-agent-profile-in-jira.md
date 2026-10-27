@@ -60,5 +60,5 @@ issue property 읽기/쓰기가 없었다.
   `setIssueProperty`)가 늘었다 — `JiraClient`/`FakeJiraGateway` 양쪽 구현 필요(CLAUDE.md
   §디렉터리=계층 규칙과 별개로, 인터페이스를 건드릴 때 항상 따라오는 비용).
 - 실 Jira에서 issue property PUT의 정확한 상태 코드(200/201, 빈 body)는 Atlassian
-  문서로만 확인했고 실사용 검증은 아직이다 — `docs/phase3-verification.md`(수동 검증)
+  문서로만 확인했고 실사용 검증은 아직이다 — `docs/history/phase3-verification.md`(수동 검증)
   항목으로 남긴다.

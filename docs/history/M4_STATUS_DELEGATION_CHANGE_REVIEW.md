@@ -7,7 +7,7 @@
 - 사용자는 M4까지 구현을 완료했다고 밝혔다. 이번 작업은 M4 재구현이나 MVP 재설계가 아니라 구현 이후의 방향 조정이다.
 - Work의 「M4 Jira 백로그 작성」 채팅과 `M4_WORK_BACKLOG.md`를 확인했다. 이 파일은 작성 당시의 ‘구현 전 계획’ 표현을 포함하는 과거 스펙이다. 그 표현으로 현재 구현 상태를 부정하지 않는다.
 - 기존 스펙은 이력으로 보존한다. 본 문서는 그중 무엇을 대체하고 무엇을 유지할지 설명한다.
-- 최초 분석은 프로젝트 안의 `ggjira-review` 사본(`7df6a02`)을 참고했다. 이후 사용자가 최신 작업 폴더를 `F:\Project\ggjira\ggjira`로 지정하여 실제 M4 코드·ADR·완료 기록과 대조했다. 아래 §7이 최신 확인 결과이며, 처음 스펙만 보고 작성한 내용보다 우선한다.
+- 최초 분석은 프로젝트 안의 `ggjira-review` 사본(`7df6a02`)을 참고했다. 이후 최신 작업 폴더에서 실제 M4 코드·ADR·완료 기록과 대조했다. 아래 §7이 최신 확인 결과이며, 처음 스펙만 보고 작성한 내용보다 우선한다.
 
 ## 2. 이번 대화에서 확정된 방향
 
@@ -107,7 +107,6 @@ F01~F05·F07의 검토 UI·부채 증거·분석·알림은 이번 위임 방식
 
 ### 확인한 기준
 
-- 경로: `F:\Project\ggjira\ggjira`.
 - 브랜치: `feat/f01-review-queue`, HEAD: `d2b52db` (`feat(router): review queue and per-item judgments (F01)`).
 - 확인 시 추적 파일의 미커밋 변경은 없다. 미추적 `.claude/`에는 `scheduled_tasks.lock`, `settings.local.json`이 있다. 설정 내용은 분석에 필요하지 않아 읽지 않았다.
 - HEAD와 로컬 원격 추적 참조 `origin/feat/f01-review-queue` 간 ahead/behind는 0/0이다. fetch하지 않았으므로 원격 서버 현재 상태의 확인은 아니다.

@@ -2,7 +2,7 @@
 
 ## Context
 
-`GGJira_Phase2_Implementation_Plan.md` §5.2는 "별도 중앙 Scheduler 없이 Jira의 Assignee를
+`docs/history/GGJira_Phase2_Implementation_Plan.md` §5.2는 "별도 중앙 Scheduler 없이 Jira의 Assignee를
 Agent 작업 할당에 사용한다"를, §5.4는 "claim을 Jira workflow transition으로 구현하되 향후
 교체 가능한 작은 abstraction(`claimJob`)을 둔다"를 요구한다. MVP는 이미 "JQL로 후보 조회 →
 claim transition 성공 = claim 성공"이라는 형태였으므로, 2차는 이를 assignee 조건을 추가해

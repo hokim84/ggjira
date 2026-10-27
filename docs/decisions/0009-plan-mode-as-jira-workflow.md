@@ -2,7 +2,7 @@
 
 ## Context
 
-`GGJira_Phase2_Implementation_Plan.md` §5.5~§5.7은 Plan Mode를 "LLM 내부 옵션이 아니라
+`docs/history/GGJira_Phase2_Implementation_Plan.md` §5.5~§5.7은 Plan Mode를 "LLM 내부 옵션이 아니라
 GGJIRA workflow의 공식 단계"로 요구한다: PM이 계획을 만들고, 결정이 필요하면 `Needs
 Decision` 상태로 넘겨 인간의 입력을 기다린 뒤 Replan한다. 별도 Web UI 없이 Jira의 기존
 Issue/Comment/Field/Workflow만 사용한다(§5.6).

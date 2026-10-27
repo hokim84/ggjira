@@ -6,8 +6,8 @@ configVersion 7에서는 **Router**(`ggjira router serve`, 단일 서버 + SQLit
 각 머신)에 배정한다. 워커는 Router에만 HTTPS long polling으로 연결하며 Jira를 직접 호출하지 않는다.
 Jira Assignee는 인간 책임자로만 남는다. PM(계획) 실행도 같은 워커가 하고 계획만 반환하며, Jira에
 하위 이슈를 만드는 것은 Router다. 설계와 진행 상황은 `docs/router-service-implementation-plan.md`와
-`docs/decisions/0018`~`0022`에 있다. `PLAN.md`·`GGJira_Phase2_Implementation_Plan.md`·
-`writing-block.md`는 v4 이전 이력이다.
+`docs/decisions/0018`~`0022`에 있다. `docs/history/`는 v4 이전 계획과
+지난 작업 기록이다.
 
 ## 디렉터리 = 계층 규칙
 

@@ -2,7 +2,7 @@
 
 ## Context
 
-`GGJira_Phase2_Implementation_Plan.md`가 요구하는 "PM이 계획을 세우면 사람이 검토·승인한
+`docs/history/GGJira_Phase2_Implementation_Plan.md`가 요구하는 "PM이 계획을 세우면 사람이 검토·승인한
 뒤에만 Implement Agent가 실행하고, 실행 Agent도 사람이 지정한다"는 흐름을
 (`feat: add human-approved PM planning and Jira agent distribution`, 2026-09-17) 구현했다.
 이 커밋은 코드와 테스트를 함께 들여왔지만 설계를 기록한 ADR이 없었고, 뒤이은 검토에서 다음
@@ -86,5 +86,5 @@ Workspace Configuration 이슈의 새 "Distribution" 섹션에도 함께 기록�
   수동 확인이 필요하다 — Jira Cloud의 커스텀 필드 컨텍스트/옵션 API를 넣으면 해결되지만,
   이번 수정 범위에서는 비용 대비 이득이 낮다고 판단해 미룬다.
 - 이 ADR이 다루는 automated 테스트는 전부 `FakeJiraGateway` 기반이다(CLAUDE.md §4). 실제
-  Jira 프로젝트에서의 재계획→승인→배포 전체 흐름 수동 검증은 `docs/phase3-verification.md`에
+  Jira 프로젝트에서의 재계획→승인→배포 전체 흐름 수동 검증은 `docs/history/phase3-verification.md`에
   남아 있는 대기 항목을 따른다.

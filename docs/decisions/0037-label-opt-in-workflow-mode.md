@@ -7,7 +7,7 @@ ADR 0015 이후 AI 참여는 AI 전용 Jira 상태로 표현했다. 요청(`AI �
 전이 규칙을 따로 배워야 했다. 계획 요청과 구현 요청을 사람이 상태로 골라야 했고, Acceptance
 Criteria·Verification이 없는 구현 요청은 보류되어(ADR 0034) 사람이 절을 직접 써야 했다.
 
-`docs/M4_WORK_BACKLOG.md`는 이를 "opt-in 라벨 + 할 일/진행/검토/완료"로 바꾸자고 한다. 단, 라벨은 참여
+`docs/history/M4_WORK_BACKLOG.md`는 이를 "opt-in 라벨 + 할 일/진행/검토/완료"로 바꾸자고 한다. 단, 라벨은 참여
 의사이고, 승인·입력 해시·준비 검사·임대 같은 기존 안전장치는 그대로 유지해야 한다.
 
 ## Decision

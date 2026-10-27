@@ -75,22 +75,18 @@ AI가 "완료했다"고 보고해도 GGJIRA는 그 말만 믿지 않는다.
 
 ### 요구 사항
 
-- Node.js 24(`.nvmrc`), git
 - Router 서버: Docker Engine + Compose, HTTPS 도메인(Caddy가 인증서 발급)
 - Jira Cloud: Router용 계정 1개와 API token
   - 권한: Browse, Transition Issues, Add Comments, Edit Issues, Create Issues
   - 관리자 웹훅을 만들 수 있어야 한다.
   - AI 상태를 자동으로 추가하려면 워크플로우 편집 권한도 필요하다.
 - Worker 머신
+  - Node.js 24 이상, git
   - 로그인된 [Claude Code CLI](https://claude.com/claude-code) 또는 [Codex CLI](https://github.com/openai/codex).
     Codex provider는 실제 CLI로 아직 검증하지 않았다(ADR 0010).
   - 작업할 저장소
 
-```bash
-git clone https://github.com/hokim84/ggjira.git
-cd ggjira
-nvm use && npm install
-```
+Router 이미지와 `ggjira` npm 패키지는 같은 버전으로 함께 릴리스된다([Releases](https://github.com/hokim84/ggjira/releases)).
 
 ### 1. Router 띄우기
 
@@ -98,19 +94,24 @@ nvm use && npm install
 일회용 setup token은 컨테이너 로그에 찍힌다(runbook §20). 마법사는 Jira에 빠진 AI 상태·전이도 안내하며 구성한다.
 
 ```bash
+git clone https://github.com/hokim84/ggjira.git && cd ggjira      # compose 파일과 Caddy 설정
 mkdir -p deploy/config && sudo chown 1000:1000 deploy/config
 export GGJIRA_DOMAIN=router.example.com
-docker compose up -d --build
+docker compose up -d                                               # 릴리스 이미지를 받아 실행
+docker compose logs router | grep -A1 "setup token"                # 웹 셋업 token
 docker compose exec router node dist/cli.js router check --issue PROJ-1   # 상태·전이 확인
 ```
+
+`GGJIRA_VERSION=0.2.0`처럼 이미지 버전을 고정할 수 있다. Cloudflare Tunnel로 포트를 열지 않고 띄우는
+방법은 runbook §16-1에 있다.
 
 설정을 손으로 쓰려면 `deploy/router.config.example.json`과 `deploy/router.env.example`을
 `deploy/config/`에 복사해 채운다. Jira 웹훅은 `https://<도메인>/webhooks/jira`로 만들고, secret은
 `GGJIRA_WEBHOOK_SECRET`와 같게 둔다(runbook §16).
 
-Docker 없이 띄우는 방법:
-- Windows: `run-all.bat`(runbook §33)
-- 그 밖: `ggjira router serve`를 실행하고 `http://127.0.0.1:8787/ui/`를 연다. 개발용이며, 운영에서는 HTTPS 뒤에 둔다.
+Docker 없이 한 대에서 시험해 보려면 `npm install -g ggjira` 뒤 `ggjira router serve`를 실행하고
+`http://127.0.0.1:8787/ui/`를 연다. 운영에서는 HTTPS 뒤에 둔다. Windows에서는 checkout의 `run-all.bat`가
+Router와 Worker를 함께 띄운다(runbook §33).
 
 ### 2. Worker 붙이기
 
@@ -118,11 +119,10 @@ Docker 없이 띄우는 방법:
 2. 워커 머신에서 실행하고 묻는 대로 답한다(Router 주소, AI CLI, 페어링 코드, 저장소 폴더).
 
 ```bash
-npm run dev -- worker start      # 처음에는 설정을 묻고, 이후에는 바로 실행
-npm run dev -- worker check      # 연결·저장소·검증 명령 점검
+npm install -g ggjira            # Router와 같은 버전
+ggjira worker start              # 처음에는 설정을 묻고, 이후에는 바로 실행
+ggjira worker check              # 연결·저장소·검증 명령 점검
 ```
-
-`npm run build && npm link`로 설치하면 어디서든 `ggjira worker start`로 쓸 수 있다.
 
 워커의 설정·인증 파일·clone·작업 폴더·로그는 모두 **워커 홈** 한 곳에 둔다. 기본값은
 `%LOCALAPPDATA%\ggjira\worker`(Windows), `~/.ggjira/worker`(그 밖)이고 `--home`이나 `GGJIRA_WORKER_HOME`으로 바꾼다.
@@ -161,7 +161,8 @@ ggjira worker worktrees prune [--older-than-days 7] [--dry-run]
 실행 중 연결이 끊겨 결과가 불확실한 작업은 자동으로 다시 실행하지 않는다(`recovery_required`). Router가 Jira에
 안내 댓글을 달고, 워커가 멈춘 것을 확인한 뒤 담당자가 "재시도" 댓글을 남기면 새로 실행한다(ADR 0062).
 관리자는 `jobs resolve`(닫기)나 `jobs retry`(새로 실행)를 쓸 수도 있다.
-업그레이드할 때는 Router와 Worker를 함께 갱신한다.
+업그레이드할 때는 Router(`docker compose pull && docker compose up -d`)와 Worker(`npm install -g ggjira@<버전>`)를
+같은 버전으로 함께 갱신한다.
 
 ## 알려진 제한
 
@@ -176,11 +177,18 @@ ggjira worker worktrees prune [--older-than-days 7] [--dry-run]
 - 운영·장애 대응: [docs/runbook.md](./docs/runbook.md)
 - 설계 결정: [docs/decisions/](./docs/decisions/)
 - 작업 규칙: [CLAUDE.md](./CLAUDE.md). Codex 등 다른 에이전트는 [AGENTS.md](./AGENTS.md)를 본다.
+- 기여·릴리스: [CONTRIBUTING.md](./CONTRIBUTING.md), 보안 신고: [SECURITY.md](./SECURITY.md)
+- 지난 계획과 작업 기록: [docs/history/](./docs/history/)
 
 ```bash
+git clone https://github.com/hokim84/ggjira.git && cd ggjira && npm install
 npm run check          # typecheck + lint + format:check + test (CI와 동일)
 npm run dev -- --help  # CLI 실행
 docker compose -f docker-compose.test.yml run --rm --build check   # Linux에서 전체 검사
 ```
 
 무엇을 바꿨을 때 어떤 테스트를 돌릴지는 runbook §46에 있다. Windows에서 테스트가 멈추면 runbook §13을 본다.
+
+## 라이선스
+
+[MIT](./LICENSE)
