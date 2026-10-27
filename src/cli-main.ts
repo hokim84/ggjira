@@ -3,7 +3,7 @@ import { ROUTER_USAGE, runRouterCli } from "./router/cli.js";
 import { GGJIRA_VERSION } from "./version.js";
 import { runWorkerCli, WORKER_USAGE } from "./worker-runtime/cli.js";
 
-const USAGE = `ggjira ${GGJIRA_VERSION} — Jira-driven Router and Workers (configVersion 5)
+const USAGE = `ggjira ${GGJIRA_VERSION} — Jira-driven Router and Workers
 
 ${ROUTER_USAGE}
 

@@ -25,7 +25,7 @@ import { formatWorkerProgress } from "./progress.js";
 export const WORKER_USAGE = `ggjira worker <command>
 
   Every command works on one worker home: --home <dir>, else GGJIRA_WORKER_HOME, else
-  %LOCALAPPDATA%\ggjira\worker (Windows) or ~/.ggjira/worker. It holds worker.config.json, the
+  %LOCALAPPDATA%\\ggjira\\worker (Windows) or ~/.ggjira/worker. It holds worker.config.json, the
   credential, clones, job worktrees, logs and spools, and must not be inside another project.
 
   start [--home <dir>]             run the worker; the first time it asks (in the terminal) for

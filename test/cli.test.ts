@@ -54,10 +54,13 @@ describe("ggjira CLI", () => {
     expect(await main(["--help"], help)).toBe(0);
     expect(help.stdout.join("\n")).toContain("ggjira router <command>");
     expect(help.stdout.join("\n")).toContain("ggjira worker <command>");
+    expect(help.stdout.join("\n")).toContain("%LOCALAPPDATA%\\ggjira\\worker (Windows)");
 
     const version = captureIo();
     expect(await main(["--version"], version)).toBe(0);
-    expect(version.stdout).toEqual([expect.stringMatching(/^\d+\.\d+\.\d+$/)]);
+    // The release workflow publishes package.json's version; the CLI must report the same one.
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8"));
+    expect(version.stdout).toEqual([pkg.version]);
   });
 
   it("router setup writes a valid starter config, prints fresh secrets, and won't overwrite", async () => {

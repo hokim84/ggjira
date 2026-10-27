@@ -246,7 +246,7 @@ async function check(parsed: ParsedArgs, io: CliIo): Promise<number> {
   const config = loadRouterConfig(configPath(parsed, io));
   items.push({
     level: "ok",
-    message: `config ${configPath(parsed, io)} is valid (configVersion 5)`,
+    message: `config ${configPath(parsed, io)} is valid (configVersion ${config.configVersion})`,
   });
   let secrets: RouterEnvSecrets | undefined;
   try {

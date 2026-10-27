@@ -2,6 +2,14 @@
   "name": "ggjira",
   "version": "0.1.0",
   "description": "Lightweight Jira-based orchestration for human + AI agent work",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hokim84/ggjira.git"
+  },
+  "homepage": "https://github.com/hokim84/ggjira#readme",
+  "bugs": "https://github.com/hokim84/ggjira/issues",
+  "keywords": ["jira", "ai", "agent", "orchestration", "claude-code", "codex"],
   "type": "module",
   "private": true,
   "bin": {
