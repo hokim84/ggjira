@@ -20,6 +20,15 @@ const label = (value) =>
     unassessable: "평가 불가",
   })[value] ?? value;
 const details = (title, ...body) => h("details", {}, h("summary", {}, title), body);
+const pad = (value) => String(value).padStart(2, "0");
+/** A commit's time in the viewer's time zone: "2026-10-28 01:17", or "10-28 01:17" when short. */
+const when = (c, short = false) => {
+  const d = new Date(c.committed_at);
+  if (Number.isNaN(d.getTime())) return c.committed_at ?? "";
+  const day = `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return short ? day : `${d.getFullYear()}-${day}`;
+};
+const AXIS_TICKS = 6;
 
 function graph(commits, selected, onSelect) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -96,7 +105,7 @@ function graph(commits, selected, onSelect) {
       });
       clickable(dot, c);
       const title = document.createElementNS(svg.namespaceURI, "title");
-      title.textContent = `${c.sha.slice(0, 7)} ${c.title}: ${n(v)}${c.confidence === "low" ? " · 낮은 신뢰도" : ""}`;
+      title.textContent = `${when(c)} · ${c.sha.slice(0, 7)} ${c.title}: ${n(v)}${c.confidence === "low" ? " · 낮은 신뢰도" : ""}`;
       dot.append(title);
       previous = { x: x(i), y: y(v) };
     });
@@ -120,16 +129,36 @@ function graph(commits, selected, onSelect) {
         c,
       );
   });
-  add(
-    "text",
-    { x: 65, y: 332, fill: "currentColor", "font-size": 12 },
-    commits[0]?.sha.slice(0, 7) ?? "비교 시작 커밋",
-  );
-  add(
-    "text",
-    { x: 980, y: 332, fill: "currentColor", "font-size": 12, "text-anchor": "end" },
-    commits.at(-1)?.sha.slice(0, 7) ?? "",
-  );
+  // Commit times under evenly spaced commits; the first and last carry the year.
+  const tickCount = Math.min(AXIS_TICKS, commits.length);
+  const ticks = [
+    ...new Set(
+      Array.from({ length: tickCount }, (_, k) =>
+        Math.round((k * (commits.length - 1)) / Math.max(1, tickCount - 1)),
+      ),
+    ),
+  ];
+  for (const i of ticks) {
+    const edge = i === 0 || i === commits.length - 1;
+    add(
+      "text",
+      {
+        x: x(i),
+        y: 332,
+        fill: "currentColor",
+        "font-size": 12,
+        "text-anchor":
+          commits.length > 1 && i === 0
+            ? "start"
+            : commits.length > 1 && i === commits.length - 1
+              ? "end"
+              : "middle",
+      },
+      when(commits[i], !edge),
+    );
+  }
+  if (!commits.length)
+    add("text", { x: 65, y: 332, fill: "currentColor", "font-size": 12 }, "비교 시작 커밋");
   return svg;
 }
 
@@ -356,7 +385,7 @@ export async function renderFci(root) {
           {},
           `${label(c.status)} · 구조 부채 지수 ${n(c.fci)} · 직전 대비 ${c.delta == null ? "—" : `${c.delta > 0 ? "+" : ""}${n(c.delta)}`}`,
         ),
-        h("p", { class: "muted" }, c.committed_at),
+        h("p", { class: "muted" }, when(c)),
         c.error ? notice("error", c.error) : null,
       );
       if (score) {
@@ -593,7 +622,7 @@ export async function renderFci(root) {
         h(
           "button",
           { class: "btn", onclick: () => select(c) },
-          `${c.sha.slice(0, 7)} ${c.title} · ${label(c.status)}`,
+          `${when(c)} · ${c.sha.slice(0, 7)} ${c.title} · ${label(c.status)}`,
         ),
       ),
     );
