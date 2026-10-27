@@ -11,14 +11,7 @@ import { requirementDescription } from "../pm/plan-render.js";
 import { computeInputHash } from "./approval.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import { getActivePlanDeployment, getPlanReview, getReviewedPlan } from "./db/plan-delegation.js";
-import { resolveAttention } from "./db/attention.js";
-import { appendAudit } from "./db/audit.js";
-import {
-  appendReviewRecord,
-  judgmentRecordAction,
-  latestJudgment,
-  listReviewTargets,
-} from "./db/review-targets.js";
+import { judgmentRecordAction, latestJudgment, listReviewTargets } from "./db/review-targets.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import { integrationEvidence } from "./lifecycle.js";
 import { latestPlanningRequest, planningFingerprint } from "./planning-requests.js";
@@ -108,73 +101,21 @@ export function humanConfirmedResult(
 }
 
 /**
- * A child result that counts as done (ADR 0061): verified by its own checks, or waiting for a
- * human check and moved by a person to `implementationCompleteStatus` or Done. Router never moves
- * a waiting child itself except for a review-screen confirm, so that status is the person's answer.
- * The first time Router sees such a move it records it as a confirm.
+ * A child result that counts as done: verified by its own checks, or completed with criteria only
+ * a person can check (ADR 0066) and still in `implementationCompleteStatus` or Done. Router moves
+ * such a child there itself, so the status is not a person's confirmation.
  */
 export function acceptedImplementation(
-  db: RouterDatabase,
   workspace: WorkspaceConfig,
   issue: { key: string; statusName: string },
-  resultId: string,
   result: JobResult,
 ): boolean {
   if (verifiedImplementation(result)) return true;
   const { implementationCompleteStatus, doneStatus } = workspace.workflow;
-  if (!awaitingHumanCheck(result)) return false;
-  if (issue.statusName !== implementationCompleteStatus && issue.statusName !== doneStatus)
-    return false;
-  recordStatusConfirmation(db, issue.key, resultId, issue.statusName);
-  return true;
-}
-
-/** Records a person's status move as the confirm of the result it accepted (ADR 0061), once. Jira's
- *  own issue history says who moved it. */
-function recordStatusConfirmation(
-  db: RouterDatabase,
-  issueKey: string,
-  resultId: string,
-  statusName: string,
-): void {
-  if (humanConfirmedResult(db, issueKey, resultId)) return;
-  const row = db.prepare("SELECT attempt_id FROM results WHERE id=?").get(resultId) as
-    | { attempt_id: string }
-    | undefined;
-  const target = listReviewTargets(db, issueKey)[0];
-  if (!row || target?.attemptId !== row.attempt_id || target.supersededBy !== null) return;
-  const at = new Date().toISOString();
-  db.transaction(() => {
-    appendReviewRecord(db, {
-      targetId: target.id,
-      issueKey,
-      action: judgmentRecordAction("confirm"),
-      actor: "jira",
-      authentication: "jira-status",
-      headSha: target.headSha,
-      outcome: "matched",
-      detail: { attemptId: target.attemptId, commitState: target.commitState, status: statusName },
-      at,
-    });
-    resolveAttention(db, {
-      issueKey,
-      kinds: ["review_required"],
-      resolution: `moved to "${statusName}" in Jira`,
-      now: at,
-    });
-    appendAudit(db, {
-      at,
-      actor: "jira",
-      action: "review.judgment.confirm",
-      subject: issueKey,
-      detail: {
-        targetId: target.id,
-        attemptId: target.attemptId,
-        via: "status",
-        status: statusName,
-      },
-    });
-  })();
+  return (
+    awaitingHumanCheck(result) &&
+    (issue.statusName === implementationCompleteStatus || issue.statusName === doneStatus)
+  );
 }
 
 export async function checkContext(

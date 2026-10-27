@@ -81,7 +81,7 @@ export async function assemblyContext(
       return;
     const result = JSON.parse(latest.payload) as JobResult;
     const noChange = verifiedNoChange(result);
-    if (!noChange && !acceptedImplementation(db, workspace, child, latest.id, result)) return;
+    if (!noChange && !acceptedImplementation(workspace, child, result)) return;
     const integrated = integrationEvidence(db, child.key, baseBranch);
     if (
       !result.git?.baseSha ||
@@ -200,7 +200,7 @@ export async function publishedImplementation(
     return;
   const result = JSON.parse(latest.payload) as JobResult;
   return verifiedNoChange(result) ||
-    (acceptedImplementation(db, workspace, issue, latest.id, result) &&
+    (acceptedImplementation(workspace, issue, result) &&
       result.git?.headSha &&
       result.artifacts?.some((a) => a.startsWith("pushed:")))
     ? result

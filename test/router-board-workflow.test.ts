@@ -310,7 +310,7 @@ describe("board workflow", () => {
     expect(await status()).toBe(w.implementationCompleteStatus);
     expect(await status("KAN-1002")).toBe(w.implementationCompleteStatus);
   });
-  it("keeps a child with unverified checks waiting until a person confirms it (ADR 0061)", async () => {
+  it("completes a child with unverified checks and keeps them for a person (ADR 0066)", async () => {
     await publish();
     await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
     await finish(await start(), {
@@ -346,14 +346,13 @@ describe("board workflow", () => {
         ],
       },
     });
-    // Kept on the remote and in progress: not failed, not done, nothing to aggregate yet.
-    expect(await status("KAN-1001")).toBe(w.inProgressStatus);
+    // Kept on the remote and completed like a verified child, without the failure label.
+    expect(await status("KAN-1001")).toBe(w.implementationCompleteStatus);
     expect((await router.jira.getIssue("KAN-1001")).labels).not.toContain("ggjira-failed");
     const waiting = router.jira.comments.filter((c) => c.key === "KAN-1001").at(-1)?.body;
-    expect(waiting).toContain("사람 확인 대기");
+    expect(waiting).toContain("사람 확인 필요");
     expect(waiting).toContain("- The panel scrolls on screen");
-    await router.reconcile();
-    expect((await router.next(worker, `waiting-${++serial}`)).statusCode).toBe(204);
+    expect(waiting).toContain(`이슈를 "${w.inProgressStatus}"(으)로 옮겨`);
 
     const humanCheck = async () =>
       (await router.adminCall("GET", "/issues/KAN-1001")).json().delegation.humanCheck;
@@ -365,10 +364,11 @@ describe("board workflow", () => {
         action,
         ...(note ? { note } : {}),
       });
-    // A hold records an opinion and completes nothing.
+    // A hold records an opinion and moves nothing.
     expect((await judge("hold", "Checking the layout first")).statusCode).toBe(201);
     await process();
-    expect(await status("KAN-1001")).toBe(w.inProgressStatus);
+    expect(await status("KAN-1001")).toBe(w.implementationCompleteStatus);
+    expect(await humanCheck()).toEqual(["The panel scrolls on screen"]);
 
     expect((await judge("confirm")).statusCode).toBe(201);
     await process();
@@ -416,33 +416,22 @@ describe("board workflow", () => {
     },
   });
 
-  it("takes a person's move to implementation complete in Jira as the confirmation (ADR 0061)", async () => {
+  it("runs dependent children and the parent PR without waiting for a person (ADR 0066)", async () => {
     await publish(true);
     await router.jira.transitionIssueToStatus("KAN-1002", w.inProgressStatus);
     await router.jira.transitionIssueToStatus("KAN-1001", w.inProgressStatus);
     await finish(await start(), awaitingCheck(2));
-    expect(await status("KAN-1001")).toBe(w.inProgressStatus);
-    expect(router.jira.comments.filter((c) => c.key === "KAN-1001").at(-1)?.body).toContain(
-      `이슈를 "${w.implementationCompleteStatus}"(으)로 옮기세요`,
-    );
-    // The dependent child waits while the result waits for a person.
-    await router.reconcile();
-    expect((await router.next(worker, `waiting-${++serial}`)).statusCode).toBe(204);
+    expect(await status("KAN-1001")).toBe(w.implementationCompleteStatus);
 
-    // The person checks it and moves the card; no Router UI involved.
-    await router.jira.transitionIssueToStatus("KAN-1001", w.implementationCompleteStatus);
     const second = await start();
     expect(second.issueSnapshot.key).toBe("KAN-1002");
     expect(second.integration?.resultCommits).toContain(sha(2));
+    // Router's own move is not a person's confirmation.
     const target = listReviewTargets(router.db, "KAN-1001")[0]?.id as string;
-    expect(latestJudgment(router.db, target)).toMatchObject({
-      action: "judgment.confirm",
-      actor: "jira",
-      authentication: "jira-status",
-    });
+    expect(latestJudgment(router.db, target)).toBeUndefined();
 
     await finish(second, { ...noChange, ...awaitingCheck(3, 2) });
-    await router.jira.transitionIssueToStatus("KAN-1002", w.implementationCompleteStatus);
+    expect(await status("KAN-1002")).toBe(w.implementationCompleteStatus);
     const aggregate = await start();
     expect(aggregate.kind).toBe("assemble_pr");
     expect(aggregate.assembly?.children.map((c) => c.headSha)).toEqual([sha(2), sha(3)]);

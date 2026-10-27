@@ -66,12 +66,12 @@ export interface CommentText {
     reason: (note: string) => string;
     holdNothing: string;
     reworkNext: (hint: string) => string;
-    /** ADR 0061: a confirm that completes a child waiting on unverified checks. */
+    /** ADR 0061, 0066: a confirm of a child completed with unverified checks. */
     childConfirmed: (subject: string, completeStatus: string) => string;
   };
-  /** ADR 0061: a child result kept on the remote that waits for a human to confirm its checks. */
+  /** ADR 0066: a child completed with acceptance criteria only a person can check. */
   humanCheck: {
-    waiting: (checks: string[], completeStatus: string) => string;
+    waiting: (checks: string[], completeStatus: string, inProgressStatus: string) => string;
   };
   result: {
     completed: string;
@@ -184,14 +184,14 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       holdNothing: "아무것도 승인하거나 옮기지 않았습니다. 결과는 계속 검토를 기다립니다.",
       reworkNext: (hint) => `GGJIRA가 스스로 다시 실행하지 않습니다. 다음: ${hint}.`,
       childConfirmed: (subject, completeStatus) =>
-        `사람 확인 완료: ${subject}. AI가 확인하지 못한 항목을 사람이 확인했으므로 "${completeStatus}"(으)로 옮깁니다. 나머지 자식이 끝나면 부모 통합 PR을 만듭니다.`,
+        `사람 확인 완료: ${subject}. AI가 확인하지 못한 항목을 사람이 확인했습니다. 이슈는 "${completeStatus}"에 둡니다.`,
     },
     humanCheck: {
-      waiting: (checks, completeStatus) =>
+      waiting: (checks, completeStatus, inProgressStatus) =>
         [
-          "사람 확인 대기: 구현 결과 커밋은 원격에 보존했지만 AI가 다음 완료 조건을 확인하지 못했습니다.",
+          `사람 확인 필요: 구현 결과 커밋을 원격에 보존하고 "${completeStatus}"(으)로 옮겼지만, AI가 다음 완료 조건을 확인하지 못했습니다.`,
           ...checks.map((check) => `- ${check}`),
-          `다음: 직접 확인한 뒤 이슈를 "${completeStatus}"(으)로 옮기세요. 그 이동이 확인으로 기록되고, 나머지 하위 작업이 끝나면 부모 PR을 만듭니다. 문제가 있으면 옮기지 말고 설명을 고쳐 다시 요청하세요.`,
+          `다음: 부모 PR을 병합하기 전에 직접 확인하고 Router 검토 화면에서 확인을 기록하세요. 문제가 있으면 설명을 고친 뒤 이슈를 "${inProgressStatus}"(으)로 옮겨 다시 요청하세요.`,
         ].join("\n"),
     },
     result: {
@@ -377,14 +377,14 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       holdNothing: "Nothing was approved or moved. The result stays waiting for review.",
       reworkNext: (hint) => `GGJIRA does not rerun it by itself. Next: ${hint}.`,
       childConfirmed: (subject, completeStatus) =>
-        `Confirmed by a person: ${subject}. A person checked what the agent could not, so the issue moves to "${completeStatus}". The parent PR is built once the other children finish.`,
+        `Confirmed by a person: ${subject}. A person checked what the agent could not. The issue stays in "${completeStatus}".`,
     },
     humanCheck: {
-      waiting: (checks, completeStatus) =>
+      waiting: (checks, completeStatus, inProgressStatus) =>
         [
-          "Waiting for a person: the result commit is kept on the remote, but the agent could not verify these acceptance criteria.",
+          `Needs a person: the result commit is kept on the remote and the issue moved to "${completeStatus}", but the agent could not verify these acceptance criteria.`,
           ...checks.map((check) => `- ${check}`),
-          `Next: check them yourself, then move the issue to "${completeStatus}". The move is recorded as your confirmation, and the parent PR is built once the other children finish. If something is wrong, do not move it; edit the description and request again.`,
+          `Next: check them yourself before merging the parent PR and record the confirmation on Router's review screen. If something is wrong, edit the description and move the issue to "${inProgressStatus}" to request it again.`,
         ].join("\n"),
     },
     result: {

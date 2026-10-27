@@ -184,7 +184,7 @@ function delegationRows(view) {
 
 function nextAction(d, job) {
   if (d.humanCheck?.length)
-    return `AI가 확인하지 못한 완료 조건이 있습니다: ${d.humanCheck.join(" / ")}. 직접 확인한 뒤 Jira에서 이슈를 "${d.statuses.implementationComplete}"(으)로 옮기세요(검토 화면의 "결과 확인 기록"도 같습니다).`;
+    return `AI가 확인하지 못한 완료 조건이 있습니다: ${d.humanCheck.join(" / ")}. 부모 PR을 병합하기 전에 직접 확인하고 검토 화면에서 "결과 확인 기록"을 남기세요. 문제가 있으면 설명을 고친 뒤 Jira에서 이슈를 "${d.statuses.inProgress}"(으)로 옮기세요.`;
   if (d.stage === "done")
     return "완료된 작업입니다. 필요한 경우 실행 기록과 기술부채 추이를 참고하세요.";
   if (job?.kind === "integration_check" && ["queued", "leased", "running"].includes(job.state))

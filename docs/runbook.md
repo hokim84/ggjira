@@ -657,8 +657,8 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 - 판단: `ggjira router reviews judge <targetId> confirm|hold|rework [--note "사유"]`. 보류·재작업 요청은 사유가
   필요하고 Jira에 댓글 하나가 달린다. 확인은 Router에만 남고 `review_required` 주의 항목을 해소한다.
 - 판단은 아무것도 실행하지 않는다. 재작업 요청 뒤에도 상태 기반으로 다시 요청해야 새 실행이 시작된다. 확인했다고 완료로 가지 않는다.
-  예외: "사람 확인 대기" 댓글이 달린 하위 작업의 결과를 확인하면 그 하위 작업을 구현 완료로 옮긴다(§45, ADR 0061).
-  Jira에서 그 이슈를 직접 구현 완료로 옮겨도 같은 확인으로 기록된다.
+  예외: "사람 확인 필요" 댓글이 달린 하위 작업의 결과를 확인하면 확인 댓글을 남기고 이슈 화면의 미확인 목록을
+  지운다(§45, ADR 0061·0066). 그 하위 작업은 이미 Router가 구현 완료로 옮겼으므로 Jira 상태 이동은 확인이 아니다.
 - 판단자 이름은 웹 UI에 적은 이름 또는 CLI의 OS 사용자 이름이다(`admin:<이름>`, `admin-token`). 공유 token 뒤의
   자기 신고다.
 - 409 `stale_review_target`: 그 사이 같은 이슈의 새 결과가 나왔거나(`currentTargetId`가 새 대상), 이슈가 다시
@@ -801,7 +801,7 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 | `GGJ-204` | AI CLI가 오류를 내고 끝남(원인 문구 포함) | 문구대로 고침. 원문은 로그 파일 |
 | `GGJ-205` | AI CLI가 종료 코드만 남기고 끝남 | 로그 파일과 워커 로그 `<워커 홈>/logs/<jobId>-<attemptId>.jsonl` 확인 |
 | `GGJ-301` | 워커 검증 명령(`validateCommand`) 실패 | 로그 파일의 `Validation:`·`Acceptance Checks:` 확인. 명령이 job 시간을 넘기면 `GGJ-105`(§45) |
-| `GGJ-302` | 완료 조건 검증 실패(하위 작업 포함) | 계획의 완료 조건이나 구현을 고쳐 다시 요청. AI가 확인하지 못한 항목만 있으면 실패가 아니라 사람 확인 대기다(§45) |
+| `GGJ-302` | 완료 조건 검증 실패(하위 작업 포함) | 계획의 완료 조건이나 구현을 고쳐 다시 요청. AI가 확인하지 못한 항목만 있으면 실패가 아니라 구현 완료 + 사람 확인 필요다(§45) |
 | `GGJ-303` | AI가 검증 근거 없이 완료 보고 | 다시 요청. 반복되면 계획의 Verification을 구체적으로 |
 | `GGJ-401` | 계획을 적용할 수 없음(작업 수 초과, 완료 조건 없음 등) | 원인 문구대로 요청을 고쳐 다시 계획 |
 | `GGJ-402` | 계획 결과에 계획 없음 | 다시 계획 요청 |
@@ -1028,12 +1028,13 @@ Jira 댓글로 전달된다. 실행·커밋·과거 판단 기록과 PR 병합 S
   Code)는 `코드 확인`을 써야 한다. 표시가 없으면 업그레이드 전 결과이거나 AI가 알 수 없는 값을 보냈다. 방식은
   집계(`router reviews`, 작업 상세)에만 쓰이고 검토 분류를 바꾸지 않는다.
 - 기본 구현 지침에 이 규칙이 들어 있다. 업그레이드 전에 발급된 attempt는 이전 지침을 그대로 쓴다.
-- **하위 작업에 "사람 확인 대기" 댓글**(ADR 0061): AI가 실패한 검증은 없지만 일부 완료 조건을 확인하지 못했다고
-  보고했다(예: 화면을 띄울 수 없는 워커의 GUI 조건). 결과 커밋은 원격 브랜치에 보존됐고 이슈는 작업 중에 머문다.
-  댓글에 적힌 조건을 직접 확인한 뒤 **Jira에서 이슈를 구현 완료로 옮긴다.** Router가 그 이동을 확인으로 기록하고
-  (검토 기록 actor `jira`), 이 하위 작업에 의존하는 작업과 부모 PR이 진행된다. 웹 UI 검토 화면의 "결과 확인 기록"도
-  같은 일을 한다. 실패한 결과나 승인 뒤 내용이 바뀐 결과는 손으로 옮겨도 완료로 치지 않는다. 문제가 있으면 옮기지
-  말고 설명을 고쳐 다시 요청한다. 다시 실행해도 같은 조건은 다시 미확인으로 나온다.
+- **하위 작업에 "사람 확인 필요" 댓글**(ADR 0061·0066): AI가 실패한 검증은 없지만 일부 완료 조건을 확인하지
+  못했다고 보고했다(예: 화면을 띄울 수 없는 워커의 GUI 조건). 결과 커밋은 원격 브랜치에 보존됐고, Router가 검증된
+  하위 작업처럼 이슈를 구현 완료로 옮겼다. 이 하위 작업에 의존하는 작업과 부모 PR은 기다리지 않고 진행된다.
+  댓글에 적힌 조건은 **부모 PR을 병합하기 전에 직접 확인**하고 웹 UI 검토 화면의 "결과 확인 기록"(또는
+  `router reviews judge <targetId> confirm`)으로 남긴다. 그 전까지 `review_required` 주의 항목과 이슈 화면의 미확인
+  목록이 남는다. 문제가 있으면 설명을 고친 뒤 이슈를 작업 중으로 옮겨 다시 요청한다(이미 만든 부모 PR은 철회된다).
+  실패한 결과나 승인 뒤 내용이 바뀐 결과는 손으로 구현 완료로 옮겨도 완료로 치지 않는다.
 
 ## 46. GGJIRA 자체 변경 검증 절차
 
@@ -1058,7 +1059,7 @@ GGJIRA 코드를 바꾼 사람·AI 에이전트(Claude Code, Codex 등)가 완�
 | 워커 실행·검증 명령 | `worker-scope`, `worker-push`, `worker-runtime-runner` | 단계 순서(commit·validate·push), 실패 시 push 없음 |
 | 통합 검증 | `worker-quality-review`, `router-board-workflow` | 고정 SHA 검증, 상태 이동 |
 | 워커 홈·설정·`worker start` | `worker-runtime-config`, `worker-start`, `worker-runtime-ops`, `cli` | 모든 경로가 홈 아래, GGJIRA 폴더 안 홈 거부 |
-| 자식 완료·검토 판단·복구 | `router-board-workflow`, `router-review-queue`, `router-admin-api` | 사람 확인 대기 → Jira 이동 → 의존 작업·부모 PR, `recovery_required` → "재시도" |
+| 자식 완료·검토 판단·복구 | `router-board-workflow`, `router-review-queue`, `router-admin-api` | 미확인 자식 자동 완료 → 의존 작업·부모 PR → 검토 화면 확인, `recovery_required` → "재시도" |
 | 워커 계층 경계 | `worker-runtime-no-jira` | `src/worker-runtime`이 Jira·Router DB를 import하지 않음 |
 | Router + Worker 전체 | `router-integration`, `router-daemon` | loopback HTTP로 계획→승인→구현→보고가 한 번씩 |
 

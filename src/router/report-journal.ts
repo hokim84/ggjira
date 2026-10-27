@@ -1004,7 +1004,8 @@ function resultSteps(input: ResultJournalInput): NewReportStep[] {
     { kind: "comment", params: { body: successComment(input) } },
     { kind: "remove-label", params: { label: input.config.reporting.failureLabel } },
     ...(child && awaitingHumanCheck(input.result)
-      ? // ADR 0061: kept in progress, without the failure label, until a person confirms.
+      ? // ADR 0066: completed like a verified child; the unchecked criteria stay for a person.
+        // Comments go before the transition: a step after it finds the issue moved and is skipped.
         [
           {
             kind: "comment" as const,
@@ -1014,21 +1015,23 @@ function resultSteps(input: ResultJournalInput): NewReportStep[] {
                   .filter((check) => check.status === "not_verified")
                   .map((check) => check.acceptance),
                 workspace.workflow.implementationCompleteStatus,
+                workspace.workflow.inProgressStatus,
               ),
             },
           },
+          finishTransition(input, workspace.workflow.implementationCompleteStatus),
         ]
       : child &&
           verifiedImplementation(input.result) &&
           input.result.artifacts?.some((a) => a.startsWith("pushed:"))
         ? [
-            finishTransition(input, workspace.workflow.implementationCompleteStatus),
             {
               kind: "comment" as const,
               params: {
                 body: "자식 구현과 자체 테스트가 완료되어 결과 커밋을 보존했습니다. 나머지 자식이 완료되면 부모 통합 PR을 생성합니다. 병합 후 평가는 부모에서 수행합니다.",
               },
             },
+            finishTransition(input, workspace.workflow.implementationCompleteStatus),
           ]
         : input.result.pullRequest || verifiedNoChange(input.result)
           ? [

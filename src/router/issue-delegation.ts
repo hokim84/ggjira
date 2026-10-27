@@ -93,6 +93,21 @@ export interface IssueDelegationView {
   humanCheck: string[] | null;
 }
 
+/** The parent whose active plan the issue is a task of, if any. */
+async function deployedParent(
+  deps: { db: RouterDatabase; jira: JiraGateway },
+  issueKey: string,
+): Promise<string | null> {
+  let planTask: Awaited<ReturnType<typeof readPlanTaskMetadata>> = null;
+  try {
+    planTask = await readPlanTaskMetadata(deps.jira, issueKey);
+  } catch (error) {
+    if (!(error instanceof PlanMetadataError)) throw error;
+  }
+  const parent = planTask ? getActivePlanDeployment(deps.db, planTask.parentKey) : undefined;
+  return planTask && parent?.planVersion === planTask.planVersion ? planTask.parentKey : null;
+}
+
 export async function readIssueDelegation(
   deps: { db: RouterDatabase; jira: JiraGateway; baseBranch?: string },
   workspace: WorkspaceConfig,
@@ -138,22 +153,14 @@ export async function readIssueDelegation(
     } else if (deployment?.state === "active") {
       stage = deployment.taskIds.length > 0 ? "coordinating" : "running";
     } else {
-      let planTask: Awaited<ReturnType<typeof readPlanTaskMetadata>> = null;
-      try {
-        planTask = await readPlanTaskMetadata(deps.jira, issue.key);
-      } catch (error) {
-        if (!(error instanceof PlanMetadataError)) throw error;
-      }
-      const parent = planTask ? getActivePlanDeployment(db, planTask.parentKey) : undefined;
-      if (planTask && parent?.planVersion === planTask.planVersion) {
-        stage = "task";
-        parentKey = planTask.parentKey;
-      }
+      parentKey = await deployedParent(deps, issue.key);
+      if (parentKey) stage = "task";
     }
   } else if (issue.statusName === workspace.workflow.integrationPendingStatus) {
     stage = "integration_pending";
   } else if (issue.statusName === workspace.workflow.implementationCompleteStatus) {
     stage = "implementation_complete";
+    parentKey = await deployedParent(deps, issue.key);
   } else if (doneStatus && issue.statusName === doneStatus) {
     stage = "done";
   }
@@ -205,7 +212,8 @@ export async function readIssueDelegation(
     };
     if (issue.statusName === requestStatus && deployment.state === "active") stage = "coordinating";
   }
-  const latest = stage === "task" ? latestImplementation(db, issue.key) : undefined;
+  // ADR 0066: a child completed with unchecked criteria lists them until a person confirms.
+  const latest = parentKey ? latestImplementation(db, issue.key) : undefined;
   const latestResult = latest ? (JSON.parse(latest.payload) as JobResult) : undefined;
   const humanCheck =
     latest &&
