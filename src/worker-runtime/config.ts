@@ -131,6 +131,11 @@ export function loadWorkerConfig(home: string): WorkerConfig {
   try {
     raw = readFileSync(configPath, "utf-8");
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      throw new WorkerConfigError(
+        `No worker config at ${configPath}. Run "ggjira worker start" to set up this worker.`,
+        error,
+      );
     throw new WorkerConfigError(`Failed to read worker config file at ${configPath}`, error);
   }
 

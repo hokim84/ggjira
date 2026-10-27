@@ -2,7 +2,7 @@
 rem Starts the GGJIRA Router and one Worker on this machine, each in its own window, without
 rem Docker or a VM (runbook section 33). Close a window or press Ctrl+C in it to stop that part.
 setlocal
-cd /d "%CD%"
+cd /d "%~dp0"
 
 if not defined GGJIRA_ROUTER_CONFIG set "GGJIRA_ROUTER_CONFIG=router.config.json"
 set "PORT=8787"

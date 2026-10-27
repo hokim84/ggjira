@@ -70,6 +70,10 @@ describe("loadWorkerConfig", () => {
     ]);
   });
 
+  it("points a home without a config at worker start", () => {
+    expect(() => loadWorkerConfig(dataDir)).toThrow(/Run "ggjira worker start"/);
+  });
+
   it("refuses a configVersion 5 file and a repository id that is not a folder name", () => {
     expect(() =>
       loadWorkerConfig(writeConfig({ ...validConfig(), configVersion: 5, dataDir: "data/worker" })),

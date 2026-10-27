@@ -2,7 +2,7 @@
 # No inbound ports: cloudflared dials out to Cloudflare, which terminates TLS for the public host
 # name and forwards to http://router:8787. Use this file instead of docker-compose.yml (Caddy).
 #
-# Before `docker compose -f docker-compose.cloudflare.yml up -d --build`:
+# Before `docker compose -f docker-compose.cloudflare.yml up -d`:
 #   1. mkdir -p deploy/config deploy/data && sudo chown 1000:1000 deploy/config deploy/data
 #      (the container's `node` user writes config, secrets and the SQLite database there)
 #   2. Router config and secrets: web setup wizard, or copy deploy/router.config.example.json and
@@ -12,10 +12,12 @@
 #      deploy/config/cloudflared.env as TUNNEL_TOKEN=... (chmod 600).
 services:
   router:
+    # The released image (ADR 0064); GGJIRA_VERSION=0.2.0 pins one. When it cannot be pulled, or
+    # with `up --build`, Compose builds this checkout instead.
+    image: ghcr.io/hokim84/ggjira-router:${GGJIRA_VERSION:-latest}
     build:
       context: .
       target: runtime
-    image: ggjira-router:local
     restart: unless-stopped
     environment:
       GGJIRA_ROUTER_CONFIG: /config/router.config.json

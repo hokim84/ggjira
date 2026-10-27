@@ -274,9 +274,11 @@ PATH·PATHEXT로 찾고, npm `.cmd` 셰임이면 그 Node 스크립트를 직접
 
 ## 배포
 
-- Router는 `Dockerfile`(Node 24) + `docker-compose.yml`(router + Caddy)로 배포한다. DB는 named
-  volume `/data`, 설정과 secrets 파일은 쓰기 가능한 `./deploy/config:/config`, TLS는 Caddy가 맡는다. 운영 절차는 [runbook](./runbook.md) §16~§18에 있다.
-- Worker는 Windows·Linux 네이티브로 `ggjira worker run`을 실행한다. Router URL은 HTTPS여야 하고,
+- 릴리스는 태그 `vX.Y.Z` 하나로 npm 패키지 `ggjira`와 Router 이미지 `ghcr.io/hokim84/ggjira-router`를
+  같은 버전으로 낸다(ADR 0064, `.github/workflows/release.yml`). 네이티브 의존성은 없다(ADR 0063).
+- Router는 릴리스 이미지 + `docker-compose.yml`(router + Caddy)로 배포한다. 이미지를 받을 수 없거나
+  `--build`면 checkout의 `Dockerfile`(Node 24)로 빌드한다. DB는 named volume `/data`, 설정과 secrets 파일은 쓰기 가능한 `./deploy/config:/config`, TLS는 Caddy가 맡는다. 운영 절차는 [runbook](./runbook.md) §16~§18에 있다.
+- Worker는 `npm install -g ggjira`로 설치해 Windows·Linux 네이티브로 `ggjira worker start`를 실행한다. Router URL은 HTTPS여야 하고,
   loopback만 예외다.
 - `docker compose -f docker-compose.test.yml run --rm --build check`는 Linux에서 check 전체를
   돌린다. 여기에는 Router 하나와 Fake 워커 둘의 통합 시나리오가 포함된다.

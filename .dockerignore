@@ -11,3 +11,6 @@ router.config.json
 worker.config.json
 deploy/router.env
 deploy/router.config.json
+deploy/config
+deploy/data
+*.bak

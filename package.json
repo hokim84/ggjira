@@ -11,10 +11,10 @@
   "bugs": "https://github.com/hokim84/ggjira/issues",
   "keywords": ["jira", "ai", "agent", "orchestration", "claude-code", "codex"],
   "type": "module",
-  "private": true,
   "bin": {
     "ggjira": "./dist/cli.js"
   },
+  "files": ["dist", "!dist/**/*.map", "web"],
   "engines": {
     "node": ">=24"
   },

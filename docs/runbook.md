@@ -103,7 +103,7 @@ Router의 Jira 쓰기는 `report_steps` 저널을 `router serve`의 reports 루�
 ```bash
 mkdir -p deploy/config && sudo chown 1000:1000 deploy/config    # 컨테이너의 node 사용자가 씀
 export GGJIRA_DOMAIN=router.example.com
-docker compose up -d --build
+docker compose up -d                                             # 릴리스 이미지를 받는다(ADR 0064)
 docker compose logs router | grep -A1 "setup token"             # 웹 셋업(§20): 이 token으로 진행
 # 또는 수동 설정:
 #   cp deploy/router.config.example.json deploy/config/router.config.json
@@ -112,8 +112,11 @@ docker compose exec router node dist/cli.js router check         # Jira 상태·
 docker compose logs -f router
 ```
 
+- 이미지: `ghcr.io/hokim84/ggjira-router:latest`를 받는다. `GGJIRA_VERSION=0.2.0`처럼 버전을 고정할 수 있고,
+  워커의 `ggjira` 패키지와 같은 버전을 쓴다. 이미지를 받을 수 없거나 `docker compose up -d --build`로 실행하면
+  현재 checkout을 직접 빌드한다(코드를 고쳐 띄울 때).
 - ADR 0023 이전 배포에서 옮겨 올 때: `deploy/router.config.json` → `deploy/config/router.config.json`,
-  `deploy/router.env` → `deploy/config/router.env`로 옮기고 `docker compose up -d --build`한다.
+  `deploy/router.env` → `deploy/config/router.env`로 옮기고 `docker compose up -d`한다.
 
 - `router.config.json`의 `db.path`는 `/data/router.sqlite3`(volume), `http.host`는 `0.0.0.0`으로
   둔다. 컨테이너 밖에 포트를 열지 않고 Caddy만 443으로 받는다.
@@ -146,7 +149,7 @@ printf 'TUNNEL_TOKEN=%s\n' '<터널 토큰>' > deploy/config/cloudflared.env && 
 # 설정: DB를 옮겨 올 거면 아래 4번을 먼저 한다. 새로 시작하면 웹 셋업(§20)이나 예시 파일 복사:
 #   cp deploy/router.config.example.json deploy/config/router.config.json   # db.path "/data/router.sqlite3"
 #   cp deploy/router.env.example deploy/config/router.env && chmod 600 deploy/config/router.env
-docker compose -f docker-compose.cloudflare.yml up -d --build
+docker compose -f docker-compose.cloudflare.yml up -d
 docker compose -f docker-compose.cloudflare.yml logs -f router cloudflared
 curl -s https://router.example.com/health                          # {"status":"ok","mode":"router"}
 ```
@@ -171,7 +174,7 @@ curl -s https://router.example.com/health                          # {"status":"
 2. 서버로 복사한다. `deploy/data/router.sqlite3`(백업 파일), `deploy/config/router.config.json`,
    `deploy/config/router.env`. 설정의 `db.path`는 `/data/router.sqlite3`, `http.host`는 `0.0.0.0`으로
    고친다. 복사한 뒤 `sudo chown 1000:1000 deploy/data/* deploy/config/*`, `chmod 600 deploy/config/router.env`.
-3. `docker compose -f docker-compose.cloudflare.yml up -d --build`. migration은 시작할 때 자동으로 된다.
+3. `docker compose -f docker-compose.cloudflare.yml up -d`. migration은 시작할 때 자동으로 된다.
 4. 각 워커 홈의 `worker.config.json`에서 `routerUrl`을 `https://router.example.com`으로 바꾸고 재시작한다.
    DB를 옮겼으면 워커 토큰이 그대로라 다시 페어링하지 않아도 된다. 새 DB로 시작했으면 웹 UI > 워커에서
    재페어링 코드를 받아 `worker setup --pairing-code … --force`를 실행한다.
@@ -185,7 +188,8 @@ curl -s https://router.example.com/health                          # {"status":"
 **6. 운영**
 - 백업: `router backup`은 `deploy/data/backups/`에 쓴다. 서버 밖으로 주기적으로 복사한다
   (예: `rsync`, cron). 이 디렉터리가 서버에만 있으면 서버와 함께 잃는다.
-- 업데이트: `git pull && docker compose -f docker-compose.cloudflare.yml up -d --build`. 화면이 이상하면
+- 업데이트: `git pull && docker compose -f docker-compose.cloudflare.yml pull && docker compose -f docker-compose.cloudflare.yml up -d`.
+  워커도 같은 버전으로 올린다(§18). 화면이 이상하면
   Cloudflare 캐시를 비운다(UI는 `cache-control: no-cache`라 보통 필요 없다).
 - 비밀정보 파일(`router.env`, `cloudflared.env`)은 0600을 유지한다. 웹 UI에서 Jev 키나 GitHub 토큰을
   저장하려면 컨테이너 사용자(uid 1000)가 `router.env`를 쓸 수 있어야 한다.
@@ -224,10 +228,13 @@ docker compose cp router:/data/backups ./router-backups      # 서버 밖으로 
 
 ```bash
 # Router 웹 UI > 워커 > 워커 추가 → 코드 발급
-cd <ggjira 폴더>
-npm run dev -- worker start      # 처음: Router 주소, LLM, 페어링 코드, (필요하면) 저장소 폴더를 묻는다
-npm run dev -- worker start      # 이후: 바로 실행
+npm install -g ggjira            # Node.js 24 이상. Router와 같은 버전(ADR 0064)
+ggjira worker start              # 처음: Router 주소, LLM, 페어링 코드, (필요하면) 저장소 폴더를 묻는다
+ggjira worker start              # 이후: 바로 실행
 ```
+
+설치하지 않고 `npx ggjira@<버전> worker start`로도 실행할 수 있다. GGJIRA를 고쳐 가며 쓸 때는 checkout에서
+`npm run dev -- worker start`(Windows는 `run-worker.bat`)로 실행한다. 업데이트는 `npm install -g ggjira@<버전>` 뒤 재시작이다.
 
 워커의 설정·credential·clone·worktree·로그·spool은 모두 워커 홈 한 곳에 있다(ADR 0060). 기본은
 `%LOCALAPPDATA%\ggjira\worker`(Windows), `~/.ggjira/worker`(그 밖)이고 `--home <폴더>` 또는
@@ -244,8 +251,8 @@ npm run dev -- worker start      # 이후: 바로 실행
   GGJIRA 검사를 다른 저장소의 완료 조건처럼 보고했다). GGJIRA 폴더 안을 홈으로 쓰지 말고 기본 위치나 다른
   프로젝트 밖의 폴더를 `--home`으로 준다.
 
-- **`command not found: ggjira`**: 전역 설치 전에는 `npm run dev -- …`로 실행한다. `--` 뒤에 한 칸 띄우고
-  `ggjira`라는 단어는 넣지 않는다. 설치하려면 `npm run build && npm link`.
+- **`command not found: ggjira`**: `npm install -g ggjira`로 설치하거나, checkout에서는 `npm run dev -- …`로
+  실행한다. `--` 뒤에 한 칸 띄우고 `ggjira`라는 단어는 넣지 않는다.
 - **`LLM CLI를 찾지 못했습니다`**: `claude` 또는 `codex`를 설치하고 로그인한 뒤 다시 실행한다. 코드는 LLM을
   고른 뒤에야 쓰므로 같은 코드를 다시 쓸 수 있다(10분 안).
 - **실행 실패 `Failed to spawn worker: spawn codex ENOENT`(Windows)**: npm으로 설치한 `codex`는
