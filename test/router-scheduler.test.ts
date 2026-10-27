@@ -9,6 +9,7 @@ import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts
 import { listAttentionItems } from "../src/router/db/attention.js";
 import { openRouterDb } from "../src/router/db/connection.js";
 import { createJob, getJob, getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
+import { getActivePlanDeployment, getLatestPlanReview } from "../src/router/db/plan-delegation.js";
 import { RuleDecisionProvider } from "../src/router/decision.js";
 import {
   type SchedulerDeps,
@@ -120,6 +121,19 @@ describe("reconcileCandidates", () => {
     await reconcileCandidates(makeDeps(config), []);
 
     expect(getOpenJobForIssue(db, "KAN-1")?.kind).toBe("planning");
+  });
+
+  it("closes the plan of a deleted parent and keeps reconciling the others", async () => {
+    await approved("KAN-9");
+    await approved("KAN-1");
+    jira.deleteIssue("KAN-9");
+
+    const report = await reconcileCandidates(makeDeps(buildConfig()), []);
+
+    expect(getOpenJobForIssue(db, "KAN-1")?.kind).toBe("implementation");
+    expect(report.jobsCreated).toHaveLength(1);
+    expect(getLatestPlanReview(db, "KAN-9")?.closedReason).toBe("KAN-9 no longer exists");
+    expect(getActivePlanDeployment(db, "KAN-9")).toBeUndefined();
   });
 
   it("accepts a direct implementation request from in progress", async () => {

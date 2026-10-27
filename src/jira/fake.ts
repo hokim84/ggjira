@@ -1,4 +1,4 @@
-import { StatusNotReachableError } from "./client.js";
+import { JiraApiError, StatusNotReachableError } from "./client.js";
 import type { JiraGateway } from "./gateway.js";
 import type {
   CreateIssueInput,
@@ -268,9 +268,16 @@ export class FakeJiraGateway implements JiraGateway {
     return opts.maxResults ? all.slice(0, opts.maxResults) : all;
   }
 
+  /** A human deleted the issue in Jira. */
+  deleteIssue(key: string): void {
+    this.issues.delete(key);
+  }
+
   async getIssue(key: string): Promise<JiraIssue> {
     const issue = this.issues.get(key);
-    if (!issue) throw new Error(`FakeJiraGateway: unknown issue ${key}`);
+    // Jira answers 404 for an issue that was deleted or never existed.
+    if (!issue)
+      throw new JiraApiError(`FakeJiraGateway: unknown issue ${key}`, 404, `/issue/${key}`);
     return issue;
   }
 

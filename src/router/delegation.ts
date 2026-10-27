@@ -1,4 +1,5 @@
 import type { RouterDatabase } from "./db/connection.js";
+import { JiraApiError } from "../jira/client.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PLAN_PROPERTY_KEY, PlanMetadataSchema, readPlanTaskMetadata } from "../pm/metadata.js";
 import { computeApprovalId } from "./approval.js";
@@ -6,6 +7,7 @@ import type { WorkspaceConfig } from "./config.js";
 import type { JobRow } from "./db/jobs.js";
 import { getOpenJobForIssue } from "./db/jobs.js";
 import {
+  closePlanReview,
   getActivePlanDeployment,
   getPlanDeployment,
   listOpenPlanReviews,
@@ -27,7 +29,24 @@ export async function reconcileDelegatedPlans(
   const w = workspace.workflow;
   for (const review of listOpenPlanReviews(deps.db, workspace.id)) {
     if (review.outcome !== "planned") continue;
-    const issue = await deps.jira.getIssue(review.issueKey);
+    let issue: JiraIssue;
+    try {
+      issue = await deps.jira.getIssue(review.issueKey);
+    } catch (error) {
+      if (!(error instanceof JiraApiError && error.status === 404)) throw error;
+      // A deleted parent must not stop every other plan's children from being approved.
+      closePlanReview(deps.db, review.id, `${review.issueKey} no longer exists`, deps.now());
+      const active = getActivePlanDeployment(deps.db, review.issueKey);
+      if (active)
+        setPlanDeploymentState(
+          deps.db,
+          active.id,
+          "revoked",
+          `${review.issueKey} no longer exists`,
+          deps.now(),
+        );
+      continue;
+    }
     const request = latestPlanningRequest(deps.db, issue.key);
     if (request?.id !== review.requestApprovalId || !request.ready_history) continue;
     const prior = getPlanDeployment(deps.db, issue.key, request.id);
