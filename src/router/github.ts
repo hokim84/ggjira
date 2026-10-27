@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import { COMMENT_TEXT, type MergeWhy } from "./comment-text.js";
 import type { RouterConfig } from "./config.js";
 import { recordAttention, resolveAttention, resolveAttentionIncident } from "./db/attention.js";
@@ -121,7 +121,7 @@ export type PullRequestOutcome = "unknown" | "already-closed" | "journaled";
 
 /** Records a PR closing once and journals its Jira steps. Safe to call for replays. */
 export function handlePullRequestClosed(
-  db: Database.Database,
+  db: RouterDatabase,
   config: RouterConfig,
   event: PullRequestClosed,
   now: string,
@@ -225,7 +225,7 @@ export interface PullRequestPollReport {
  * SQLite. Public repositories work without a token (with GitHub's low anonymous rate limit).
  */
 export async function pollPullRequests(deps: {
-  db: Database.Database;
+  db: RouterDatabase;
   config: RouterConfig;
   token?: string | undefined;
   fetch?: FetchLike;

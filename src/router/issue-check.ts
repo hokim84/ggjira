@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { IssueSnapshot, PlanningContext } from "../contracts/envelope.js";
 import type { JobKind } from "../contracts/protocol.js";
 import type { QualityContext } from "../contracts/quality.js";
@@ -78,7 +78,7 @@ export class NotDelegatedError extends Error {}
  */
 export async function readIssueApproval(
   jira: JiraGateway,
-  db: Database.Database,
+  db: RouterDatabase,
   issue: JiraIssue,
   workspace: WorkspaceConfig,
   kind?: JobKind,
@@ -129,7 +129,7 @@ export async function readIssueApproval(
 
 async function readApproved(
   jira: JiraGateway,
-  db: Database.Database,
+  db: RouterDatabase,
   issue: JiraIssue,
   workspace: WorkspaceConfig,
   planTask: PlanTaskMetadata | null,
@@ -296,7 +296,7 @@ async function readApproved(
 }
 
 function withLatestReview(
-  db: Database.Database,
+  db: RouterDatabase,
   issue: JiraIssue,
   requirements: IssueRequirements,
 ): IssueRequirements {
@@ -306,7 +306,7 @@ function withLatestReview(
 /** A retry comment after a settled failure creates a new durable approval, never an automatic replay.
  *  On a run left `recovery_required` the comment also confirms it stopped (ADR 0062). */
 async function retryApprovalId(
-  db: Database.Database,
+  db: RouterDatabase,
   jira: JiraGateway,
   issue: JiraIssue,
   base: string,
@@ -339,7 +339,7 @@ async function retryApprovalId(
 
 /** The approved plan's own contract, for a parent the plan keeps as the executable unit. */
 function parentContract(
-  db: Database.Database,
+  db: RouterDatabase,
   issue: JiraIssue,
   deployment: PlanDeploymentRow,
 ): IssueRequirements {
@@ -355,7 +355,7 @@ function parentContract(
 /** A task's contract from the parent's plan that defined it: the approved plan for a new task, an
  *  earlier one for a task a replan kept as-is. */
 function taskContract(
-  db: Database.Database,
+  db: RouterDatabase,
   issueKey: string,
   planTask: PlanTaskMetadata,
 ): IssueRequirements {
@@ -412,7 +412,7 @@ export async function collectPlanningContext(
   jira: JiraGateway,
   issue: JiraIssue,
   routerAccountId: string,
-  db?: Database.Database,
+  db?: RouterDatabase,
 ): Promise<PlanningContext> {
   const [comments, subtasks, planProperty] = await Promise.all([
     jira.getComments(issue.key),
@@ -465,7 +465,7 @@ export interface ApprovalSnapshot {
  * reconcile collected, so a planning job's envelope never loses it.
  */
 export function storeApproval(
-  db: Database.Database,
+  db: RouterDatabase,
   approval: IssueApproval,
   now: string,
   planning?: PlanningContext,
@@ -514,7 +514,7 @@ export async function checkJobAgainstJira(
   jira: JiraGateway,
   config: RouterConfig,
   job: JobRow,
-  db: Database.Database,
+  db: RouterDatabase,
 ): Promise<JobCheck> {
   const workspace = config.workspaces.find((entry) => entry.id === job.workspaceId);
   if (!workspace) return { verdict: "revoked", reason: `workspace ${job.workspaceId} is gone` };

@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 import { type ProviderUsage, ProviderUsageSchema } from "../../contracts/api.js";
 
 /** Replaces what Router knows of each reported provider's usage for this worker (ADR 0028). */
 export function saveProviderUsage(
-  db: Database.Database,
+  db: RouterDatabase,
   input: { workerId: string; usage: ProviderUsage[]; now: string },
 ): void {
   const upsert = db.prepare(
@@ -23,7 +23,7 @@ export function saveProviderUsage(
 
 /** Every worker's latest usage per provider, keyed by workerId. Rows that no longer parse (a
  *  future shape read by an older Router) are skipped. */
-export function listProviderUsage(db: Database.Database): Map<string, ProviderUsage[]> {
+export function listProviderUsage(db: RouterDatabase): Map<string, ProviderUsage[]> {
   const rows = db
     .prepare(
       "SELECT worker_id, usage_json FROM worker_provider_usage ORDER BY worker_id, provider_id",

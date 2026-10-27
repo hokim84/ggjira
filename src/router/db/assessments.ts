@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 import { type JevAnswer, JevAnswerSchema } from "../jev.js";
 import type { JobRow } from "./jobs.js";
 import { getJob } from "./jobs.js";
@@ -39,7 +39,7 @@ function toRow(row: Record<string, unknown>): JobAssessmentRow {
   };
 }
 
-export function getAssessment(db: Database.Database, jobId: string): JobAssessmentRow | undefined {
+export function getAssessment(db: RouterDatabase, jobId: string): JobAssessmentRow | undefined {
   const row = db.prepare("SELECT * FROM job_assessments WHERE job_id = ?").get(jobId) as
     | Record<string, unknown>
     | undefined;
@@ -51,7 +51,7 @@ export function getAssessment(db: Database.Database, jobId: string): JobAssessme
  * times, oldest first.
  */
 export function listJobsToAssess(
-  db: Database.Database,
+  db: RouterDatabase,
   input: { since: string; maxTries: number; limit: number },
 ): JobRow[] {
   const ids = db
@@ -68,7 +68,7 @@ export function listJobsToAssess(
 }
 
 export function recordAssessment(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     jobId: string;
     model: string;
@@ -98,7 +98,7 @@ export function recordAssessment(
 }
 
 export function recordAssessmentFailure(
-  db: Database.Database,
+  db: RouterDatabase,
   input: { jobId: string; error: string; now: string },
 ): void {
   db.prepare(
@@ -115,7 +115,7 @@ export interface AssessmentListItem {
 }
 
 /** Newest assessed jobs first, with their job row, for evaluating Jev against outcomes. */
-export function listAssessments(db: Database.Database, limit: number): AssessmentListItem[] {
+export function listAssessments(db: RouterDatabase, limit: number): AssessmentListItem[] {
   const rows = db
     .prepare(
       `SELECT a.* FROM job_assessments a JOIN jobs j ON j.id = a.job_id

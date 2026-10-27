@@ -227,7 +227,8 @@ describe("pushing the job branch", () => {
         '  if [ -f "$0.exists" ]; then echo "a pull request already exists" >&2; exit 1; fi',
         '  echo "https://github.com/acme/app/pull/21"; touch "$0.exists"; exit 0',
         "fi",
-        'echo \'{"number":21,"url":"https://github.com/acme/app/pull/21"}\'',
+        'if [ "$2" = "edit" ]; then exit 0; fi',
+        'echo \'{"number":21,"url":"https://github.com/acme/app/pull/21","state":"OPEN","baseRefName":"main","headRefName":"ggjira/KAN-1-x"}\'',
       ].join("\n"),
       { mode: 0o755 },
     );

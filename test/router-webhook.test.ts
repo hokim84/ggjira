@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openRouterDb } from "../src/router/db/connection.js";
 import { listUnprocessedEvents } from "../src/router/db/events.js";
@@ -48,7 +48,7 @@ describe("verifyJiraWebhookSignature", () => {
 
 describe("ingestJiraWebhookEvent", () => {
   let dataDir: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
 
   beforeEach(() => {
     dataDir = mkdtempSync(path.join(tmpdir(), "ggjira-router-webhook-test-"));

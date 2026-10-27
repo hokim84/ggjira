@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 import {
   ADMIN_OPERATIONS_STATEMENTS,
   ATTENTION_STATEMENTS,
@@ -21,7 +21,7 @@ interface Migration {
   version: number;
   description: string;
   rebuildJobs?: boolean;
-  up(db: Database.Database): void;
+  up(db: RouterDatabase): void;
 }
 
 /**
@@ -213,7 +213,7 @@ const MIGRATIONS: readonly Migration[] = [
           parent_key TEXT NOT NULL, plan_version TEXT NOT NULL, task_id TEXT NOT NULL,
           task TEXT NOT NULL, source_comment_id TEXT NOT NULL,
           PRIMARY KEY(cycle_id, finding_id));`);
-      if ((db.pragma("foreign_key_check") as unknown[]).length)
+      if (db.pragmaRows("foreign_key_check").length)
         throw new Error("quality migration foreign key check failed");
     },
   },
@@ -254,7 +254,7 @@ const MIGRATIONS: readonly Migration[] = [
         CREATE TABLE parent_progress_entries (issue_key TEXT PRIMARY KEY, entry_id TEXT NOT NULL);
         CREATE TABLE job_inputs (job_id TEXT PRIMARY KEY REFERENCES jobs(id), snapshot TEXT NOT NULL);
         CREATE TABLE workflow_retry_comments (issue_key TEXT NOT NULL, comment_id TEXT NOT NULL, PRIMARY KEY(issue_key,comment_id));`);
-      if ((db.pragma("foreign_key_check") as unknown[]).length)
+      if (db.pragmaRows("foreign_key_check").length)
         throw new Error("board workflow migration foreign key check failed");
     },
   },
@@ -311,7 +311,7 @@ const MIGRATIONS: readonly Migration[] = [
         UPDATE fci_tasks SET superseded=1 WHERE purpose IN ('task_result','pr_preview');
         UPDATE report_steps SET status='skipped',last_error='retired child-PR parent transition' WHERE batch_id LIKE 'parent-integration:%' AND status<>'applied';
         DELETE FROM fci_snapshot_claims WHERE task_id IN (SELECT id FROM fci_tasks WHERE superseded=1);`);
-      if ((db.pragma("foreign_key_check") as unknown[]).length)
+      if (db.pragmaRows("foreign_key_check").length)
         throw new Error("assembly migration foreign key check failed");
     },
   },
@@ -330,7 +330,7 @@ interface MigrationRow {
   version: number;
 }
 
-export function runMigrations(db: Database.Database): void {
+export function runMigrations(db: RouterDatabase): void {
   db.exec(
     "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
   );
@@ -338,7 +338,7 @@ export function runMigrations(db: Database.Database): void {
     db
       .prepare("SELECT version FROM schema_migrations")
       .all()
-      .map((row) => (row as MigrationRow).version),
+      .map((row) => (row as unknown as MigrationRow).version),
   );
 
   for (const migration of MIGRATIONS) {
@@ -350,17 +350,17 @@ export function runMigrations(db: Database.Database): void {
         new Date().toISOString(),
       );
     });
-    const foreignKeys = db.pragma("foreign_keys", { simple: true });
-    if (migration.rebuildJobs) db.pragma("foreign_keys = OFF");
+    const foreignKeys = db.pragmaValue("foreign_keys");
+    if (migration.rebuildJobs) db.exec("PRAGMA foreign_keys = OFF");
     try {
       apply();
     } finally {
-      if (migration.rebuildJobs) db.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
+      if (migration.rebuildJobs) db.exec(`PRAGMA foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
     }
   }
 }
 
-export function currentSchemaVersion(db: Database.Database): number {
+export function currentSchemaVersion(db: RouterDatabase): number {
   const row = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as
     | { version: number | null }
     | undefined;

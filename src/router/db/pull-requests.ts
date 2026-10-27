@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 
 export type PullRequestState = "open" | "merged" | "closed";
 
@@ -40,7 +40,7 @@ const normalizeRepo = (repo: string) => repo.toLowerCase();
 
 /** Records a worker-opened PR. A replayed result (same PR) changes nothing. */
 export function recordPullRequest(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     repo: string;
     number: number;
@@ -68,7 +68,7 @@ export function recordPullRequest(
 }
 
 export function getPullRequest(
-  db: Database.Database,
+  db: RouterDatabase,
   repo: string,
   number: number,
 ): PullRequestRow | undefined {
@@ -78,7 +78,7 @@ export function getPullRequest(
   return row ? toRow(row) : undefined;
 }
 
-export function listOpenPullRequests(db: Database.Database): PullRequestRow[] {
+export function listOpenPullRequests(db: RouterDatabase): PullRequestRow[] {
   return (
     db
       .prepare("SELECT * FROM pull_requests WHERE state = 'open' ORDER BY created_at ASC")
@@ -88,7 +88,7 @@ export function listOpenPullRequests(db: Database.Database): PullRequestRow[] {
 
 /** Closes an open PR row; false when it was already closed (a replayed event). */
 export function closePullRequest(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     repo: string;
     number: number;
@@ -121,7 +121,7 @@ export function closePullRequest(
 
 /** Remembers a webhook delivery; false when it was already seen. */
 export function recordGithubDelivery(
-  db: Database.Database,
+  db: RouterDatabase,
   input: { id: string; event: string; now: string },
 ): boolean {
   return (
@@ -133,7 +133,7 @@ export function recordGithubDelivery(
 
 /** Records one poll of a PR: `error` null means GitHub answered. */
 export function recordPullRequestCheck(
-  db: Database.Database,
+  db: RouterDatabase,
   input: { repo: string; number: number; error: string | null; now: string },
 ): void {
   db.prepare(
@@ -142,7 +142,7 @@ export function recordPullRequestCheck(
 }
 
 /** Every repository a worker opened a pull request in. */
-export function listPullRequestRepos(db: Database.Database): string[] {
+export function listPullRequestRepos(db: RouterDatabase): string[] {
   return (
     db.prepare("SELECT DISTINCT repo FROM pull_requests ORDER BY repo").all() as Array<{
       repo: string;
@@ -151,7 +151,7 @@ export function listPullRequestRepos(db: Database.Database): string[] {
 }
 
 /** Open PRs first, then the most recently closed, for the settings screen. */
-export function listRecentPullRequests(db: Database.Database, limit: number): PullRequestRow[] {
+export function listRecentPullRequests(db: RouterDatabase, limit: number): PullRequestRow[] {
   const rows = db
     .prepare(
       `SELECT * FROM pull_requests

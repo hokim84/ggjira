@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../../src/router/db/connection.js";
 import type { FakeJiraGateway } from "../../src/jira/fake.js";
 import type { JiraIssue } from "../../src/jira/types.js";
 import { PLAN_PROPERTY_KEY } from "../../src/pm/metadata.js";
@@ -42,7 +42,7 @@ export interface ApprovedIssueOptions {
  * writing the plan.
  */
 export async function seedApprovedIssue(
-  deps: { db: Database.Database; jira: FakeJiraGateway; workspace: WorkspaceConfig; now: string },
+  deps: { db: RouterDatabase; jira: FakeJiraGateway; workspace: WorkspaceConfig; now: string },
   key: string,
   opts: ApprovedIssueOptions = {},
 ): Promise<void> {
@@ -151,7 +151,7 @@ export async function reapprove(
   jira: FakeJiraGateway,
   workspace: WorkspaceConfig,
   key: string,
-  db: Database.Database,
+  db: RouterDatabase,
 ): Promise<void> {
   await jira.transitionIssueToStatus(key, workspace.workflow.requestStatus);
   const request = await syncPlanningRequest(

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import type { RouterConfig } from "../src/router/config.js";
@@ -47,7 +47,7 @@ function workerAvailability(overrides: Partial<WorkerAvailability> = {}): Worker
 
 describe("reconcileCandidates", () => {
   let dataDir: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
   let jira: FakeJiraGateway;
 
   beforeEach(() => {
@@ -381,7 +381,10 @@ describe("reconcileCandidates", () => {
     const deps = makeDeps(buildConfig());
     await reconcileCandidates(deps, []);
     const job = getOpenJobForIssue(db, "KAN-1");
-    db.prepare("UPDATE jobs SET input_hash = ? WHERE id = ?").run("0".repeat(64), job?.id);
+    db.prepare("UPDATE jobs SET input_hash = ? WHERE id = ?").run(
+      "0".repeat(64),
+      job?.id as string,
+    );
 
     const report = await reconcileCandidates(deps, []);
 
@@ -397,8 +400,10 @@ describe("reconcileCandidates", () => {
     await reconcileCandidates(deps, [workerAvailability()]);
     const job = getOpenJobForIssue(db, "KAN-1");
     // Simulate the worker's `start` (normally WorkerService.start).
-    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job?.id);
-    db.prepare("UPDATE attempts SET state = 'running' WHERE id = ?").run(job?.currentAttemptId);
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job?.id as string);
+    db.prepare("UPDATE attempts SET state = 'running' WHERE id = ?").run(
+      job?.currentAttemptId as string,
+    );
 
     await jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
     const first = await reconcileCandidates(deps, []);

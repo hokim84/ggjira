@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
 import type { JiraGateway } from "../jira/gateway.js";
@@ -71,7 +71,7 @@ export interface WorkerAvailability {
 }
 
 export interface SchedulerDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   jira: JiraGateway;
   config: RouterConfig;
   decisionProvider: DecisionProvider;
@@ -117,7 +117,7 @@ function extractDependencyKeys(dependencies: readonly string[]): string[] {
  *  src/router/workflow-mode.ts `isDependencyResolved`). */
 async function resolveUnresolvedDependencies(
   jira: JiraGateway,
-  db: Database.Database,
+  db: RouterDatabase,
   workspace: WorkspaceConfig,
   dependencyKeys: readonly string[],
 ): Promise<string[]> {
@@ -137,7 +137,7 @@ async function resolveUnresolvedDependencies(
  *  `recovery_required` and an already `cancel_requested` job are left alone until a worker or an
  *  admin confirms the stop. Returns whether the slot is now free. */
 export function cancelStaleJob(
-  db: Database.Database,
+  db: RouterDatabase,
   job: JobRow,
   now: string,
   report?: Pick<SchedulerReport, "jobsCancelled" | "jobsCancelRequested">,
@@ -176,7 +176,7 @@ export function cancelStaleJob(
 }
 
 function transitionCurrentAttempt(
-  db: Database.Database,
+  db: RouterDatabase,
   job: JobRow,
   to: "cancelled" | "cancel_requested",
   now: string,
@@ -511,7 +511,7 @@ async function holdUnassigned(
 /** M4-09: a fresh approval of the issue settles what earlier runs left for a human. Bookkeeping
  *  only — the approval itself, not the resolution, is what lets the new job run. */
 function settleOnNewApproval(
-  db: Database.Database,
+  db: RouterDatabase,
   issueKey: string,
   approvalId: string,
   now: string,
@@ -670,7 +670,7 @@ async function verifyJob(deps: SchedulerDeps, job: JobRow, report: SchedulerRepo
  * job is cancelled and this approval is held, so the next pass does not quietly start the edited
  * request under the old approval — a human moves the issue to the request status again.
  */
-function holdChangedApproval(db: Database.Database, job: JobRow, now: string): void {
+function holdChangedApproval(db: RouterDatabase, job: JobRow, now: string): void {
   recordAdminHold(db, {
     issueKey: job.issueKey,
     approvalId: job.approvalId,

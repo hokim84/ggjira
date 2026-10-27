@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openRouterDb } from "../src/router/db/connection.js";
@@ -17,7 +17,7 @@ function sign(body: string): string {
 
 describe("Router server", () => {
   let dataDir: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
   let app: FastifyInstance;
 
   beforeEach(() => {

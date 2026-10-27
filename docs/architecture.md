@@ -47,7 +47,8 @@ HTTP 서버 하나와 주기 루프 네 개로 이뤄진다.
 | leases | 5초 | `expireLeases` | 워커 API 호출 시에도 정리 |
 
 재시작해도 아무것도 재개하지 않는다. 임대는 SQLite에 있고, 만료되면 시작 전이면 재대기,
-시작 후면 `recovery_required`다(ADR 0020).
+시작 후면 `recovery_required`다(ADR 0020). SQLite는 Node 내장 `node:sqlite`로 연다(WAL, `synchronous=NORMAL`,
+외래키). 쓰기는 `RouterDatabase.transaction`으로 묶고, 중첩되면 savepoint가 된다(ADR 0063).
 
 ## 승인과 배정
 

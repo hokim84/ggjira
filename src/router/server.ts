@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { z as schema } from "zod";
@@ -57,7 +57,7 @@ const DELIVERY_ID_HEADER = "x-atlassian-webhook-identifier";
 export const JIRA_WEBHOOK_BODY_LIMIT = 1024 * 1024;
 
 export interface RouterServerDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   webhookSecret: string;
   /** Identifies the single Jira site this Router instance serves
    *  (docs/router-service-implementation-plan.md §3 "첫 버전은 Jira 사이트 하나를 지원"),

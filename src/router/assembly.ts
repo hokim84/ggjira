@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { AssemblyContext } from "../contracts/assembly.js";
 import type { JobResult } from "../contracts/envelope.js";
 import type { JiraGateway } from "../jira/gateway.js";
@@ -19,7 +19,7 @@ import {
 
 /** Only approved, current, published results may enter a parent's PR. Jira Done alone is no evidence. */
 export async function assemblyContext(
-  db: Database.Database,
+  db: RouterDatabase,
   jira: JiraGateway,
   workspace: WorkspaceConfig,
   parent: JiraIssue,
@@ -159,7 +159,7 @@ export async function assemblyContext(
   };
 }
 
-export function latestAssembly(db: Database.Database, issueKey: string) {
+export function latestAssembly(db: RouterDatabase, issueKey: string) {
   return db
     .prepare(
       "SELECT j.id,j.input_hash,r.id AS resultId,r.payload,a.context FROM jobs j JOIN results r ON r.job_id=j.id JOIN assembly_runs a ON a.job_id=j.id WHERE j.issue_key=? AND j.kind='assemble_pr' AND j.state='succeeded' AND r.applied=1 ORDER BY j.rowid DESC LIMIT 1",
@@ -170,7 +170,7 @@ export function latestAssembly(db: Database.Database, issueKey: string) {
 }
 
 export async function publishedImplementation(
-  db: Database.Database,
+  db: RouterDatabase,
   jira: JiraGateway,
   workspace: WorkspaceConfig,
   key: string,

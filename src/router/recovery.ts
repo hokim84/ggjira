@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { RouterConfig } from "./config.js";
 import { getAttempt, transitionAttemptState } from "./db/attempts.js";
@@ -31,7 +31,7 @@ export class RecoveryError extends Error {
 
 const RETRYABLE_STATES = new Set(["failed", "timed_out", "recovery_required"]);
 
-function requireJob(db: Database.Database, jobId: string): JobRow {
+function requireJob(db: RouterDatabase, jobId: string): JobRow {
   const job = getJob(db, jobId);
   if (!job) throw new RecoveryError("unknown_job", `no job ${jobId}`);
   return job;
@@ -39,7 +39,7 @@ function requireJob(db: Database.Database, jobId: string): JobRow {
 
 /** Closes the current `recovery_required` attempt on an admin's word that its process is gone. */
 function confirmStop(
-  db: Database.Database,
+  db: RouterDatabase,
   job: JobRow,
   actor: string,
   now: string,
@@ -64,7 +64,7 @@ function confirmStop(
  * The issue stays where it is; a human re-requests it in Jira to run it again.
  */
 export function resolveRecoveryJob(
-  db: Database.Database,
+  db: RouterDatabase,
   config: RouterConfig,
   input: { jobId: string; actor: string; now: string },
 ): JobRow {
@@ -100,7 +100,7 @@ export function resolveRecoveryJob(
  * creates a new run under a new approval, and a late result of the old attempt is not applied.
  */
 export function closeRecoveryForRetry(
-  db: Database.Database,
+  db: RouterDatabase,
   jobId: string,
   actor: string,
   now: string,
@@ -128,7 +128,7 @@ export function closeRecoveryForRetry(
  * reconcile. For a `recovery_required` job the retry is also the admin's stop confirmation.
  */
 export async function retryJob(
-  deps: { db: Database.Database; jira: JiraGateway; config: RouterConfig; now: () => string },
+  deps: { db: RouterDatabase; jira: JiraGateway; config: RouterConfig; now: () => string },
   input: { jobId: string; actor: string },
 ): Promise<JobRow> {
   const before = requireJob(deps.db, input.jobId);
@@ -186,7 +186,7 @@ export async function retryJob(
  * checking Jira: the step still looks for its marker before creating.
  */
 export function retryReportBatch(
-  db: Database.Database,
+  db: RouterDatabase,
   input: { batchId: string; actor: string; now: string },
 ): number {
   const run = db.transaction((): number => {

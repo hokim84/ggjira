@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import {
   type IssueSnapshot,
   IssueSnapshotSchema,
@@ -89,7 +89,7 @@ function toExecutionContract(jobId: string, snapshot: unknown): ExecutionContrac
  * comments/subtasks/decision reply reconcile collected, and the PM system prompt.
  */
 export function buildJobEnvelope(
-  db: Database.Database,
+  db: RouterDatabase,
   config: RouterConfig,
   job: JobRow,
   attempt: AttemptRow,

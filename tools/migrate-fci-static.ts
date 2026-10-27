@@ -1,6 +1,6 @@
 import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
+import { RouterDatabase } from "../src/router/db/connection.js";
 import { RouterConfigSchema } from "../src/router/config.js";
 
 const configPath = path.resolve(
@@ -48,7 +48,9 @@ if (process.argv.includes("--apply")) {
     throw new Error(
       "Stop Router and Worker after draining active work and result spools before migration.",
     );
-  const db = new Database(path.resolve(path.dirname(configPath), old.db.path), { readonly: true });
+  const db = new RouterDatabase(path.resolve(path.dirname(configPath), old.db.path), {
+    readOnly: true,
+  });
   if (
     db
       .prepare(
@@ -66,7 +68,7 @@ if (process.argv.includes("--apply")) {
   );
   const { mkdirSync } = await import("node:fs");
   mkdirSync(path.dirname(backup), { recursive: true });
-  await db.backup(backup);
+  await db.backupTo(backup);
   db.close();
   const configBackup = `${configPath}.before-fci-static-${Date.now()}.bak`;
   copyFileSync(configPath, configBackup);

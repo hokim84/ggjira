@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { JobResult } from "../contracts/envelope.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
@@ -94,7 +94,7 @@ export interface IssueDelegationView {
 }
 
 export async function readIssueDelegation(
-  deps: { db: Database.Database; jira: JiraGateway; baseBranch?: string },
+  deps: { db: RouterDatabase; jira: JiraGateway; baseBranch?: string },
   workspace: WorkspaceConfig,
   issue: JiraIssue,
 ): Promise<IssueDelegationView> {

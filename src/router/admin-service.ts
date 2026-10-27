@@ -1,6 +1,6 @@
 import { mkdirSync, statSync } from "node:fs";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { z } from "zod";
 import type { AdminAddWorkerRequest, ProviderUsage } from "../contracts/api.js";
 import type { FciConfigSchema } from "../contracts/fci.js";
@@ -221,7 +221,7 @@ export interface BackupResult {
 }
 
 export interface AdminServiceDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   jira: JiraGateway;
   config: RouterConfig;
   now?: () => string;
@@ -294,7 +294,7 @@ function backupFileName(now: string): string {
 }
 
 export class AdminService {
-  private readonly db: Database.Database;
+  private readonly db: RouterDatabase;
   private readonly now: () => string;
   /** The config currently applied (changes on every apply). */
   private config: RouterConfig;
@@ -529,7 +529,7 @@ export class AdminService {
       path.join(path.dirname(path.resolve(this.startedWith.db.path)), "backups");
     mkdirSync(dir, { recursive: true });
     const target = path.join(dir, backupFileName(now));
-    await this.db.backup(target);
+    await this.db.backupTo(target);
     appendAudit(this.db, {
       at: now,
       actor,

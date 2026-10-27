@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../../src/router/db/connection.js";
 import type { FastifyInstance } from "fastify";
 import { PROTOCOL_VERSION } from "../../src/contracts/protocol.js";
 import { FakeJiraGateway } from "../../src/jira/fake.js";
@@ -33,7 +33,7 @@ export interface RegisteredWorker {
 export class RouterHarness {
   readonly dataDir: string;
   readonly dbPath: string;
-  db: Database.Database;
+  db: RouterDatabase;
   readonly jira = new FakeJiraGateway();
   readonly clock = new ManualClock();
   readonly config: RouterConfig;

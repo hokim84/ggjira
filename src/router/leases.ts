@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import { canTransitionJobState } from "../contracts/job-state.js";
 import { listExpiredActiveAttempts, transitionAttemptState } from "./db/attempts.js";
 import { getJob, transitionJobState } from "./db/jobs.js";
@@ -24,7 +24,7 @@ export interface LeaseExpiryReport {
  * timer is safe; a Router restart changes nothing because leases live in SQLite
  * (§3 "Router 재시작은 임대를 지우거나 실행을 자동 재개하지 않는다").
  */
-export function expireLeases(db: Database.Database, now: string): LeaseExpiryReport {
+export function expireLeases(db: RouterDatabase, now: string): LeaseExpiryReport {
   const report: LeaseExpiryReport = { requeued: [], recoveryRequired: [] };
 
   for (const attempt of listExpiredActiveAttempts(db, now)) {

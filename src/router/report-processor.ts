@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import { JiraApiError, StatusNotReachableError, TransitionNotFoundError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
@@ -83,7 +83,7 @@ import { checkContext, checkSource } from "./workflow-checks.js";
  */
 
 export interface ReportProcessorDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   jira: JiraGateway;
   now: () => string;
 }
@@ -195,7 +195,7 @@ function writeFailureLog(params: FailureLogParams): StepOutcome {
 
 async function runTransition(
   jira: JiraGateway,
-  db: Database.Database,
+  db: RouterDatabase,
   step: ReportStepRow,
   params: TransitionParams,
 ): Promise<StepOutcome> {
@@ -236,7 +236,7 @@ async function runTransition(
  *  (ADR 0044's rules for implementations; the status entry for a plan). */
 async function approvalStillStands(
   jira: JiraGateway,
-  db: Database.Database,
+  db: RouterDatabase,
   issue: JiraIssue,
   params: TransitionParams,
 ): Promise<boolean> {
@@ -447,7 +447,7 @@ async function runSupersede(
 
 async function runStep(
   jira: JiraGateway,
-  db: Database.Database,
+  db: RouterDatabase,
   step: ReportStepRow,
   ctx: BatchContext,
 ): Promise<StepOutcome> {

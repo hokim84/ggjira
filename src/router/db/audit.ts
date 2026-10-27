@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 
 export interface AuditEntry {
   id: number;
@@ -12,7 +12,7 @@ export interface AuditEntry {
 /** Appends to the `audit_log` table (§3 "감사 기록"): who confirmed a stop, retried a job or a
  *  report, and when. Append-only; nothing reads it back to make decisions. */
 export function appendAudit(
-  db: Database.Database,
+  db: RouterDatabase,
   entry: { at: string; actor: string; action: string; subject: string; detail?: unknown },
 ): void {
   db.prepare(
@@ -26,7 +26,7 @@ export function appendAudit(
   );
 }
 
-export function listAudit(db: Database.Database, subject?: string): AuditEntry[] {
+export function listAudit(db: RouterDatabase, subject?: string): AuditEntry[] {
   const rows = (
     subject
       ? db.prepare("SELECT * FROM audit_log WHERE subject = ? ORDER BY id ASC").all(subject)

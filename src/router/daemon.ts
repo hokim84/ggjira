@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { FastifyInstance } from "fastify";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { Logger } from "../logger.js";
@@ -39,7 +39,7 @@ export const SYNC_FAILURE_BACKOFF_MS = 10_000;
 export const ASSESS_INTERVAL_MS = 2_000;
 
 export interface RouterDaemonDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   jira: JiraGateway;
   config: RouterConfig;
   webhookSecret: string;

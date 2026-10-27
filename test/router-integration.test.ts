@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkerProviderConfigSchema } from "../src/contracts/provider.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
@@ -73,7 +73,7 @@ class RecordingProvider {
  */
 describe("Router with two workers over HTTP", () => {
   let dir: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
   let daemon: RouterDaemon;
   let routerUrl: string;
   const jira = new FakeJiraGateway();

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PLAN_PROPERTY_KEY, PlanMetadataSchema, readPlanTaskMetadata } from "../pm/metadata.js";
 import { computeApprovalId } from "./approval.js";
@@ -95,7 +95,7 @@ export async function reconcileDelegatedPlans(
 }
 
 export function planDeploymentAuthorizes(
-  db: Database.Database,
+  db: RouterDatabase,
   job: JobRow,
   parentKey: string | null,
 ): boolean {

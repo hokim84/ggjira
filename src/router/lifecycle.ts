@@ -1,8 +1,8 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 
 /** Require the latest reviewed head AND its actual merge commit, including squash merges. */
 export function integrationEvidence(
-  db: Database.Database,
+  db: RouterDatabase,
   issueKey: string,
   baseBranch: string,
 ): { mergeSha: string; resultId: string } | undefined {

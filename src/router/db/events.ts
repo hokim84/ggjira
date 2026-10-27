@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 import { isUniqueConstraintViolation } from "./errors.js";
 
 export interface EventRow {
@@ -46,7 +46,7 @@ function toEventRow(row: Record<string, unknown>): EventRow {
   };
 }
 
-export function recordEvent(db: Database.Database, input: RecordEventInput): EventRow {
+export function recordEvent(db: RouterDatabase, input: RecordEventInput): EventRow {
   try {
     db.prepare(
       `INSERT INTO events (id, site_id, webhook_delivery_id, received_at, processed_at, payload)
@@ -71,26 +71,26 @@ export function recordEvent(db: Database.Database, input: RecordEventInput): Eve
   return event;
 }
 
-export function getEvent(db: Database.Database, id: string): EventRow | undefined {
+export function getEvent(db: RouterDatabase, id: string): EventRow | undefined {
   const row = db.prepare("SELECT * FROM events WHERE id = ?").get(id) as
     | Record<string, unknown>
     | undefined;
   return row ? toEventRow(row) : undefined;
 }
 
-export function listUnprocessedEvents(db: Database.Database): EventRow[] {
+export function listUnprocessedEvents(db: RouterDatabase): EventRow[] {
   const rows = db
     .prepare("SELECT * FROM events WHERE processed_at IS NULL ORDER BY received_at ASC")
     .all() as Record<string, unknown>[];
   return rows.map(toEventRow);
 }
 
-export function markEventProcessed(db: Database.Database, id: string, now: string): void {
+export function markEventProcessed(db: RouterDatabase, id: string, now: string): void {
   db.prepare("UPDATE events SET processed_at = ? WHERE id = ?").run(now, id);
 }
 
 /** When the oldest still-unprocessed webhook arrived — the webhook processing delay. */
-export function oldestUnprocessedEventAt(db: Database.Database): string | null {
+export function oldestUnprocessedEventAt(db: RouterDatabase): string | null {
   const row = db
     .prepare("SELECT MIN(received_at) AS at FROM events WHERE processed_at IS NULL")
     .get() as { at: string | null } | undefined;

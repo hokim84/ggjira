@@ -12,14 +12,19 @@ GGJIRA v5(Router + Worker) 운영·진단 절차다. §1~§12(v4 폴링 에이�
 - `ggjira router jobs show <jobId>`는 attempt, 보고 단계, 감사 기록을 보여 준다.
 - Router 로그의 `layer:"router"`에서 `pass:"reconcile"`의 `held`/`skipped`는 job이 생기지 않은
   이유이고, `report journal pass`의 `blocked`는 Jira 반영이 막힌 곳이다.
-- 워커 로그는 `layer:"worker-runtime"`, 결과 spool은 `<dataDir>/spool/*.json`이다.
+- 워커 로그는 `layer:"worker-runtime"`, 결과 spool은 `<워커 홈>/spool/*.json`이다(ADR 0060).
 
 ## 13. Windows에서 `npm run test`/`npm run check`가 멈출 때
 
 일부 Windows 개발 환경(특히 백신 실시간 검사가 활성화된 경우)에서는 vitest의 기본
 `threads` pool이 `better-sqlite3` 네이티브 애드온을 여러 worker thread에서 동시에 로드하며
-멈춘다 — CPU 사용량이 0으로 고정된 채 아무 진행도 없는 것이 특징이다(프로세스가 죽지도,
-진행하지도 않는다). CI(`ubuntu-latest`, `.github/workflows/ci.yml`)와 Linux 컨테이너(§16의 `docker-compose.test.yml`)에서는 재현되지 않으므로
+멈췄다 — CPU 사용량이 0으로 고정된 채 아무 진행도 없는 것이 특징이다(프로세스가 죽지도,
+진행하지도 않는다). ADR 0063으로 네이티브 애드온이 없어진 뒤 2026-10-27에는 같은 머신에서 전체 실행이
+멈추지 않고 75초 만에 끝났다. 다시 멈추면 아래 방법을 쓴다.
+
+멈추지 않아도 Windows에서만 실패하는 테스트가 있다. `.sh` fixture를 쓰는 `worker-claude-code-cli`·
+`worker-codex-cli`(아래 `spawn EFTYPE`)와, git을 많이 실행해 5초 제한 근처에서 끝나는 `fci-static`의
+일부 테스트(변경 전 HEAD에서도 같다)다. 이런 테스트는 Linux 컨테이너에서 확인한다. CI(`ubuntu-latest`, `.github/workflows/ci.yml`)와 Linux 컨테이너(§16의 `docker-compose.test.yml`)에서는 재현되지 않으므로
 `vitest.config.ts`는 건드리지 않는다.
 
 이 증상을 보이면 로컬에서만 다음처럼 실행한다:

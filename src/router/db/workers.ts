@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 
 export interface WorkerRow {
   id: string;
@@ -53,7 +53,7 @@ export interface RegisterWorkerInput {
  * clears any revocation, and drops its current session so the old token/session can no longer
  * act. Re-pairing needs a fresh admin-minted code, so it is an explicit admin decision.
  */
-export function registerWorker(db: Database.Database, input: RegisterWorkerInput): WorkerRow {
+export function registerWorker(db: RouterDatabase, input: RegisterWorkerInput): WorkerRow {
   db.prepare(
     `INSERT INTO workers (id, name, token_hash, enabled, created_at, last_seen_at, revoked_at)
      VALUES (?, ?, ?, 1, ?, ?, NULL)
@@ -73,7 +73,7 @@ export function registerWorker(db: Database.Database, input: RegisterWorkerInput
   return worker;
 }
 
-export function getWorker(db: Database.Database, workerId: string): WorkerRow | undefined {
+export function getWorker(db: RouterDatabase, workerId: string): WorkerRow | undefined {
   const row = db.prepare("SELECT * FROM workers WHERE id = ?").get(workerId) as
     | Record<string, unknown>
     | undefined;
@@ -83,7 +83,7 @@ export function getWorker(db: Database.Database, workerId: string): WorkerRow | 
 /** Looks a worker up by the hash of the bearer token it presented. Returns revoked workers too —
  *  the caller decides how to reject them. */
 export function findWorkerByTokenHash(
-  db: Database.Database,
+  db: RouterDatabase,
   tokenHash: string,
 ): WorkerRow | undefined {
   const row = db.prepare("SELECT * FROM workers WHERE token_hash = ?").get(tokenHash) as
@@ -92,7 +92,7 @@ export function findWorkerByTokenHash(
   return row ? toWorkerRow(row) : undefined;
 }
 
-export function listWorkers(db: Database.Database): WorkerRow[] {
+export function listWorkers(db: RouterDatabase): WorkerRow[] {
   const rows = db.prepare("SELECT * FROM workers ORDER BY id ASC").all() as Record<
     string,
     unknown
@@ -102,7 +102,7 @@ export function listWorkers(db: Database.Database): WorkerRow[] {
 
 /** Opens a new session for the worker, superseding every earlier one in the same transaction. */
 export function startWorkerSession(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     sessionId: string;
     workerId: string;
@@ -134,7 +134,7 @@ export function startWorkerSession(
 }
 
 export function recordWorkerHeartbeat(
-  db: Database.Database,
+  db: RouterDatabase,
   input: { workerId: string; repositoryIds: string[]; now: string },
 ): void {
   db.prepare(
@@ -148,20 +148,20 @@ export function recordWorkerHeartbeat(
 /** Refreshes liveness without changing reported availability — a worker blocked in a 25s
  *  `jobs/next` long poll can't send its 5s general heartbeat, but the poll itself proves it is
  *  alive. No-op for a worker that has never heartbeated (it has no availability to refresh). */
-export function touchWorkerHeartbeat(db: Database.Database, workerId: string, now: string): void {
+export function touchWorkerHeartbeat(db: RouterDatabase, workerId: string, now: string): void {
   db.prepare(
     "UPDATE workers SET last_heartbeat_at = ?, last_seen_at = ? WHERE id = ? AND last_heartbeat_at IS NOT NULL",
   ).run(now, now, workerId);
 }
 
-export function markWorkerAssigned(db: Database.Database, workerId: string, now: string): void {
+export function markWorkerAssigned(db: RouterDatabase, workerId: string, now: string): void {
   db.prepare("UPDATE workers SET last_assigned_at = ? WHERE id = ?").run(now, workerId);
 }
 
 /** Credential revocation: the token stops authenticating immediately, and the worker's session is
  *  dropped. Cancelling its active attempt is the caller's job (§4 "credential 폐기는 활성 실행에도
  *  취소를 요청한다"). */
-export function revokeWorker(db: Database.Database, workerId: string, now: string): void {
+export function revokeWorker(db: RouterDatabase, workerId: string, now: string): void {
   const run = db.transaction(() => {
     db.prepare("UPDATE workers SET revoked_at = ?, current_session_id = NULL WHERE id = ?").run(
       now,
@@ -174,6 +174,6 @@ export function revokeWorker(db: Database.Database, workerId: string, now: strin
   run();
 }
 
-export function setWorkerEnabled(db: Database.Database, workerId: string, enabled: boolean): void {
+export function setWorkerEnabled(db: RouterDatabase, workerId: string, enabled: boolean): void {
   db.prepare("UPDATE workers SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, workerId);
 }

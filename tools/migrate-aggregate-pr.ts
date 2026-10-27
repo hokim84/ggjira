@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { RouterDatabase } from "../src/router/db/connection.js";
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { loadRouterConfig } from "../src/router/config.js";
@@ -17,7 +17,7 @@ import { defaultWorkerHome, workerPaths } from "../src/worker-runtime/paths.js";
 const apply = process.argv.includes("--apply");
 const configPath = process.argv.find((a) => a.endsWith(".json")) ?? "router.config.json";
 const config = loadRouterConfig(configPath);
-let db = new Database(config.db.path, { readonly: true });
+let db = new RouterDatabase(config.db.path, { readOnly: true });
 try {
   if (apply) {
     const listening = await fetch(`http://127.0.0.1:${config.http.port}/health`, {
@@ -46,7 +46,7 @@ try {
     const backups = path.join(path.dirname(config.db.path), "backups");
     mkdirSync(backups, { recursive: true });
     const backup = path.join(backups, `before-aggregate-pr-${Date.now()}.sqlite3`);
-    await db.backup(backup);
+    await db.backupTo(backup);
     copyFileSync(configPath, `${configPath}.before-aggregate-pr.bak`);
     db.close();
     db = openRouterDb(config.db.path);

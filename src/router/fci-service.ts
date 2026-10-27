@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import { z } from "zod";
 import {
   FCI_ANALYZER,
@@ -40,10 +40,15 @@ type Row = Record<string, string | number | null> & {
   superseded: number;
   supersedes: string | null;
   revision: number;
+  series_id: string;
+  lease_expires_at: string | null;
+  repo: string;
+  number: number;
+  sha: string;
 };
 export class FciService {
   constructor(
-    private db: Database.Database,
+    private db: RouterDatabase,
     private config: RouterConfig,
     private now: () => string = () => new Date().toISOString(),
   ) {}

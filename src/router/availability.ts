@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { RouterConfig } from "./config.js";
 import { type WorkerRow, listWorkers } from "./db/workers.js";
 import type { WorkerAvailability } from "./scheduler.js";
@@ -38,7 +38,7 @@ export function toWorkerAvailability(worker: WorkerRow): WorkerAvailability {
  * itself stays in the scheduler; this only decides who is online and eligible at all.
  */
 export function buildWorkerAvailability(
-  db: Database.Database,
+  db: RouterDatabase,
   config: RouterConfig,
   now: string,
 ): WorkerAvailability[] {

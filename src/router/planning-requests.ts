@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import { normalizeExecutionText } from "../issue/input-hash.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraComment, JiraIssue } from "../jira/types.js";
@@ -40,7 +40,7 @@ export interface PlanningRequest {
 }
 
 export function latestPlanningRequest(
-  db: Database.Database,
+  db: RouterDatabase,
   key: string,
 ): PlanningRequest | undefined {
   return db
@@ -59,7 +59,7 @@ function humanComment(comment: JiraComment, issue: JiraIssue): boolean {
 
 /** One durable request per status entry, requirement edit, answer or explicit retry. */
 export async function syncPlanningRequest(
-  db: Database.Database,
+  db: RouterDatabase,
   jira: JiraGateway,
   issue: JiraIssue,
   requestStatus: string,
@@ -194,12 +194,12 @@ export async function syncPlanningRequest(
 }
 
 /** Mark a plan approvable only after every write succeeded while still in AI review. */
-export async function markReadyPlans(db: Database.Database, jira: JiraGateway): Promise<void> {
+export async function markReadyPlans(db: RouterDatabase, jira: JiraGateway): Promise<void> {
   const requests = db
     .prepare(
       "SELECT * FROM planning_requests AS p WHERE ready_history IS NULL AND rowid = (SELECT MAX(rowid) FROM planning_requests WHERE issue_key = p.issue_key)",
     )
-    .all() as PlanningRequest[];
+    .all() as unknown as PlanningRequest[];
   for (const request of requests) {
     if (latestPlanningRequest(db, request.issue_key)?.id !== request.id) continue;
     const review = getLatestPlanReview(db, request.issue_key);

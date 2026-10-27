@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { JobState } from "../contracts/job-state.js";
 import type { JobKind } from "../contracts/protocol.js";
 import { JiraApiError } from "../jira/client.js";
@@ -49,7 +49,7 @@ export interface IssueView {
 }
 
 interface IssueViewDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   jira: JiraGateway;
   config: RouterConfig;
 }

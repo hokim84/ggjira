@@ -4,12 +4,8 @@
 
 FROM node:24-bookworm-slim AS deps
 WORKDIR /app
-# better-sqlite3 falls back to a source build when no prebuilt binary matches.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts && npm rebuild better-sqlite3
+RUN npm ci --ignore-scripts
 
 FROM deps AS test
 # git: worktree tests. procps: `ps` for the process-tree kill test.
@@ -20,6 +16,10 @@ COPY tsconfig.json tsconfig.build.json biome.json vitest.config.ts ./
 COPY src ./src
 COPY test ./test
 COPY web ./web
+# Files tests check against: the example configs and the runbook's failure-code table.
+COPY worker.config.example.json ./
+COPY deploy/router.config.example.json ./deploy/
+COPY docs/runbook.md ./docs/
 RUN chmod +x test/fixtures/fake-workers/*.sh
 CMD ["npm", "run", "check"]
 

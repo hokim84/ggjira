@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import { IssueSnapshotSchema } from "../contracts/envelope.js";
 import type { Logger } from "../logger.js";
 import { listJobsToAssess, recordAssessment, recordAssessmentFailure } from "./db/assessments.js";
@@ -53,7 +53,7 @@ const MAX_TRIES = 3;
 const BATCH = 5;
 
 export interface AssessmentDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   jev: JevClient;
   now: () => string;
   logger?: Logger;

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 import {
   ACTIVE_ATTEMPT_STATES,
   assertAttemptStateTransition,
@@ -70,7 +70,7 @@ function toAttemptRow(row: Record<string, unknown>): AttemptRow {
  * decides when to move the job to `leased` via `transitionJobState`; this is
  * a storage-layer primitive, not a scheduling decision.
  */
-export function leaseAttempt(db: Database.Database, input: LeaseAttemptInput): AttemptRow {
+export function leaseAttempt(db: RouterDatabase, input: LeaseAttemptInput): AttemptRow {
   const insertAndBookkeep = db.transaction(() => {
     try {
       db.prepare(
@@ -107,7 +107,7 @@ export function leaseAttempt(db: Database.Database, input: LeaseAttemptInput): A
   return attempt;
 }
 
-export function getAttempt(db: Database.Database, attemptId: string): AttemptRow | undefined {
+export function getAttempt(db: RouterDatabase, attemptId: string): AttemptRow | undefined {
   const row = db.prepare("SELECT * FROM attempts WHERE id = ?").get(attemptId) as
     | Record<string, unknown>
     | undefined;
@@ -116,7 +116,7 @@ export function getAttempt(db: Database.Database, attemptId: string): AttemptRow
 
 /** The active attempt (if any) occupying this worker's one-active-attempt slot. */
 export function getActiveAttemptForWorker(
-  db: Database.Database,
+  db: RouterDatabase,
   workerId: string,
 ): AttemptRow | undefined {
   const placeholders = [...ACTIVE_ATTEMPT_STATES].map(() => "?").join(", ");
@@ -128,7 +128,7 @@ export function getActiveAttemptForWorker(
 
 /** The attempt already served to this worker's `jobs/next` `requestId`, if any. */
 export function getAttemptByRequestId(
-  db: Database.Database,
+  db: RouterDatabase,
   workerId: string,
   requestId: string,
 ): AttemptRow | undefined {
@@ -141,7 +141,7 @@ export function getAttemptByRequestId(
 /** Records which session/request an attempt was handed to. An unstarted lease may be re-served
  *  to a later requestId (e.g. the worker restarted and generated a fresh one), so this overwrites. */
 export function bindAttemptToRequest(
-  db: Database.Database,
+  db: RouterDatabase,
   attemptId: string,
   sessionId: string,
   requestId: string,
@@ -154,7 +154,7 @@ export function bindAttemptToRequest(
 }
 
 export function renewAttemptLease(
-  db: Database.Database,
+  db: RouterDatabase,
   attemptId: string,
   leaseExpiresAt: string,
 ): void {
@@ -165,7 +165,7 @@ export function renewAttemptLease(
 }
 
 /** Active attempts whose lease ran out at or before `now` (the lease-expiry sweep's input). */
-export function listExpiredActiveAttempts(db: Database.Database, now: string): AttemptRow[] {
+export function listExpiredActiveAttempts(db: RouterDatabase, now: string): AttemptRow[] {
   const placeholders = [...ACTIVE_ATTEMPT_STATES].map(() => "?").join(", ");
   const rows = db
     .prepare(
@@ -175,11 +175,7 @@ export function listExpiredActiveAttempts(db: Database.Database, now: string): A
   return rows.map(toAttemptRow);
 }
 
-export function setAttemptResultId(
-  db: Database.Database,
-  attemptId: string,
-  resultId: string,
-): void {
+export function setAttemptResultId(db: RouterDatabase, attemptId: string, resultId: string): void {
   db.prepare("UPDATE attempts SET result_id = ? WHERE id = ?").run(resultId, attemptId);
 }
 
@@ -190,7 +186,7 @@ export function setAttemptResultId(
  * `ended_at` on any terminal state.
  */
 export function transitionAttemptState(
-  db: Database.Database,
+  db: RouterDatabase,
   attemptId: string,
   to: AttemptState,
   now: string,
@@ -211,7 +207,7 @@ export function transitionAttemptState(
 }
 
 /** Every attempt a job has had, oldest first (admin `jobs show`). */
-export function listAttemptsForJob(db: Database.Database, jobId: string): AttemptRow[] {
+export function listAttemptsForJob(db: RouterDatabase, jobId: string): AttemptRow[] {
   const rows = db
     .prepare("SELECT * FROM attempts WHERE job_id = ? ORDER BY leased_at ASC, rowid ASC")
     .all(jobId) as Record<string, unknown>[];

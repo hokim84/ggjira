@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { JobResult } from "../contracts/envelope.js";
 import type { RouterConfig } from "./config.js";
 import { getApproval } from "./db/approvals.js";
@@ -73,7 +73,7 @@ function parseAction(action: string): JudgmentAction {
  * is written for them.
  */
 export function judgeReviewTarget(
-  db: Database.Database,
+  db: RouterDatabase,
   config: RouterConfig,
   input: JudgeInput,
 ): ReviewRecordRow {
@@ -99,7 +99,7 @@ export function judgeReviewTarget(
 }
 
 /** Whether the attempt's result is a child's that waits for a person to confirm its checks. */
-function childAwaitingHumanCheck(db: Database.Database, jobId: string, attemptId: string): boolean {
+function childAwaitingHumanCheck(db: RouterDatabase, jobId: string, attemptId: string): boolean {
   const result = db
     .prepare("SELECT payload FROM results WHERE attempt_id=? ORDER BY rowid DESC LIMIT 1")
     .get(attemptId) as { payload: string } | undefined;
@@ -114,7 +114,7 @@ function childAwaitingHumanCheck(db: Database.Database, jobId: string, attemptId
   );
 }
 
-function judge(db: Database.Database, config: RouterConfig, input: JudgeInput): ReviewRecordRow {
+function judge(db: RouterDatabase, config: RouterConfig, input: JudgeInput): ReviewRecordRow {
   const action = parseAction(input.action);
   const note = input.note?.trim() ?? "";
   if (action !== "confirm" && !note) {

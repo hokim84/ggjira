@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type {
   AdminCreatePairingCodeResponse,
   JobAuthorizeRequest,
@@ -103,7 +103,7 @@ export class WorkerApiError extends Error {
 }
 
 export interface WorkerServiceDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   config: RouterConfig;
   now?: () => string;
   genId?: () => string;
@@ -125,13 +125,13 @@ function defaultSleep(ms: number): Promise<void> {
 
 /**
  * The SQLite-backed half of `/api/v1/*`. Each method validates identity → session → attempt →
- * lease inside a single synchronous DB transaction (better-sqlite3 is synchronous, so two
+ * lease inside a single synchronous DB transaction (node:sqlite is synchronous, so two
  * concurrent HTTP requests can never interleave inside one), and only `nextJob`'s long-poll
  * wait happens outside a transaction (§3 "네트워크 호출을 DB 트랜잭션 안에서 기다리지 않는다").
  */
 export class WorkerService {
   readonly fci: FciService;
-  private readonly db: Database.Database;
+  private readonly db: RouterDatabase;
   private config: RouterConfig;
   private readonly now: () => string;
   private readonly genId: () => string;

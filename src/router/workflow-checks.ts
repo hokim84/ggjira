@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { assemblyContext, latestAssembly } from "./assembly.js";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { JobResult } from "../contracts/envelope.js";
 import type { QualityContext } from "../contracts/quality.js";
 import type { JiraGateway } from "../jira/gateway.js";
@@ -24,7 +24,7 @@ import { integrationEvidence } from "./lifecycle.js";
 import { latestPlanningRequest, planningFingerprint } from "./planning-requests.js";
 
 export function latestImplementation(
-  db: Database.Database,
+  db: RouterDatabase,
   key: string,
 ): { id: string; payload: string; input_hash: string; approval_id: string } | undefined {
   return db
@@ -91,7 +91,7 @@ export function awaitingHumanCheck(result: JobResult): boolean {
 /** Whether a person confirmed this exact result on the review screen: the issue's current review
  *  target is the result's attempt and its latest judgment is a confirm. */
 export function humanConfirmedResult(
-  db: Database.Database,
+  db: RouterDatabase,
   issueKey: string,
   resultId: string,
 ): boolean {
@@ -114,7 +114,7 @@ export function humanConfirmedResult(
  * The first time Router sees such a move it records it as a confirm.
  */
 export function acceptedImplementation(
-  db: Database.Database,
+  db: RouterDatabase,
   workspace: WorkspaceConfig,
   issue: { key: string; statusName: string },
   resultId: string,
@@ -132,7 +132,7 @@ export function acceptedImplementation(
 /** Records a person's status move as the confirm of the result it accepted (ADR 0061), once. Jira's
  *  own issue history says who moved it. */
 function recordStatusConfirmation(
-  db: Database.Database,
+  db: RouterDatabase,
   issueKey: string,
   resultId: string,
   statusName: string,
@@ -178,7 +178,7 @@ function recordStatusConfirmation(
 }
 
 export async function checkContext(
-  db: Database.Database,
+  db: RouterDatabase,
   jira: JiraGateway,
   config: Pick<RouterConfig, "repositories">,
   workspace: WorkspaceConfig,

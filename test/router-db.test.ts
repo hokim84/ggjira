@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InvalidAttemptStateTransitionError } from "../src/contracts/attempt-state.js";
 import { InvalidJobStateTransitionError } from "../src/contracts/job-state.js";
@@ -26,7 +26,7 @@ import { createPairingCode } from "../src/router/db/pairing.js";
 describe("Router SQLite store", () => {
   let dataDir: string;
   let dbPath: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
 
   beforeEach(() => {
     dataDir = mkdtempSync(path.join(tmpdir(), "ggjira-router-db-test-"));
@@ -71,10 +71,8 @@ describe("Router SQLite store", () => {
         ["jobs", "required_capabilities"],
         ["workers", "reported_capabilities"],
       ])
-        expect(
-          (db.pragma(`table_info(${table})`) as Array<{ name: string }>).map((row) => row.name),
-        ).not.toContain(column);
-      expect(db.pragma("foreign_key_check")).toEqual([]);
+        expect(db.pragmaRows(`table_info(${table})`).map((row) => row.name)).not.toContain(column);
+      expect(db.pragmaRows("foreign_key_check")).toEqual([]);
     });
     it("upgrades a v16 active plan in place without revoking or adopting it into v2", () => {
       createJob(db, {
@@ -101,8 +99,8 @@ describe("Router SQLite store", () => {
       });
       expect(db.prepare("SELECT state FROM plan_deployments").get()).toEqual({ state: "active" });
       expect(db.prepare("SELECT closed_at FROM plan_reviews").get()).toEqual({ closed_at: null });
-      expect(db.pragma("foreign_key_check")).toEqual([]);
-      expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+      expect(db.pragmaRows("foreign_key_check")).toEqual([]);
+      expect(db.pragmaValue("foreign_keys")).toBe(1);
       expect(
         createJob(db, {
           id: "new-quality",
@@ -117,8 +115,40 @@ describe("Router SQLite store", () => {
     });
     it("creates the database file and enables WAL and foreign keys", () => {
       expect(existsSync(dbPath)).toBe(true);
-      expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
-      expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+      expect(db.pragmaValue("journal_mode")).toBe("wal");
+      expect(db.pragmaValue("foreign_keys")).toBe(1);
+      expect(db.pragmaValue("synchronous")).toBe(1);
+    });
+
+    it("commits a transaction, rolls it back on a throw, and nests a savepoint", () => {
+      db.exec("CREATE TABLE tx_probe (v TEXT NOT NULL UNIQUE)");
+      const insert = (v: string) => db.prepare("INSERT INTO tx_probe (v) VALUES (?)").run(v);
+      const values = () =>
+        db
+          .prepare("SELECT v FROM tx_probe ORDER BY v")
+          .all()
+          .map((row) => row.v);
+
+      db.transaction(() => insert("a"))();
+      expect(() =>
+        db.transaction(() => {
+          insert("b");
+          throw new Error("boom");
+        })(),
+      ).toThrow("boom");
+      db.transaction(() => {
+        insert("c");
+        expect(() =>
+          db.transaction(() => {
+            insert("d");
+            insert("a");
+          })(),
+        ).toThrow(/UNIQUE/);
+        insert("e");
+      })();
+
+      expect(values()).toEqual(["a", "c", "e"]);
+      expect(db.isTransaction).toBe(false);
     });
 
     it("applies every migration and records it in schema_migrations", () => {

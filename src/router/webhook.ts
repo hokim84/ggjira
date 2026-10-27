@@ -1,5 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import { DuplicateEventError, recordEvent } from "./db/events.js";
 
 const SIGNATURE_PREFIX = "sha256=";
@@ -100,7 +100,7 @@ export type IngestJiraWebhookEventResult = "accepted" | "duplicate" | "ignored";
  * this function's only job is idempotent persistence.
  */
 export function ingestJiraWebhookEvent(
-  db: Database.Database,
+  db: RouterDatabase,
   input: IngestJiraWebhookEventInput,
 ): IngestJiraWebhookEventResult {
   try {

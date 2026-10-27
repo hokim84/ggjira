@@ -31,7 +31,7 @@ try {
       const backups = path.join(path.dirname(dbPath), "backups");
       mkdirSync(backups, { recursive: true });
       const backup = path.join(backups, `before-board-workflow-${Date.now()}.sqlite3`);
-      await db.backup(backup);
+      await db.backupTo(backup);
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
       )
@@ -39,7 +39,7 @@ try {
         .filter(
           (name) => !name.startsWith("sqlite_") && !["schema_migrations", "workers"].includes(name),
         );
-      db.pragma("foreign_keys=OFF");
+      db.exec("PRAGMA foreign_keys=OFF");
       db.transaction(() => {
         for (const table of tables) {
           if (!/^[a-z_]+$/.test(table)) throw new Error("Unexpected database table name");
@@ -48,10 +48,10 @@ try {
         db.exec(
           "UPDATE workers SET current_session_id=NULL,last_seen_at=NULL,last_heartbeat_at=NULL,last_assigned_at=NULL,reported_repository_ids='[]',reported_repository_paths='{}'",
         );
-        if ((db.pragma("foreign_key_check") as unknown[]).length)
+        if (db.pragmaRows("foreign_key_check").length)
           throw new Error("Reset foreign key check failed");
       })();
-      db.pragma("foreign_keys=ON");
+      db.exec("PRAGMA foreign_keys=ON");
       console.log(
         JSON.stringify({
           reset: true,
