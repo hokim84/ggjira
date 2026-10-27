@@ -236,9 +236,10 @@ ggjira worker start              # 이후: 바로 실행
 설치하지 않고 `npx ggjira@<버전> worker start`로도 실행할 수 있다. GGJIRA를 고쳐 가며 쓸 때는 checkout에서
 `npm run dev -- worker start`(Windows는 `run-worker.bat`)로 실행한다. 업데이트는 `npm install -g ggjira@<버전>` 뒤 재시작이다.
 
-워커의 설정·credential·clone·worktree·로그·spool은 모두 워커 홈 한 곳에 있다(ADR 0060). 기본은
-`%LOCALAPPDATA%\ggjira\worker`(Windows), `~/.ggjira/worker`(그 밖)이고 `--home <폴더>` 또는
-`GGJIRA_WORKER_HOME`으로 바꾼다. 한 머신에서 워커를 여럿 띄우려면 홈을 따로 준다.
+워커의 설정·credential·clone·worktree·로그·spool은 모두 워커 홈 한 곳에 있다(ADR 0060). 기본은 GGJIRA
+checkout에서 실행하면 그 안의 `data/worker`(ADR 0065), 설치한 패키지로 실행하면 `%LOCALAPPDATA%\ggjira\worker`(Windows),
+`~/.ggjira/worker`(그 밖)이다. `--home <폴더>` 또는 `GGJIRA_WORKER_HOME`으로 바꾼다. 한 머신에서 워커를 여럿 띄우려면
+홈을 따로 준다.
 
 ```text
 <워커 홈>/worker.config.json  credential.json  spool/  fci-spool/  logs/
@@ -246,10 +247,15 @@ ggjira worker start              # 이후: 바로 실행
 <워커 홈>/repositories/<저장소 id>/worktrees/   작업별 worktree
 ```
 
-- **`worker start`·`check`가 `… is above the worker home …`로 멈춤**: 워커 홈이나 그 상위 폴더에 `CLAUDE.md`·`AGENTS.md`·`.git`이
-  있다. 그대로 두면 작업 중인 AI가 그 파일을 자기 지침으로 읽는다(KAN-47에서 Codex가 GGJIRA의 `AGENTS.md`를 읽고
-  GGJIRA 검사를 다른 저장소의 완료 조건처럼 보고했다). GGJIRA 폴더 안을 홈으로 쓰지 말고 기본 위치나 다른
-  프로젝트 밖의 폴더를 `--home`으로 준다.
+- **상위 폴더 지침 차단 (ADR 0065)**: 워커 홈이 GGJIRA 폴더 안에 있어도 작업 중인 AI는 저장소 위 폴더의
+  `CLAUDE.md`·`AGENTS.md`를 읽지 않는다. Claude Code에는 `--settings`의 `claudeMdExcludes`로 그 파일들을, Codex에는
+  `-c project_root_markers=[]`를 넘긴다(KAN-47에서 Codex가 GGJIRA의 `AGENTS.md`를 읽고 GGJIRA 검사를 다른 저장소의
+  완료 조건처럼 보고했다). Claude Code나 Codex를 올린 뒤에는 한 번 확인한다. 작업 worktree에서 GGJIRA 워커와 같은
+  인자로 "로드된 지침 파일 경로를 모두 적어라"고 물었을 때 GGJIRA의 `CLAUDE.md`·`AGENTS.md`가 나오면 차단이 깨진
+  것이다. 확실히 보려면 상위 `CLAUDE.md`에 큰 내용을 넣고 `--output-format json`의 입력 토큰 수가 그만큼 늘지 않는지 본다.
+- **`worker check`가 `… is inside the repository at …`로 실패**: 설정한 저장소 폴더가 git 저장소가 아니면서 다른 저장소
+  (예: GGJIRA checkout) 안에 있다. 그 폴더에서 AI가 실행한 git 명령은 바깥 저장소를 바꾼다. 그 폴더를 `git init`하거나
+  저장소 밖으로 옮긴다.
 
 - **`command not found: ggjira`**: `npm install -g ggjira`로 설치하거나, checkout에서는 `npm run dev -- …`로
   실행한다. `--` 뒤에 한 칸 띄우고 `ggjira`라는 단어는 넣지 않는다.
@@ -668,7 +674,7 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
 | 파일 | 하는 일 |
 |---|---|
 | `run-router.bat` | `router serve`. 설정은 `router.config.json`(또는 `GGJIRA_ROUTER_CONFIG`). 없으면 셋업 모드(§20). 뒤에 붙인 인자는 그대로 넘긴다(예: `run-router.bat --port 8788`) |
-| `run-worker.bat` | `worker start`. 워커 홈은 `GGJIRA_WORKER_HOME`, 없으면 `%LOCALAPPDATA%\ggjira\worker`. 처음에는 Router 주소·LLM·페어링 코드를 묻는다(§18) |
+| `run-worker.bat` | `worker start`. 워커 홈은 `GGJIRA_WORKER_HOME`, 없으면 이 폴더의 `data\worker`(ADR 0065). 처음에는 Router 주소·LLM·페어링 코드를 묻는다(§18) |
 | `run-all.bat` | Router 창을 열고 `/health`가 응답하면 Worker 창을 연다. 이미 응답하는 Router가 있으면 Worker만 연다 |
 
 - 멈추기: 각 창에서 Ctrl+C(워커는 1회: 현재 작업 후 종료, 2회: 즉시) 또는 창 닫기. 에러로 끝나면 창이 멈춰
@@ -1059,7 +1065,7 @@ GGJIRA 코드를 바꾼 사람·AI 에이전트(Claude Code, Codex 등)가 완�
 
 정리 — 테스트는 임시 디렉터리를 스스로 지운다. 중단된 실행이 남긴 `ggjira-*` 임시 폴더는 OS 임시 디렉터리에서 지운다.
 
-## 47. 워커 홈 전환 (ADR 0060)
+## 47. 워커 홈 전환 (ADR 0060, 0065)
 
 워커 설정 `configVersion 5`(GGJIRA 폴더 안 `worker.config.json`, `data/worker`, `data/worker-logs`)는 더 읽지 않는다.
 `worker start`가 `… is configVersion 5 …` 오류로 멈추면 새 워커 홈으로 다시 설정한다. 자동 변환은 없다.
@@ -1067,12 +1073,23 @@ GGJIRA 코드를 바꾼 사람·AI 에이전트(Claude Code, Codex 등)가 완�
 1. Router에서 그 워커의 실행 중 작업이 없는지 본다(`ggjira router status`). 있으면 끝나기를 기다린다.
 2. 예전 위치에서 결과를 비운다: 워커를 멈춘 뒤 이전 빌드로 `worker results retry --config worker.config.json`을 실행해
    `still waiting 0`을 확인한다. 새 빌드에는 `--config`가 없다.
-3. 새 빌드로 `npm run dev -- worker start`(또는 `run-worker.bat`)를 실행한다. 기본 홈
-   (`%LOCALAPPDATA%\ggjira\worker`)에 첫 설정을 묻는다. 웹 UI > 워커에서 재페어링 코드를 받아 입력한다.
-   저장소는 새로 clone되며, 기존 clone을 쓰려면 질문에 그 폴더 경로를 넣는다(GGJIRA 폴더 안의 clone은 쓰지 않는다).
-4. 워커 홈의 `worker.config.json`에 `repositories[].validateCommand`를 다시 넣고 `worker check`로 확인한다.
-5. 확인이 끝나면 GGJIRA 폴더의 `worker.config.json`, `data/worker-credential.json`, `data/worker/`, `data/worker-logs/`를
-   지운다. 남겨 두면 그 안의 worktree가 다시 GGJIRA 지침을 읽을 위험만 남는다.
+3. 예전 파일을 치운다: GGJIRA 폴더의 `worker.config.json`, `data/worker-credential.json`, `data/worker-logs/`를 지우고,
+   `data/worker`는 다른 이름으로 옮겨 둔다(새 홈이 같은 자리를 쓴다). 기존 clone을 쓰려면 그 안의 저장소 폴더 경로를 기억해 둔다.
+4. 새 빌드로 `npm run dev -- worker start`(또는 `run-worker.bat`)를 실행한다. checkout에서는 기본 홈
+   (`data/worker`, ADR 0065)에 첫 설정을 묻는다. 웹 UI > 워커에서 재페어링 코드를 받아 입력한다.
+   저장소는 새로 clone되며, 기존 clone을 쓰려면 질문에 3번의 폴더 경로를 넣는다.
+5. 워커 홈의 `worker.config.json`에 `repositories[].validateCommand`를 다시 넣고 `worker check`로 확인한다.
+   확인이 끝나면 3번에서 옮겨 둔 폴더를 지운다.
+
+ADR 0060의 기본 홈(`%LOCALAPPDATA%\ggjira\worker`, `~/.ggjira/worker`)에서 checkout의 `data/worker`로 옮기려면 워커를
+멈추고(실행 중 작업이 없을 때) 폴더째 옮긴 뒤, 저장소마다 clone 폴더에서 worktree 연결을 고치고 `worker check`로
+확인한다. clone과 worktree가 함께 옮겨졌기 때문에 worktree 경로를 모두 넘겨야 한다(경로는 clone 폴더 기준이다).
+
+```bash
+cd data/worker/repositories/<id>/repo
+git worktree repair ../worktrees/*
+git worktree list        # 모든 worktree가 새 위치로 나오면 된다
+``` 옮기지 않으려면 `GGJIRA_WORKER_HOME`을 예전 폴더로 둔다.
 
 Router와 Worker를 함께 새 빌드로 재시작해야 ADR 0059·0061 동작(실패 로그의 Acceptance Checks 절, 사람 확인 대기)이
 적용된다. 이미 발급된 attempt는 이전 지침과 규칙으로 끝난다.

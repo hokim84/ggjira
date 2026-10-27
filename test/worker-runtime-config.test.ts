@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadWorkerConfig, WorkerConfigError } from "../src/worker-runtime/config.js";
-import { defaultWorkerHome, instructionLeaks, workerPaths } from "../src/worker-runtime/paths.js";
+import { instructionFilesAbove } from "../src/worker/instruction-files.js";
+import { defaultWorkerHome, workerPaths } from "../src/worker-runtime/paths.js";
 
 describe("loadWorkerConfig", () => {
   let dataDir: string;
@@ -154,29 +155,37 @@ describe("loadWorkerConfig", () => {
 });
 
 describe("worker home", () => {
-  it("defaults to the user's local data folder", () => {
+  it("is data/worker in the GGJIRA checkout, else the user's local data folder (ADR 0065)", () => {
+    const checkout = path.join(tmpdir(), "ggjira");
+    expect(defaultWorkerHome({}, process.platform, "/home/a", checkout)).toBe(
+      path.join(checkout, "data", "worker"),
+    );
     expect(
-      defaultWorkerHome({ LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local" }, "win32", "C:\\Users\\a"),
+      defaultWorkerHome(
+        { LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local" },
+        "win32",
+        "C:\\Users\\a",
+        null,
+      ),
     ).toBe("C:\\Users\\a\\AppData\\Local\\ggjira\\worker");
-    expect(defaultWorkerHome({}, "linux", "/home/a")).toBe("/home/a/.ggjira/worker");
+    expect(defaultWorkerHome({}, "linux", "/home/a", null)).toBe("/home/a/.ggjira/worker");
   });
+});
 
-  it("finds instruction files and repositories above a folder (KAN-47)", () => {
-    const root = mkdtempSync(path.join(tmpdir(), "ggjira-home-leak-"));
-    try {
-      const home = path.join(root, "project", "data", "worker");
-      mkdirSync(home, { recursive: true });
-      expect(instructionLeaks(home)).toEqual([]);
-      writeFileSync(path.join(root, "project", "AGENTS.md"), "run npm run check\n");
-      mkdirSync(path.join(root, "project", ".git"));
-      expect(instructionLeaks(home)).toEqual([
-        path.join(root, "project", "AGENTS.md"),
-        path.join(root, "project", ".git"),
-      ]);
-      // A named repository's own instructions belong to it.
-      expect(instructionLeaks(path.join(root, "project"), false)).toEqual([]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+describe("instructionFilesAbove", () => {
+  it("lists the folders above the repository, keeping its own files and ~/.claude (KAN-47)", () => {
+    const home = path.resolve("/users/a");
+    const slash = (dir: string) => dir.split(path.sep).join("/").replace(/\/$/, "");
+    const project = slash(path.join(home, "ggjira"));
+    const files = instructionFilesAbove(path.join(home, "ggjira", "data", "wt"), home);
+
+    expect(files).toContain(`${project}/CLAUDE.md`);
+    expect(files).toContain(`${project}/AGENTS.md`);
+    expect(files).toContain(`${project}/.claude/rules/**`);
+    expect(files).toContain(`${project}/data/CLAUDE.local.md`);
+    expect(files).toContain(`${slash(home)}/CLAUDE.md`);
+    expect(files).not.toContain(`${slash(home)}/.claude/CLAUDE.md`);
+    expect(files.filter((file) => file.includes("/wt/"))).toEqual([]);
+    expect(files.filter((file) => file.includes("\\"))).toEqual([]);
   });
 });

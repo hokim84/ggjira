@@ -18,15 +18,17 @@ import { loadWorkerCredential } from "./credential.js";
 import { pairWorker, pruneWorktrees, runWorkerCheck, writeWorkerConfigTemplate } from "./ops.js";
 import { defaultWorkerHome, workerPaths } from "./paths.js";
 import { WorkerRunner } from "./runner.js";
-import { homeIsIsolated, prepareWorkerStart } from "./start.js";
+import { prepareWorkerStart } from "./start.js";
 import { ResultSpool } from "./spool.js";
 import { formatWorkerProgress } from "./progress.js";
 
 export const WORKER_USAGE = `ggjira worker <command>
 
   Every command works on one worker home: --home <dir>, else GGJIRA_WORKER_HOME, else
+  data/worker in the GGJIRA checkout it runs from, else (installed package)
   %LOCALAPPDATA%\\ggjira\\worker (Windows) or ~/.ggjira/worker. It holds worker.config.json, the
-  credential, clones, job worktrees, logs and spools, and must not be inside another project.
+  credential, clones, job worktrees, logs and spools. Agents read only the instruction files of
+  the repository they work in, not CLAUDE.md or AGENTS.md from folders above it.
 
   start [--home <dir>]             run the worker; the first time it asks (in the terminal) for
                                    the Router address, LLM CLI, pairing code and repository
@@ -63,7 +65,6 @@ async function setup(parsed: ParsedArgs, io: CliIo): Promise<number> {
   const pairingCode = stringOption(parsed, "pairing-code");
   if (!pairingCode) throw new UsageError("--pairing-code is required (from `router workers pair`)");
   const home = workerHome(parsed, io);
-  if (!homeIsIsolated(home, io)) return 1;
   const paths = workerPaths(home);
   const existing = existsSync(paths.config) ? loadWorkerConfig(home) : undefined;
   const routerUrl = stringOption(parsed, "router") ?? existing?.routerUrl;
@@ -110,9 +111,7 @@ async function start(parsed: ParsedArgs, io: CliIo): Promise<number> {
 }
 
 async function run(parsed: ParsedArgs, io: CliIo): Promise<number> {
-  const home = workerHome(parsed, io);
-  if (!homeIsIsolated(home, io)) return 1;
-  return runWithConfig(loadWorkerConfig(home), io);
+  return runWithConfig(loadWorkerConfig(workerHome(parsed, io)), io);
 }
 
 async function runWithConfig(config: WorkerConfig, io: CliIo): Promise<number> {

@@ -208,12 +208,15 @@ result 저장 ─▶ [<resultId>]         구현 성공: 댓글 → 실패 라�
 
 ## 워커 시작 (`worker start`, ADR 0025)
 
-워커의 로컬 파일은 모두 워커 홈 하나에 있다(ADR 0060, `src/worker-runtime/paths.ts`). 기본값은
-`%LOCALAPPDATA%\ggjira\worker`(Windows) 또는 `~/.ggjira/worker`이고 `--home`·`GGJIRA_WORKER_HOME`으로 바꾼다.
+워커의 로컬 파일은 모두 워커 홈 하나에 있다(ADR 0060, `src/worker-runtime/paths.ts`). 기본값은 GGJIRA checkout에서
+실행하면 `<checkout>/data/worker`, 설치한 패키지면 `%LOCALAPPDATA%\ggjira\worker`(Windows) 또는 `~/.ggjira/worker`이고
+`--home`·`GGJIRA_WORKER_HOME`으로 바꾼다(ADR 0065).
 홈에는 `worker.config.json`(configVersion 6), `credential.json`, `spool/`, `fci-spool/`, `logs/`,
-저장소별 `repositories/<id>/repo`(clone)와 `repositories/<id>/worktrees`(작업별 worktree)가 있다. 홈이나 그 상위
-폴더에 `CLAUDE.md`·`AGENTS.md`·`.git`이 있으면 에이전트가 다른 프로젝트의 지침을 읽으므로 `worker start`·`run`·
-`setup`은 실행을 거부하고 `worker check`는 실패로 보고한다.
+저장소별 `repositories/<id>/repo`(clone)와 `repositories/<id>/worktrees`(작업별 worktree)가 있다. 홈이 다른 프로젝트
+안에 있어도 에이전트는 그 프로젝트의 지침을 읽지 않는다. provider가 작업 폴더 위의 `CLAUDE.md`·`AGENTS.md`를 Claude
+Code에는 `claudeMdExcludes`로 빼고, Codex에는 `project_root_markers=[]`로 작업 폴더의 것만 읽게 한다
+(`src/worker/instruction-files.ts`). `isGitRepository`는 work tree의 최상위 폴더에서만 참이라, 다른 저장소 안의 일반
+폴더가 그 저장소로 취급되지 않는다.
 
 `workers/register` 응답에는 워커 프로필(providerId, 저장소 id·`cloneUrl`·`baseBranch`)이
 함께 온다. `worker start`(`src/worker-runtime/start.ts`)는 처음 실행될 때 터미널에서 Router 주소, LLM CLI,

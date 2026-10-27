@@ -124,10 +124,10 @@ ggjira worker start              # 처음에는 설정을 묻고, 이후에는 �
 ggjira worker check              # 연결·저장소·검증 명령 점검
 ```
 
-워커의 설정·인증 파일·clone·작업 폴더·로그는 모두 **워커 홈** 한 곳에 둔다. 기본값은
-`%LOCALAPPDATA%\ggjira\worker`(Windows), `~/.ggjira/worker`(그 밖)이고 `--home`이나 `GGJIRA_WORKER_HOME`으로 바꾼다.
-워커 홈은 GGJIRA 폴더나 다른 프로젝트 안에 두지 않는다. 그 안에 두면 작업 중인 AI가 상위 폴더의 CLAUDE.md·AGENTS.md를
-자기 지침으로 읽기 때문에, 워커가 실행을 거부한다(ADR 0060).
+워커의 설정·인증 파일·clone·작업 폴더·로그는 모두 **워커 홈** 한 곳에 둔다. 기본값은 설치한 패키지면
+`%LOCALAPPDATA%\ggjira\worker`(Windows), `~/.ggjira/worker`(그 밖), GGJIRA checkout에서 실행하면 그 안의 `data/worker`이고,
+`--home`이나 `GGJIRA_WORKER_HOME`으로 바꾼다. 워커 홈이 다른 프로젝트 안에 있어도 작업 중인 AI는 작업 저장소 위 폴더의
+CLAUDE.md·AGENTS.md를 읽지 않는다. 워커가 Claude Code·Codex에 그 파일을 빼라고 넘긴다(ADR 0065).
 
 워커는 작업마다 기준 브랜치를 리모트에서 새로 받아 별도 worktree에서 작업한다. 받아 오지 못하면
 진행하지 않는다. 마지막으로 워커 홈의 `worker.config.json`에 저장소별 `validateCommand`를 넣는다([AI 결과 검증](#ai-결과-검증)).

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WorkerProviderConfigSchema } from "../src/contracts/provider.js";
-import { createWorktree } from "../src/worker/worktree.js";
+import { createWorktree, isGitRepository } from "../src/worker/worktree.js";
 import { RouterClient } from "../src/worker-runtime/client.js";
 import {
   resolveWorkerConfig,
@@ -96,18 +96,33 @@ describe("worker operations", () => {
     ]);
   });
 
-  it("check fails a home inside another project (ADR 0060, KAN-47)", async () => {
+  it("accepts a home inside another project but not a plain folder inside a repository (ADR 0065)", async () => {
     writeFileSync(path.join(dir, "AGENTS.md"), "host instructions");
+    const plain = path.join(repo, "plain");
+    mkdirSync(plain);
+    expect(await isGitRepository(repo)).toBe(true);
+    expect(await isGitRepository(plain)).toBe(false);
+
+    const inside = resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl: "https://router.example",
+        repositories: [{ id: "plain", path: plain }],
+        providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
+      },
+      path.join(repo, "data", "worker"),
+    );
     const client = new RouterClient({
       routerUrl: config.routerUrl,
       fetch: async () => {
         throw new Error("connect ECONNREFUSED");
       },
     });
-    const items = await runWorkerCheck(config, { client, commandRuns: () => true });
-    expect(items[0]).toEqual({
+    const items = await runWorkerCheck(inside, { client, commandRuns: () => true });
+    expect(items.filter((item) => item.message.includes("AGENTS.md"))).toEqual([]);
+    expect(items).toContainEqual({
       level: "fail",
-      message: expect.stringContaining(`${path.join(dir, "AGENTS.md")} is above the worker home`),
+      message: expect.stringContaining(`${plain} is inside the repository at ${repo}`),
     });
   });
 });

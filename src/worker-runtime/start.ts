@@ -10,14 +10,13 @@ import {
   chooseProvider,
   commandRuns,
   detectInstalledProviders,
-  homeLeakMessage,
   pairWorker,
   prepareRepositories,
   type ProviderType,
   workerConfigFromProfile,
   writeWorkerConfig,
 } from "./ops.js";
-import { instructionLeaks, workerPaths } from "./paths.js";
+import { workerPaths } from "./paths.js";
 
 /**
  * `ggjira worker start` (ADR 0025): on first use a short text setup — Router address, LLM CLI,
@@ -272,13 +271,6 @@ async function fillMissingRepositoryPaths(
   return loadWorkerConfig(config.home);
 }
 
-/** Refuses a worker home inside another project or repository (ADR 0060); true when it is fine. */
-export function homeIsIsolated(home: string, io: CliIo): boolean {
-  const leaks = instructionLeaks(home);
-  for (const leak of leaks) io.err(homeLeakMessage(workerPaths(home).home, leak));
-  return leaks.length === 0;
-}
-
 /**
  * Everything `worker start` does before running. Returns undefined when the worker cannot run yet.
  */
@@ -288,7 +280,6 @@ export async function prepareWorkerStart(
   io: CliIo,
   deps: WorkerStartDeps = {},
 ): Promise<WorkerConfig | undefined> {
-  if (!homeIsIsolated(home, io)) return undefined;
   const paths = workerPaths(home);
   if (!existsSync(paths.config)) {
     if (!(await firstRunSetup(home, parsed, io, deps))) return undefined;

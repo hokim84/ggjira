@@ -22,7 +22,7 @@ import {
 import type { RouterClient } from "./client.js";
 import type { WorkerConfig } from "./config.js";
 import { loadWorkerCredential, type WorkerCredential } from "./credential.js";
-import { instructionLeaks, workerPaths } from "./paths.js";
+import { workerPaths } from "./paths.js";
 import { ResultSpool } from "./spool.js";
 
 /**
@@ -41,9 +41,15 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Why a file above the worker home stops the worker (ADR 0060). */
-export function homeLeakMessage(home: string, leak: string): string {
-  return `${leak} is above the worker home ${home}; agents in job worktrees would read it as their own instructions or work inside that repository. Move the home (--home or GGJIRA_WORKER_HOME) outside it`;
+/** The `.git` of a repository that contains `dir`, looking only above it. */
+function gitAbove(dir: string): string | undefined {
+  let current = path.resolve(dir);
+  for (;;) {
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+    if (existsSync(path.join(current, ".git"))) return path.join(current, ".git");
+  }
 }
 
 /** Writes `content` via temp file → fsync → rename, owner-readable only where the OS allows. */
@@ -252,10 +258,6 @@ export async function runWorkerCheck(
   const runs = deps.commandRuns ?? commandRuns;
   const paths = workerPaths(config.home);
 
-  for (const leak of instructionLeaks(paths.home)) {
-    items.push({ level: "fail", message: homeLeakMessage(paths.home, leak) });
-  }
-
   try {
     const credential = loadWorkerCredential(paths.credential);
     items.push({ level: "ok", message: `credential for worker "${credential.workerId}" found` });
@@ -280,14 +282,14 @@ export async function runWorkerCheck(
             message: `repository "${repo.id}": ${repo.path} is not a git repository; jobs edit it in place, one at a time`,
           },
     );
-    // Git jobs run in worktrees under the home; a non-git repository is itself where agents run.
-    if (!git) {
-      for (const leak of instructionLeaks(repo.path, false)) {
-        items.push({
-          level: "fail",
-          message: `repository "${repo.id}": ${leak} is above ${repo.path}; an agent working there reads it as its own instructions`,
-        });
-      }
+    // A non-git repository is itself where agents run; inside another repository, their git
+    // commands would change that one.
+    const outer = git ? undefined : gitAbove(repo.path);
+    if (outer) {
+      items.push({
+        level: "fail",
+        message: `repository "${repo.id}": ${repo.path} is inside the repository at ${path.dirname(outer)}; an agent's git commands there would change that repository. Make it a git repository or move it out`,
+      });
     }
     if (!repo.validateCommand) {
       // ADR 0059: without it Router marks every implementation result for individual review.

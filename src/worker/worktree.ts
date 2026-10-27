@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export interface WorktreeHandle {
@@ -132,10 +132,24 @@ export function githubCompareUrl(
   return `https://github.com/${owner}/${repo}/compare/${ref(baseBranch)}...${ref(branch)}?expand=1`;
 }
 
-/** Checks the configured workspace itself, so worktree failures in real repos stay visible. */
+/** The same folder, ignoring how the path is spelled (separators, links, drive letter case). */
+function sameFolder(a: string, b: string): boolean {
+  try {
+    const [x, y] = [realpathSync.native(a), realpathSync.native(b)];
+    return process.platform === "win32" ? x.toLowerCase() === y.toLowerCase() : x === y;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the configured workspace is the top of a git work tree, so worktree failures in real
+ * repos stay visible. A plain folder inside another repository (for example under a worker home
+ * in the GGJIRA checkout, ADR 0065) is not: its jobs must not branch from that repository.
+ */
 export function isGitRepository(workspacePath: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn("git", ["rev-parse", "--is-inside-work-tree"], {
+    const child = spawn("git", ["rev-parse", "--show-toplevel"], {
       cwd: workspacePath,
       stdio: ["ignore", "pipe", "ignore"],
     });
@@ -144,7 +158,7 @@ export function isGitRepository(workspacePath: string): Promise<boolean> {
       output += chunk.toString("utf-8");
     });
     child.on("error", () => resolve(false));
-    child.on("close", (code) => resolve(code === 0 && output.trim() === "true"));
+    child.on("close", (code) => resolve(code === 0 && sameFolder(output.trim(), workspacePath)));
   });
 }
 

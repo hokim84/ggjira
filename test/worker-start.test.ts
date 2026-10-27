@@ -254,23 +254,6 @@ describe("worker start against a running Router", () => {
     expect(existsSync(path.join(home, "repositories", "repo1", "repo", "README.md"))).toBe(true);
   });
 
-  it("refuses a home inside another project before asking anything (ADR 0060)", async () => {
-    const project = path.join(dir, "host");
-    mkdirSync(project, { recursive: true });
-    writeFileSync(path.join(project, "CLAUDE.md"), "host rules");
-    const io = captureIo();
-    const script = scripted([]);
-    expect(
-      await prepareWorkerStart(path.join(project, "data", "worker"), noFlags, io, {
-        ask: script.ask,
-      }),
-    ).toBeUndefined();
-    expect(io.stderr.join("\n")).toContain(
-      `${path.join(project, "CLAUDE.md")} is above the worker home`,
-    );
-    expect(script.asked).toEqual([]);
-  });
-
   it("without a terminal or flags, explains how to answer the setup", async () => {
     await expect(prepareWorkerStart(path.join(dir, "w4"), noFlags, captureIo())).rejects.toThrow(
       /터미널에서 실행하면/,
