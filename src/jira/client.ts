@@ -140,6 +140,7 @@ interface RawComment {
 
 interface RawCommentsResponse {
   comments: RawComment[];
+  total?: number;
 }
 
 interface RawCreateIssueResponse {
@@ -231,6 +232,17 @@ function jiraRetryDelayMs(error: unknown): number | undefined {
 }
 
 export class JiraClient implements JiraGateway {
+  async ensureAiWorkflow(
+    projectKey: string,
+    mapping?: import("./workflow-provisioning.js").DEFAULT_AI_WORKFLOW_TYPE,
+  ): Promise<import("./workflow-provisioning.js").WorkflowProvisionResult> {
+    const { ensureProjectAiWorkflow } = await import("./workflow-provisioning.js");
+    return ensureProjectAiWorkflow(
+      (method, path, body) => this.request(method, path, body),
+      projectKey,
+      mapping,
+    );
+  }
   private readonly baseUrl: string;
   private readonly authHeader: string;
   private readonly logger: Logger | undefined;
@@ -256,6 +268,8 @@ export class JiraClient implements JiraGateway {
       headers: {
         Authorization: this.authHeader,
         Accept: "application/json",
+        "Accept-Language": "en-US",
+        "X-Force-Accept-Language": "true",
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -335,16 +349,30 @@ export class JiraClient implements JiraGateway {
     });
   }
 
-  async getComments(key: string): Promise<JiraComment[]> {
-    const response = await withRetry(
-      () =>
-        this.request<RawCommentsResponse>(
-          "GET",
-          `/rest/api/2/issue/${encodeURIComponent(key)}/comment`,
-        ),
-      { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+  async updateComment(key: string, id: string, body: string): Promise<void> {
+    await this.request<unknown>(
+      "PUT",
+      `/rest/api/2/issue/${encodeURIComponent(key)}/comment/${encodeURIComponent(id)}`,
+      { body },
     );
-    return response.comments.map(mapRawComment);
+  }
+  async getComments(key: string): Promise<JiraComment[]> {
+    const comments: JiraComment[] = [];
+    let startAt = 0;
+    for (;;) {
+      const response = await withRetry(
+        () =>
+          this.request<RawCommentsResponse>(
+            "GET",
+            `/rest/api/2/issue/${encodeURIComponent(key)}/comment${startAt ? `?startAt=${startAt}` : ""}`,
+          ),
+        { isRetryable: isTransientJiraError, getDelayMs: jiraRetryDelayMs },
+      );
+      comments.push(...response.comments.map(mapRawComment));
+      startAt += response.comments.length;
+      if (!response.comments.length || response.total === undefined || startAt >= response.total)
+        return comments;
+    }
   }
 
   async getTransitions(key: string): Promise<JiraTransition[]> {

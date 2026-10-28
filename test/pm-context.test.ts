@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { JiraComment } from "../src/jira/types.js";
 import { findHumanDecision } from "../src/pm/context.js";
+import { renderDecisionRequest } from "../src/pm/decision-render.js";
 import { DECISION_REQUEST_MARKER } from "../src/pm/marker.js";
+import { PlanSchema } from "../src/pm/plan.js";
+import { buildPlanningPrompt } from "../src/pm/prompt.js";
+import { COMMENT_TEXT } from "../src/router/comment-text.js";
 import { buildTestIssue } from "./helpers/fixtures.js";
 
 const SELF = "pm-account-id";
@@ -17,6 +21,74 @@ function comment(overrides: Partial<JiraComment> & Pick<JiraComment, "body">): J
 }
 
 describe("findHumanDecision", () => {
+  const plan = PlanSchema.parse({
+    needsDecision: true,
+    summary: "Choose storage",
+    decision: {
+      question: "SQL or NoSQL?",
+      options: [
+        { id: "sql", title: "SQL", pros: ["Transactions"], cons: ["Schema migration"] },
+        { id: "nosql", title: "NoSQL" },
+      ],
+      recommendation: "nosql",
+    },
+  });
+  const request = (version = "v1") =>
+    renderDecisionRequest(plan, {
+      planVersion: version,
+      replyStatus: "AI 계획 요청",
+      signature: "ggjira job: planning",
+      text: COMMENT_TEXT.ko.decision,
+    });
+
+  it("numbers the choices and recommendation, with a concrete reply example", () => {
+    const body = request();
+    expect(body).toContain("1. SQL\n  장점: Transactions\n  단점: Schema migration");
+    expect(body).toContain("추천: 2. NoSQL");
+    expect(body).toContain("2. NoSQL");
+    expect(body).toContain("선택지 번호만 댓글로 남기세요(예: 2)");
+    expect(body).not.toContain("Decision:");
+  });
+
+  it.each(["2", " 2번 "])(
+    "maps reply %s to the displayed option and preserves planning context",
+    (body) => {
+      const comments = [
+        comment({ body: request(), authorAccountId: SELF }),
+        comment({ body, authorAccountId: "human-1" }),
+      ];
+      const decision = findHumanDecision(comments, SELF);
+      expect(decision).toMatchObject({ raw: body, optionId: "nosql", planVersion: "v1" });
+      if (!decision) throw new Error("Expected a numbered decision");
+      const prompt = buildPlanningPrompt({
+        issue: { key: "KAN-1", summary: "Storage", description: null },
+        comments,
+        existingSubtasks: [],
+        humanDecision: decision,
+      });
+      expect(prompt).toContain("Previous decision request:");
+      expect(prompt).toContain("SQL or NoSQL?");
+      expect(prompt).toContain("2. NoSQL");
+    },
+  );
+
+  it("ignores invalid numbers and accepts a corrected choice after the newest request", () => {
+    const comments = [
+      comment({ body: request("old"), authorAccountId: SELF }),
+      comment({ body: "1", authorAccountId: "human-1" }),
+      comment({ body: request("new"), authorAccountId: SELF }),
+      comment({ body: "-1", authorAccountId: "human-1" }),
+      comment({ body: "0", authorAccountId: "human-1" }),
+      comment({ body: "3", authorAccountId: "human-1" }),
+    ];
+    expect(findHumanDecision(comments, SELF)).toBeUndefined();
+    comments.push(comment({ body: "2", authorAccountId: "human-1" }));
+    expect(findHumanDecision(comments, SELF)).toMatchObject({
+      optionId: "nosql",
+      planVersion: "new",
+    });
+  });
+
   it("returns undefined when there is no decision-request comment", () => {
     const comments = [comment({ body: "just a note", authorAccountId: "human-1" })];
     expect(findHumanDecision(comments, SELF)).toBeUndefined();

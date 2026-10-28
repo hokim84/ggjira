@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { CloneUrlSchema } from "../contracts/api.js";
 import { WorkerProviderConfigSchema } from "../contracts/provider.js";
+import { workerPaths } from "./paths.js";
 
 /**
  * `repositoryId -> local absolute path` mapping. Router only ever sends a
@@ -11,8 +12,13 @@ import { WorkerProviderConfigSchema } from "../contracts/provider.js";
  * Runtime": "작업 데이터에 담긴 경로나 명령을 그대로 실행하지 않는다").
  */
 const WorkerRepositorySchema = z.object({
-  id: z.string().min(1),
-  path: z.string().min(1),
+  /** Also a folder name under the worker home (`repositories/<id>`). */
+  id: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "repository ids are letters, digits, '.', '_' or '-'"),
+  /** An existing local copy. Unset: `<home>/repositories/<id>/repo`, cloned from `cloneUrl`.
+   *  A relative path is read from the worker home. */
+  path: z.string().min(1).optional(),
   baseBranch: z.string().min(1).default("main"),
   validateCommand: z.string().min(1).nullable().default(null),
   /** Where `worker start` clones `path` from when it does not exist yet (from Router's profile). */
@@ -24,10 +30,10 @@ const WorkerRepositorySchema = z.object({
     .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "pushRemote must be a git remote name like origin")
     .optional(),
   /** After pushing to a GitHub remote, open a pull request with the worker's `gh` login
-   *  (ADR 0027). Router then moves the issue to its done status when the PR is merged. */
+   *  (ADR 0027). Parent PRs are created after children finish; merge starts integration checks. */
   createPullRequest: z.boolean().default(false),
 });
-export type WorkerRepositoryConfig = z.infer<typeof WorkerRepositorySchema>;
+export type WorkerRepositoryConfig = z.infer<typeof WorkerRepositorySchema> & { path: string };
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -50,24 +56,14 @@ export function assertRouterUrlAllowed(url: string): void {
   if (problem) throw new WorkerConfigError(problem);
 }
 
-export const WorkerConfigSchema = z
+/** The worker config file, `<home>/worker.config.json` (ADR 0060). Paths are not configured: every
+ *  local file lives under the home (src/worker-runtime/paths.ts). */
+export const WorkerConfigFileSchema = z
   .object({
-    configVersion: z.literal(5),
+    configVersion: z.literal(6),
     routerUrl: z.string().url(),
-    /** Local JSON file holding `{ workerId, workerToken }` (docs/router-service-implementation-plan.md
-     *  §3 "발급된 워커 token은 hash만 Router에 저장하고... 워커 token은 별도 로컬 파일"). */
-    credentialPath: z.string().min(1),
     repositories: z.array(WorkerRepositorySchema).min(1),
-    /** Human-facing capabilities this worker offers; intersected against Router's
-     *  admin-declared allowlist for this workerId, never trusted alone. */
-    capabilities: z.array(z.string().min(1)).default([]),
-    /** Local execution environments available (filesystem, git, coding-runtime, ...). */
-    backends: z.array(z.string().min(1)).default([]),
     providers: z.array(WorkerProviderConfigSchema).min(1),
-    logPath: z.string().min(1).default("data/worker-logs"),
-    /** Worker-local state: `<dataDir>/spool` (results awaiting Router's ack) and
-     *  `<dataDir>/worktrees` (one git worktree per job, kept until `worker worktrees prune`). */
-    dataDir: z.string().min(1).default("data/worker"),
   })
   .superRefine((config, ctx) => {
     const urlProblem = routerUrlProblem(config.routerUrl);
@@ -98,14 +94,24 @@ export const WorkerConfigSchema = z
     });
   });
 
-export type WorkerConfig = z.infer<typeof WorkerConfigSchema>;
+/** A loaded config: the file plus its home, with every repository path resolved. */
+export type WorkerConfig = Omit<z.infer<typeof WorkerConfigFileSchema>, "repositories"> & {
+  home: string;
+  repositories: WorkerRepositoryConfig[];
+};
 
-export function workerSpoolDir(config: WorkerConfig): string {
-  return path.join(config.dataDir, "spool");
-}
-
-export function workerWorktreesRoot(config: WorkerConfig): string {
-  return path.resolve(config.dataDir, "worktrees");
+/** Parses a config file's content for the worker home `home`. Throws the schema's error. */
+export function resolveWorkerConfig(raw: unknown, home: string): WorkerConfig {
+  const file = WorkerConfigFileSchema.parse(raw);
+  const paths = workerPaths(home);
+  return {
+    ...file,
+    home: paths.home,
+    repositories: file.repositories.map((repo) => ({
+      ...repo,
+      path: repo.path ? path.resolve(paths.home, repo.path) : paths.repositoryClone(repo.id),
+    })),
+  };
 }
 
 export class WorkerConfigError extends Error {
@@ -118,11 +124,18 @@ export class WorkerConfigError extends Error {
   }
 }
 
-export function loadWorkerConfig(configPath: string): WorkerConfig {
+/** Loads `<home>/worker.config.json`. */
+export function loadWorkerConfig(home: string): WorkerConfig {
+  const configPath = workerPaths(home).config;
   let raw: string;
   try {
     raw = readFileSync(configPath, "utf-8");
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      throw new WorkerConfigError(
+        `No worker config at ${configPath}. Run "ggjira worker start" to set up this worker.`,
+        error,
+      );
     throw new WorkerConfigError(`Failed to read worker config file at ${configPath}`, error);
   }
 
@@ -133,12 +146,17 @@ export function loadWorkerConfig(configPath: string): WorkerConfig {
     throw new WorkerConfigError(`Worker config file at ${configPath} is not valid JSON`, error);
   }
 
-  const result = WorkerConfigSchema.safeParse(parsed);
-  if (!result.success) {
+  if ((parsed as { configVersion?: unknown } | null)?.configVersion === 5) {
     throw new WorkerConfigError(
-      `Worker config file at ${configPath} failed validation: ${result.error.message}`,
-      result.error,
+      `Worker config file at ${configPath} is configVersion 5, which kept its files in the GGJIRA folder. Set up a new worker home instead (docs/runbook.md §47).`,
     );
   }
-  return result.data;
+  try {
+    return resolveWorkerConfig(parsed, home);
+  } catch (error) {
+    throw new WorkerConfigError(
+      `Worker config file at ${configPath} failed validation: ${error instanceof Error ? error.message : String(error)}`,
+      error,
+    );
+  }
 }

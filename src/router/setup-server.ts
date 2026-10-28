@@ -10,7 +10,7 @@ import {
   writeRouterConfig,
   writeRouterSecretsFile,
 } from "./config-store.js";
-import { loadRouterSecretsFromEnv, RouterSecretsError, SECRET_ENV_KEYS } from "./secrets.js";
+import { RouterSecretsError, SECRET_ENV_KEYS, loadRouterSecretsFromEnv } from "./secrets.js";
 import { bearerToken, tokensEqual } from "./server.js";
 import { registerWebUi } from "./web-ui.js";
 
@@ -35,6 +35,7 @@ export interface SetupServerDeps {
 }
 
 export interface SetupCompleteResponse {
+  workflowMessages: string[];
   configPath: string;
   secretsPath: string;
   adminToken: string;
@@ -161,6 +162,19 @@ export function buildSetupServer(deps: SetupServerDeps): FastifyInstance {
         return { statuses };
       });
 
+      scope.post("/jira/ensure-workflow", async (request) => {
+        const { projectKey, ...credentials } = parse(StatusesRequestSchema, request.body);
+        const jira = deps.jiraFactory(credentials);
+        const ensure = jira.ensureAiWorkflow?.bind(jira);
+        if (!ensure)
+          throw new SetupError(
+            502,
+            "workflow_unavailable",
+            "이 Jira 연결에서는 상태 자동 추가를 지원하지 않습니다. Jira 관리자에게 상태와 전이 추가를 요청하세요.",
+          );
+        return callJira(() => ensure(projectKey));
+      });
+
       scope.post("/complete", async (request): Promise<SetupCompleteResponse> => {
         const body = parse(CompleteRequestSchema, request.body);
         const validation = validateRouterConfig(body.config);
@@ -176,11 +190,30 @@ export function buildSetupServer(deps: SetupServerDeps): FastifyInstance {
             [SECRET_ENV_KEYS.adminToken]: randomSecret(),
           });
         } catch (error) {
-          if (error instanceof RouterSecretsError) {
+          if (error instanceof RouterSecretsError)
             throw new SetupError(400, "invalid_secrets", error.message);
-          }
           throw error;
         }
+        const jira = deps.jiraFactory({
+          baseUrl: validation.config.jira.baseUrl,
+          email: body.jiraEmail,
+          apiToken: body.jiraApiToken,
+        });
+        const ensure = jira.ensureAiWorkflow?.bind(jira);
+        if (!ensure)
+          throw new SetupError(
+            502,
+            "workflow_unavailable",
+            "AI 상태를 자동 구성할 수 없습니다. Jira 연결을 확인하세요.",
+          );
+        const workflowMessages: string[] = [];
+        for (const ws of validation.config.workspaces)
+          for (const projectKey of ws.projectKeys) {
+            const result = await callJira(() => ensure(projectKey, ws.workflow));
+            workflowMessages.push(...result.messages);
+            if (!result.complete)
+              throw new SetupError(409, "workflow_pending", result.messages.join("\n"));
+          }
         writeRouterConfig(deps.configPath, body.config);
         writeRouterSecretsFile(deps.secretsPath, secrets);
         completed = true;
@@ -190,6 +223,7 @@ export function buildSetupServer(deps: SetupServerDeps): FastifyInstance {
           adminToken: secrets.adminToken,
           webhookSecret: secrets.webhookSecret,
           webhookPath: "/webhooks/jira",
+          workflowMessages,
         };
       });
     },

@@ -9,6 +9,8 @@ import type { UsageReading, WorkerProvider } from "../worker/provider.js";
 import { RouterApiError, type RouterClient } from "./client.js";
 import type { WorkerConfig } from "./config.js";
 import { type ExecutionOutcome, executeEnvelope } from "./executor.js";
+import { flushFciSpool, recordFciSource, runFciTask } from "./fci-runner.js";
+import type { ExecutionStage, WorkerProgress } from "./progress.js";
 import type { ResultSpool } from "./spool.js";
 
 /** §3 "heartbeat: 5초". */
@@ -17,6 +19,7 @@ export const HEARTBEAT_INTERVAL_MS = 5_000;
 export const LEASE_LOSS_MS = 20_000;
 const WATCHDOG_TICK_MS = 1_000;
 const ERROR_BACKOFF_MS = 5_000;
+export const PROGRESS_INTERVAL_MS = 30_000;
 
 export interface WorkerRunnerDeps {
   config: WorkerConfig;
@@ -24,8 +27,8 @@ export interface WorkerRunnerDeps {
   workerId: string;
   spool: ResultSpool;
   createProvider: (provider: WorkerProviderConfig) => WorkerProvider;
-  worktreesRoot: string;
   logger?: Logger;
+  onProgress?: (event: WorkerProgress) => void;
   /** Epoch ms. Injected so tests can drive the heartbeat/lease-loss timers. */
   nowMs?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -58,6 +61,23 @@ export class WorkerRunner {
   private readonly heartbeatIntervalMs: number;
   private readonly leaseLossMs: number;
   private usageProbe: Promise<void> | undefined;
+  private waiting = false;
+  private reconnecting = false;
+
+  private progress(event: Omit<WorkerProgress, "at">): void {
+    this.deps.onProgress?.({ ...event, at: this.nowMs() });
+  }
+
+  private waitForWork(): void {
+    if (!this.waiting) this.progress({ state: "waiting" });
+    this.waiting = true;
+  }
+
+  private connectionRetry(): void {
+    this.waiting = false;
+    if (!this.reconnecting) this.progress({ state: "reconnecting" });
+    this.reconnecting = true;
+  }
 
   constructor(private readonly deps: WorkerRunnerDeps) {
     this.nowMs = deps.nowMs ?? Date.now;
@@ -69,6 +89,7 @@ export class WorkerRunner {
 
   /** Opens a session and settles anything left over from a previous run of this worker. */
   async connect(): Promise<void> {
+    this.progress({ state: "connecting" });
     const session = await this.deps.client.openSession({
       protocolVersion: PROTOCOL_VERSION,
       workerId: this.deps.workerId,
@@ -100,6 +121,9 @@ export class WorkerRunner {
     // Once per process, in the background: a Claude Code probe takes seconds and must not hold up
     // the first poll (ADR 0028).
     this.usageProbe ??= this.probeUsage();
+    this.reconnecting = false;
+    this.waiting = false;
+    this.waitForWork();
   }
 
   /** Settles once the connect-time usage probe has been reported (or has failed). */
@@ -115,6 +139,7 @@ export class WorkerRunner {
       try {
         await this.pollOnce();
       } catch (error) {
+        this.connectionRetry();
         this.deps.logger?.warn({ err: error, layer: "worker-runtime" }, "poll cycle failed");
         if (error instanceof RouterApiError && error.body?.error === "stale_session") {
           await this.connectWhenReachable(signal);
@@ -138,6 +163,7 @@ export class WorkerRunner {
           { err: error, layer: "worker-runtime", routerUrl: this.deps.config.routerUrl },
           `Router is not reachable; retrying in ${ERROR_BACKOFF_MS / 1000}s`,
         );
+        this.connectionRetry();
         await this.sleep(ERROR_BACKOFF_MS);
       }
     }
@@ -147,19 +173,43 @@ export class WorkerRunner {
   async pollOnce(): Promise<PollOutcome> {
     const sessionId = this.requireSession();
     const { config, client, workerId } = this.deps;
+    await flushFciSpool(config, client);
     await client.heartbeat({
       sessionId,
       workerId,
       availability: {
-        capabilities: config.capabilities,
         repositoryIds: config.repositories.map((repo) => repo.id),
         busy: false,
       },
     });
+    this.reconnecting = false;
+    this.waitForWork();
 
     // One requestId per poll; a retry of this same poll after a lost response would reuse it.
     const envelope = await client.next({ sessionId, workerId, requestId: this.genId() });
-    if (!envelope) return "idle";
+    if (!envelope) {
+      const task = await client.fciNext({
+        sessionId,
+        workerId,
+        requestId: this.genId(),
+        providers: config.providers.map((p) => ({
+          id: p.id,
+          type: p.type,
+          ...(p.model ? { model: p.model } : {}),
+        })),
+      });
+      if (task) {
+        await runFciTask(task, {
+          config,
+          client,
+          sessionId,
+          createProvider: this.deps.createProvider,
+        });
+        return "executed";
+      }
+      this.waitForWork();
+      return "idle";
+    }
     await this.execute(envelope);
     return "executed";
   }
@@ -171,12 +221,28 @@ export class WorkerRunner {
 
     const start = await client.start(envelope.jobId, lease);
     if (!start.granted) return; // Router released the lease; nothing ran.
+    this.waiting = false;
+    const startedAt = this.nowMs();
+    let lastProgressAt = startedAt;
+    let stage: ExecutionStage = "preparing";
+    const jobProgress = (state: WorkerProgress["state"]) => {
+      lastProgressAt = this.nowMs();
+      this.progress({
+        state,
+        issueKey: envelope.issueSnapshot.key,
+        kind: envelope.kind,
+        stage,
+        elapsedMs: lastProgressAt - startedAt,
+      });
+    };
+    jobProgress("started");
 
     const abort = new AbortController();
     let lastSuccessfulBeatStartedAt = this.nowMs();
     let done = false;
     let stopReason: string | undefined;
     const stop = (reason: string) => {
+      if (!stopReason) jobProgress("cancelling");
       stopReason ??= reason;
       abort.abort();
     };
@@ -206,6 +272,8 @@ export class WorkerRunner {
         if (!done && this.nowMs() - lastSuccessfulBeatStartedAt >= this.leaseLossMs) {
           stop("lost contact with Router for 20s");
         }
+        if (!done && !stopReason && this.nowMs() - lastProgressAt >= PROGRESS_INTERVAL_MS)
+          jobProgress("progress");
       }
     })();
 
@@ -217,8 +285,14 @@ export class WorkerRunner {
         onUsage: (provider, reading) =>
           usage.set(provider.id, this.usageEntry(provider, "job", reading)),
         createProvider: this.deps.createProvider,
-        worktreesRoot: this.deps.worktreesRoot,
         signal: abort.signal,
+        onProgress: (next) => {
+          if (next === stage) return;
+          stage = next;
+          jobProgress("progress");
+        },
+        onSource: async (sha, observedAt) =>
+          recordFciSource(this.deps.config, client, envelope.jobId, { ...lease, sha, observedAt }),
         authorize: async (stage) => {
           try {
             const answer = await client.authorize(envelope.jobId, { ...lease, stage });
@@ -240,12 +314,22 @@ export class WorkerRunner {
     if (stopReason) {
       outcome = { ...outcome, status: "cancelled", summary: `Stopped: ${stopReason}` };
     }
-    await this.submit({
+    jobProgress("reporting");
+    const delivered = await this.submit({
       protocolVersion: PROTOCOL_VERSION,
       jobId: envelope.jobId,
       attemptId: envelope.attemptId,
       resultId: this.genId(),
       ...outcome,
+    });
+    this.progress({
+      state: "finished",
+      issueKey: envelope.issueSnapshot.key,
+      kind: envelope.kind,
+      elapsedMs: this.nowMs() - startedAt,
+      resultStatus: outcome.status,
+      delivered,
+      ...(outcome.quality ? { verificationPassed: outcome.quality.verificationPassed } : {}),
     });
     await this.reportUsage([...usage.values()]);
   }
@@ -300,31 +384,35 @@ export class WorkerRunner {
 
   /** Spool first, then submit; ack (delete) only once Router has answered. A failed submit
    *  leaves the file for `flushSpool` on the next start. */
-  private async submit(result: JobResult): Promise<void> {
+  private async submit(result: JobResult): Promise<boolean> {
     this.deps.spool.save(result);
     try {
       await this.deps.client.submitResult(result);
       this.deps.spool.ack(result.resultId);
+      return true;
     } catch (error) {
       if (error instanceof RouterApiError && (error.status === 404 || error.status === 403)) {
         // Router will never accept this one (unknown attempt / not ours); keep it on disk for a
         // human, but don't resend forever.
         this.deps.logger?.error({ err: error, resultId: result.resultId }, "result rejected");
-        return;
+        return false;
       }
       this.deps.logger?.warn(
         { err: error, resultId: result.resultId },
         "result submit failed; spooled",
       );
+      return false;
     }
   }
 
   /** Resends every spooled result. Router treats an identical resend as success. */
   async flushSpool(): Promise<void> {
+    let delivered = 0;
     for (const result of this.deps.spool.listPending()) {
       try {
         await this.deps.client.submitResult(result);
         this.deps.spool.ack(result.resultId);
+        delivered++;
       } catch (error) {
         this.deps.logger?.warn(
           { err: error, resultId: result.resultId },
@@ -332,6 +420,7 @@ export class WorkerRunner {
         );
       }
     }
+    if (delivered) this.progress({ state: "resent", count: delivered });
   }
 
   private requireSession(): string {

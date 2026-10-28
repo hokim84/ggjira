@@ -5,16 +5,16 @@ import { errorNotice, fill, h, notice, relativeTime } from "./dom.js";
 import {
   COMMIT_LABELS,
   JUDGMENT_LABELS,
-  openIssue,
   REVIEW_CLASS,
   RISK_LABELS,
+  verificationSummary,
 } from "./views-issues.js";
 
 const REVIEWER_KEY = "ggjira.router.reviewer";
 
 const STATE_LABELS = {
-  pending: ["판단 전", "badge-muted"],
-  held: ["보류", "badge-warn"],
+  pending: ["확인 기록 없음", "badge-muted"],
+  held: ["보류 의견 있음", "badge-warn"],
   confirmed: ["확인", "badge-ok"],
   rework_requested: ["재작업 요청", "badge-warn"],
   merged: ["머지됨", "badge-ok"],
@@ -37,7 +37,8 @@ function rememberReviewer(name) {
   }
 }
 
-export function renderReviews(root, ctx) {
+/** Optional human notes inside one task; never a workflow approval step. */
+export function renderIssueReview(root, ctx, issueKey) {
   const reviewerInput = h("input", {
     type: "text",
     id: "reviewer",
@@ -46,28 +47,14 @@ export function renderReviews(root, ctx) {
     value: readReviewer(),
   });
   reviewerInput.addEventListener("change", () => rememberReviewer(reviewerInput.value.trim()));
-  const heldOnly = h("input", { type: "checkbox", id: "held-only" });
-  const assigneeInput = h("input", {
-    type: "text",
-    id: "assignee",
-    placeholder: "accountId",
-    spellcheck: "false",
-  });
-  const parentInput = h("input", {
-    type: "text",
-    id: "parent",
-    placeholder: "예: KAN-1",
-    spellcheck: "false",
-  });
   const listEl = h("div", {}, h("p", { class: "muted" }, "불러오는 중…"));
   // Outlives a reload of the list, unlike a card's own message.
   const flashEl = h("div");
 
   function query() {
     const params = new URLSearchParams();
-    if (heldOnly.checked) params.set("state", "held");
-    if (assigneeInput.value.trim()) params.set("assignee", assigneeInput.value.trim());
-    if (parentInput.value.trim()) params.set("parent", parentInput.value.trim().toUpperCase());
+    params.set("issue", issueKey);
+    params.set("state", "pending,held,confirmed,rework_requested,merged");
     const text = params.toString();
     return text ? `?${text}` : "";
   }
@@ -75,15 +62,7 @@ export function renderReviews(root, ctx) {
   async function load() {
     try {
       const { items } = await admin("GET", `/reviews${query()}`);
-      const immediate = items.filter((item) => item.target.reviewClass === "immediate");
-      const standard = items.filter((item) => item.target.reviewClass !== "immediate");
-      fill(
-        listEl,
-        h("h2", {}, `개별 검토 필요 (${immediate.length})`),
-        cards(immediate, "개별로 볼 항목이 없습니다."),
-        h("h2", {}, `일반 검토 대기 (${standard.length})`),
-        cards(standard, "기다리는 항목이 없습니다."),
-      );
+      fill(listEl, cards(items, "아직 확인 가능한 실행 결과가 없습니다."));
     } catch (error) {
       if (error.status === 401) return ctx.logout();
       fill(listEl, errorNotice(error));
@@ -108,16 +87,16 @@ export function renderReviews(root, ctx) {
       placeholder: "보류·재작업 요청은 사유가 필요합니다. Jira 댓글로 남습니다.",
     });
     const buttons = [
-      ["confirm", "확인", "btn btn-primary"],
-      ["hold", "보류", "btn"],
-      ["rework", "재작업 요청", "btn btn-danger"],
+      ["confirm", "결과 확인 기록", "btn btn-primary"],
+      ["hold", "보류 의견 남기기", "btn"],
+      ["rework", "수정 요청 남기기", "btn"],
     ].map(([, label, cls]) => h("button", { type: "button", class: `${cls} btn-small` }, label));
     const [confirmButton, holdButton, reworkButton] = buttons;
 
     async function judge(action) {
       const reviewer = reviewerInput.value.trim();
       if (!reviewer) {
-        fill(messageEl, notice("warn", "위에 검토자 이름을 먼저 적으세요."));
+        fill(messageEl, notice("warn", "위에 기록자 이름을 먼저 적으세요."));
         reviewerInput.focus();
         return;
       }
@@ -194,15 +173,11 @@ export function renderReviews(root, ctx) {
           h(
             "span",
             { class: "muted" },
-            ` · ${target.kind} ${target.resultStatus} · ${relativeTime(target.createdAt)}`,
+            ` · ${({ planning: "계획", implementation: "구현", assemble_pr: "부모 PR 생성", integration_check: "통합 검증", quality_review: "이전 AI 리뷰" })[target.kind] ?? target.kind} · ${relativeTime(target.createdAt)}`,
           ),
         ),
-        h("dt", {}, "acceptance"),
-        h(
-          "dd",
-          {},
-          v.reported ? `통과 ${v.pass} · 실패 ${v.fail} · 미검증 ${v.notVerified}` : "보고 없음",
-        ),
+        h("dt", {}, "검증 결과"),
+        h("dd", {}, verificationSummary(v)),
         h("dt", {}, "위험"),
         h(
           "dd",
@@ -235,12 +210,6 @@ export function renderReviews(root, ctx) {
                 `PR #${item.result.pullRequest.number}`,
               )
             : h("span", { class: "muted" }, "PR 없음"),
-          " · ",
-          h(
-            "button",
-            { type: "button", class: "btn btn-small", onclick: () => openIssue(target.issueKey) },
-            "이슈 화면",
-          ),
         ),
         item.judgment ? h("dt", {}, "마지막 판단") : null,
         item.judgment
@@ -336,41 +305,30 @@ export function renderReviews(root, ctx) {
     h(
       "div",
       { class: "field" },
-      h("label", { for: "reviewer" }, "검토자 이름"),
+      h("label", { for: "reviewer" }, "기록자 이름"),
       reviewerInput,
       h(
         "small",
         { class: "hint" },
-        "판단 기록과 Jira 댓글에 이 이름이 남습니다. 공유 관리자 토큰으로 들어왔으므로 본인 확인을 거친 이름은 아닙니다.",
+        "결과 확인 기록과 Jira 댓글에 표시할 이름입니다. 본인 인증을 거친 이름은 아닙니다.",
       ),
     ),
     h(
       "div",
-      { class: "field field-check" },
-      heldOnly,
-      h("label", { for: "held-only" }, "보류한 항목만"),
+      { class: "form-actions" },
+      h("button", { type: "submit", class: "btn" }, "최신 결과 불러오기"),
     ),
-    h(
-      "div",
-      { class: "field" },
-      h("label", { for: "assignee" }, "책임자(accountId)"),
-      assigneeInput,
-    ),
-    h("div", { class: "field" }, h("label", { for: "parent" }, "부모 이슈"), parentInput),
-    h("div", { class: "form-actions" }, h("button", { type: "submit", class: "btn" }, "필터 적용")),
   );
   filters.addEventListener("submit", (event) => {
     event.preventDefault();
     load();
   });
-  heldOnly.addEventListener("change", load);
 
   fill(
     root,
-    h("h1", {}, "검토"),
     notice(
       "info",
-      "판단은 기록일 뿐입니다. Jira 상태를 옮기거나 PR을 머지하거나 실행을 승인하지 않습니다. 보류·재작업 요청은 Jira에 댓글 하나를 남깁니다.",
+      "선택적인 결과 확인·의견 기록입니다. 보류 의견은 실행을 멈추지 않고 수정 요청은 AI를 다시 실행하지 않습니다. 두 의견은 Jira 댓글로 전달됩니다. 단, AI가 확인하지 못한 완료 조건이 있는 하위 작업은 결과 확인 기록이 그 확인을 대신해 AI 구현 완료로 옮겨집니다(Jira에서 직접 옮겨도 같습니다). 실제 재실행은 Jira에서 승인하며, PR 검토·병합은 GitHub에서 진행하세요.",
     ),
     filters,
     flashEl,

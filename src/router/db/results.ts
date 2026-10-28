@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 import { isUniqueConstraintViolation } from "./errors.js";
 
 export interface ResultRow {
@@ -40,7 +40,7 @@ function toResultRow(row: Record<string, unknown>): ResultRow {
   };
 }
 
-export function getResult(db: Database.Database, resultId: string): ResultRow | undefined {
+export function getResult(db: RouterDatabase, resultId: string): ResultRow | undefined {
   const row = db.prepare("SELECT * FROM results WHERE id = ?").get(resultId) as
     | Record<string, unknown>
     | undefined;
@@ -53,7 +53,7 @@ export function getResult(db: Database.Database, resultId: string): ResultRow | 
  * `applied` value); a different payload under the same id throws `ResultConflictError`.
  */
 export function recordResult(
-  db: Database.Database,
+  db: RouterDatabase,
   input: RecordResultInput,
 ): { outcome: "recorded" | "duplicate"; row: ResultRow } {
   const existing = getResult(db, input.resultId);
@@ -81,7 +81,7 @@ export function recordResult(
   return { outcome: "recorded", row };
 }
 
-export function listResultsForAttempt(db: Database.Database, attemptId: string): ResultRow[] {
+export function listResultsForAttempt(db: RouterDatabase, attemptId: string): ResultRow[] {
   const rows = db
     .prepare("SELECT * FROM results WHERE attempt_id = ? ORDER BY received_at ASC")
     .all(attemptId) as Record<string, unknown>[];

@@ -23,7 +23,7 @@ describe("loadRouterConfig", () => {
 
   function validConfig(overrides: Record<string, unknown> = {}) {
     return {
-      configVersion: 5,
+      configVersion: 7,
       jira: { baseUrl: "https://example.atlassian.net" },
       repositories: [{ id: "repo-1" }],
       workspaces: [
@@ -33,9 +33,11 @@ describe("loadRouterConfig", () => {
           projectKeys: ["KAN"],
           workflow: {
             requestStatus: "AI 계획 요청",
-            planReviewStatus: "계획 검토 대기",
+            planningInProgressStatus: "AI 계획중",
+            integrationPendingStatus: "AI 통합 대기",
+            implementationCompleteStatus: "AI 구현 완료",
             inProgressStatus: "작업 중",
-            reviewStatus: "결과 검토",
+            doneStatus: "Done",
           },
         },
       ],
@@ -65,9 +67,11 @@ describe("loadRouterConfig", () => {
               projectKeys: ["KAN"],
               workflow: {
                 requestStatus: nfd,
-                planReviewStatus: "계획 검토 대기",
+                planningInProgressStatus: "AI 계획중",
+                integrationPendingStatus: "AI 통합 대기",
+                implementationCompleteStatus: "AI 구현 완료",
                 inProgressStatus: "작업 중",
-                reviewStatus: "완료",
+                doneStatus: "Done",
               },
             },
           ],
@@ -113,9 +117,11 @@ describe("loadRouterConfig", () => {
                 projectKeys: ["KAN"],
                 workflow: {
                   requestStatus: "요청",
-                  planReviewStatus: "계획 검토",
+                  planningInProgressStatus: "AI 계획중",
+                  integrationPendingStatus: "AI 통합 대기",
+                  implementationCompleteStatus: "AI 구현 완료",
                   inProgressStatus: "진행",
-                  reviewStatus: "검토",
+                  doneStatus: "Done",
                 },
               },
             ],
@@ -138,9 +144,11 @@ describe("loadRouterConfig", () => {
                 projectKeys: ["KAN"],
                 workflow: {
                   requestStatus: "요청",
-                  planReviewStatus: "계획 검토",
+                  planningInProgressStatus: "AI 계획중",
+                  integrationPendingStatus: "AI 통합 대기",
+                  implementationCompleteStatus: "AI 구현 완료",
                   inProgressStatus: "진행",
-                  reviewStatus: "검토",
+                  doneStatus: "Done",
                 },
               },
               {
@@ -149,9 +157,11 @@ describe("loadRouterConfig", () => {
                 projectKeys: ["KAN"],
                 workflow: {
                   requestStatus: "요청",
-                  planReviewStatus: "계획 검토",
+                  planningInProgressStatus: "AI 계획중",
+                  integrationPendingStatus: "AI 통합 대기",
+                  implementationCompleteStatus: "AI 구현 완료",
                   inProgressStatus: "진행",
-                  reviewStatus: "검토",
+                  doneStatus: "Done",
                 },
               },
             ],
@@ -223,9 +233,10 @@ describe("loadRouterConfig", () => {
             projectKeys: ["KAN"],
             workflow: {
               requestStatus: "AI 계획 요청",
-              planReviewStatus: "계획 검토 대기",
+              planningInProgressStatus: "AI 계획중",
+              integrationPendingStatus: "AI 통합 대기",
+              implementationCompleteStatus: "AI 구현 완료",
               inProgressStatus: "작업 중",
-              reviewStatus: "결과 검토",
               doneStatus: "완료",
               ...workflow,
             },
@@ -234,19 +245,25 @@ describe("loadRouterConfig", () => {
       });
     }
 
-    it("accepts the five statuses", () => {
+    it("accepts six distinct workflow stages without general AI review", () => {
       const config = loadRouterConfig(writeConfig(workflowConfig({})));
       expect(config.workspaces[0]?.workflow).toEqual({
         requestStatus: "AI 계획 요청",
-        planReviewStatus: "계획 검토 대기",
+        planningInProgressStatus: "AI 계획중",
+        integrationPendingStatus: "AI 통합 대기",
+        implementationCompleteStatus: "AI 구현 완료",
         inProgressStatus: "작업 중",
-        reviewStatus: "결과 검토",
         doneStatus: "완료",
       });
     });
 
     it.each([
-      ["without a plan-review status", { planReviewStatus: undefined }, /planReviewStatus/],
+      [
+        "with a removed plan-review status",
+        { planReviewStatus: "Plan review" },
+        /Unrecognized key/,
+      ],
+      ["without a plan-review status", { requestStatus: undefined }, /requestStatus/],
       ["with a removed mode", { mode: "legacy" }, /Unrecognized key/],
       ["with an opt-in label", { optInLabel: "ai-enabled" }, /Unrecognized key/],
       ["with a planning status", { planningStatus: "Plan" }, /Unrecognized key/],
@@ -257,9 +274,9 @@ describe("loadRouterConfig", () => {
         /inProgressStatus must differ from workflow.requestStatus/,
       ],
       [
-        "whose plan review is the result review",
-        { planReviewStatus: "결과 검토" },
-        /reviewStatus must differ from workflow.planReviewStatus/,
+        "whose integration stage is its request stage",
+        { integrationPendingStatus: "AI 계획 요청" },
+        /integrationPendingStatus must differ from workflow.requestStatus/,
       ],
       [
         "whose request is the done status",

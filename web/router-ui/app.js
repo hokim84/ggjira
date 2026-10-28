@@ -1,28 +1,31 @@
 // GGJIRA Router web UI: hash-routed shell. Setup mode shows only the wizard.
 
-import { admin, getToken, health, setToken } from "./api.js";
+import { admin, getToken, health, setToken, setLocalUiAccess } from "./api.js";
 import { clear, errorNotice, fill, h, notice } from "./dom.js";
 import { renderCheck, renderConfig } from "./views-config.js";
+import { renderFci } from "./views-fci.js";
+import { renderGuide } from "./views-guide.js";
 import { renderIssues } from "./views-issues.js";
 import { renderPrompts } from "./views-prompts.js";
-import { renderReviews } from "./views-reviews.js";
 import { renderSetup } from "./views-setup.js";
 import { renderDashboard, renderWorkers } from "./views-status.js";
 
 const ROUTES = {
   "#/": { label: "대시보드", render: renderDashboard, poll: true },
   "#/workers": { label: "워커", render: renderWorkers },
-  "#/reviews": { label: "검토", render: renderReviews },
-  "#/issues": { label: "이슈", render: renderIssues },
-  "#/prompts": { label: "프롬프트", render: renderPrompts },
+  "#/repositories": { label: "기술부채 추이", render: renderFci },
+  "#/tasks": { label: "작업 상세", render: renderIssues, parent: "#/" },
   "#/config": { label: "설정", render: renderConfig },
-  "#/check": { label: "점검", render: renderCheck },
+  "#/config/prompts": { label: "프롬프트", render: renderPrompts, parent: "#/config" },
+  "#/config/diagnostics": { label: "연동 진단", render: renderCheck, parent: "#/config" },
+  "#/guide": { label: "사용 가이드", render: renderGuide },
 };
 
 const app = document.getElementById("app");
 const nav = document.getElementById("nav");
 const banner = document.getElementById("banner");
 let timers = [];
+let localUiAccess = false;
 
 function stopTimers() {
   for (const timer of timers) clearInterval(timer);
@@ -35,6 +38,8 @@ const ctx = {
     timers.push(setInterval(fn, ms));
   },
   logout() {
+    localUiAccess = false;
+    setLocalUiAccess(false);
     setToken(null);
     stopTimers();
     showLogin("토큰이 만료되었거나 틀립니다. 다시 로그인하세요.");
@@ -82,32 +87,69 @@ const ctx = {
 function drawNav(active) {
   fill(
     nav,
-    Object.entries(ROUTES).map(([hash, route]) =>
-      h(
-        "a",
-        {
-          href: hash,
-          class: hash === active ? "active" : "",
-          "aria-current": hash === active ? "page" : null,
-        },
-        route.label,
+    Object.entries(ROUTES)
+      .filter(([, route]) => !route.parent)
+      .map(([hash, route]) =>
+        h(
+          "a",
+          {
+            href: hash,
+            class: hash === active ? "active" : "",
+            "aria-current": hash === active ? "page" : null,
+          },
+          route.label,
+        ),
       ),
-    ),
-    h(
-      "button",
-      { type: "button", class: "btn btn-small nav-logout", onclick: () => ctx.logout() },
-      "로그아웃",
-    ),
+    localUiAccess
+      ? null
+      : h(
+          "button",
+          { type: "button", class: "btn btn-small nav-logout", onclick: () => ctx.logout() },
+          "로그아웃",
+        ),
   );
 }
 
 async function route() {
   stopTimers();
-  const hash = ROUTES[location.hash] ? location.hash : "#/";
+  const [path, query = ""] = location.hash.split("?");
+  const aliases = {
+    "#/prompts": "#/config/prompts",
+    "#/check": "#/config/diagnostics",
+    "#/issues": "#/tasks",
+    "#/reviews": "#/",
+  };
+  if (aliases[path]) {
+    location.replace(`${aliases[path]}${query ? `?${query}` : ""}`);
+    return;
+  }
+  const hash = ROUTES[path] ? path : "#/";
   const entry = ROUTES[hash];
-  drawNav(hash);
+  drawNav(entry.parent || hash);
   const view = h("div", { class: "view" }, h("p", { class: "muted" }, "불러오는 중…"));
-  fill(app, view);
+  const settingsNav =
+    hash === "#/config" || entry.parent === "#/config"
+      ? h(
+          "nav",
+          { class: "settings-nav", "aria-label": "설정 메뉴" },
+          [
+            ["#/config", "일반"],
+            ["#/config/prompts", "프롬프트"],
+            ["#/config/diagnostics", "연동 진단"],
+          ].map(([href, label]) =>
+            h(
+              "a",
+              {
+                href,
+                class: href === hash ? "active" : "",
+                "aria-current": href === hash ? "page" : null,
+              },
+              label,
+            ),
+          ),
+        )
+      : null;
+  fill(app, settingsNav, view);
   ctx.refreshBanner();
   try {
     if (entry.poll)
@@ -171,7 +213,10 @@ function showLogin(message) {
 async function boot() {
   let mode = "router";
   try {
-    mode = (await health()).mode || "router";
+    const state = await health();
+    mode = state.mode || "router";
+    localUiAccess = state.localUiWithoutToken === true;
+    setLocalUiAccess(localUiAccess);
   } catch {
     fill(app, notice("error", "Router에 연결할 수 없습니다."));
     return;
@@ -183,9 +228,9 @@ async function boot() {
     return;
   }
   window.addEventListener("hashchange", () => {
-    if (getToken()) route();
+    if (localUiAccess || getToken()) route();
   });
-  if (getToken()) route();
+  if (localUiAccess || getToken()) route();
   else showLogin();
 }
 

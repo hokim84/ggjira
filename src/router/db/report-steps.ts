@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 import type { REPORT_STEP_STATUSES } from "./schema.js";
 
 export type ReportStepStatus = (typeof REPORT_STEP_STATUSES)[number];
@@ -59,7 +59,7 @@ function toReportStepRow(row: Record<string, unknown>): ReportStepRow {
  * resent result or a replayed `start` can never journal twice (`INSERT OR IGNORE`).
  */
 export function insertReportBatch(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     batchId: string;
     resultId?: string;
@@ -94,21 +94,21 @@ export function insertReportBatch(
 }
 
 /** Every step of a job's journal, in execution (insertion) order. */
-export function listJobReportSteps(db: Database.Database, jobId: string): ReportStepRow[] {
+export function listJobReportSteps(db: RouterDatabase, jobId: string): ReportStepRow[] {
   const rows = db
     .prepare("SELECT * FROM report_steps WHERE job_id = ? ORDER BY rowid ASC")
     .all(jobId) as Record<string, unknown>[];
   return rows.map(toReportStepRow);
 }
 
-export function listBatchReportSteps(db: Database.Database, batchId: string): ReportStepRow[] {
+export function listBatchReportSteps(db: RouterDatabase, batchId: string): ReportStepRow[] {
   const rows = db
     .prepare("SELECT * FROM report_steps WHERE batch_id = ? ORDER BY seq ASC")
     .all(batchId) as Record<string, unknown>[];
   return rows.map(toReportStepRow);
 }
 
-export function getReportStep(db: Database.Database, stepId: string): ReportStepRow | undefined {
+export function getReportStep(db: RouterDatabase, stepId: string): ReportStepRow | undefined {
   const row = db.prepare("SELECT * FROM report_steps WHERE id = ?").get(stepId) as
     | Record<string, unknown>
     | undefined;
@@ -117,7 +117,7 @@ export function getReportStep(db: Database.Database, stepId: string): ReportStep
 
 /** Jobs whose journal still has a step the processor can act on (`pending`/`uncertain`), in the
  *  order their oldest such step was written. */
-export function listJobIdsWithReportWork(db: Database.Database): string[] {
+export function listJobIdsWithReportWork(db: RouterDatabase): string[] {
   const rows = db
     .prepare(
       `SELECT job_id, MIN(rowid) AS first FROM report_steps
@@ -129,7 +129,7 @@ export function listJobIdsWithReportWork(db: Database.Database): string[] {
 }
 
 /** Steps a human must look at (`failed` or `recovery_required`), across all jobs. */
-export function listBlockedReportSteps(db: Database.Database): ReportStepRow[] {
+export function listBlockedReportSteps(db: RouterDatabase): ReportStepRow[] {
   const rows = db
     .prepare(
       "SELECT * FROM report_steps WHERE status IN ('failed', 'recovery_required') ORDER BY rowid ASC",
@@ -139,7 +139,7 @@ export function listBlockedReportSteps(db: Database.Database): ReportStepRow[] {
 }
 
 export function updateReportStep(
-  db: Database.Database,
+  db: RouterDatabase,
   stepId: string,
   update: {
     status: ReportStepStatus;
@@ -171,16 +171,18 @@ export function updateReportStep(
  *  a batch back to `pending`. A `pending` subtask creation looks for its marker before creating,
  *  so this is the explicit human go-ahead the plan requires before re-sending a create. */
 export function requeueBlockedReportSteps(
-  db: Database.Database,
+  db: RouterDatabase,
   batchId: string,
   now: string,
 ): number {
-  return db
-    .prepare(
-      `UPDATE report_steps SET status = 'pending', last_error = NULL, updated_at = ?
-       WHERE batch_id = ? AND status IN ('failed', 'recovery_required')`,
-    )
-    .run(now, batchId).changes;
+  return Number(
+    db
+      .prepare(
+        `UPDATE report_steps SET status = 'pending', last_error = NULL, updated_at = ?
+         WHERE batch_id = ? AND status IN ('failed', 'recovery_required')`,
+      )
+      .run(now, batchId).changes,
+  );
 }
 
 export function isReportStepSettled(status: ReportStepStatus): boolean {

@@ -1,6 +1,7 @@
 @echo off
 rem Starts a GGJIRA Worker on this machine, without Docker or a VM (runbook section 33).
-rem Config: worker.config.json here, or GGJIRA_WORKER_CONFIG. The first run asks for the Router
+rem Worker home: GGJIRA_WORKER_HOME, else data\worker in this folder (ADR 0065).
+rem It holds worker.config.json, the credential, clones and logs. The first run asks for the Router
 rem address, the LLM CLI, a pairing code (Router web UI > Workers > Add) and repository folders.
 rem Ctrl+C once: finish the current job and stop. Twice: stop now.
 setlocal

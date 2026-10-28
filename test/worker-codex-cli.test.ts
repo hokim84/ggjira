@@ -1,6 +1,8 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CodexCliProvider } from "../src/worker/codex-cli.js";
 import type { WorkerRequest } from "../src/worker/provider.js";
 
@@ -65,6 +67,23 @@ describe("CodexCliProvider", () => {
     expect(result.exitReason).toBe("timeout");
     expect(result.isError).toBe(true);
   }, 10000);
+
+  it("reads AGENTS.md only from the repository folder (ADR 0065)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ggjira-codex-args-"));
+    const argsFile = path.join(dir, "args.txt");
+    vi.stubEnv("GGJIRA_FAKE_ARGS_FILE", argsFile);
+    try {
+      const provider = new CodexCliProvider(undefined, {
+        command: path.join(FIXTURES_DIR, "records-args.sh"),
+      });
+      await provider.run(baseRequest({ cwd: dir }));
+      const args = readFileSync(argsFile, "utf-8").split("\n");
+      expect(args[args.indexOf("-c") + 1]).toBe("project_root_markers=[]");
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("extracts structuredOutput from a fenced json block in the last message", async () => {
     const provider = new CodexCliProvider(undefined, {

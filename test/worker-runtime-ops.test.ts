@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WorkerProviderConfigSchema } from "../src/contracts/provider.js";
-import { createWorktree } from "../src/worker/worktree.js";
+import { createWorktree, isGitRepository } from "../src/worker/worktree.js";
 import { RouterClient } from "../src/worker-runtime/client.js";
 import {
+  resolveWorkerConfig,
   routerUrlProblem,
   type WorkerConfig,
-  WorkerConfigSchema,
-  workerWorktreesRoot,
 } from "../src/worker-runtime/config.js";
 import { pruneWorktrees, runWorkerCheck } from "../src/worker-runtime/ops.js";
+import { workerPaths } from "../src/worker-runtime/paths.js";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
@@ -33,14 +33,15 @@ describe("worker operations", () => {
     writeFileSync(path.join(repo, "a.txt"), "a");
     git(["add", "."], repo);
     git(["commit", "-q", "-m", "init"], repo);
-    config = WorkerConfigSchema.parse({
-      configVersion: 5,
-      routerUrl: "https://router.example",
-      credentialPath: path.join(dir, "missing-credential.json"),
-      repositories: [{ id: "repo1", path: repo }],
-      providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
-      dataDir: path.join(dir, "data"),
-    });
+    config = resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl: "https://router.example",
+        repositories: [{ id: "repo1", path: repo }],
+        providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
+      },
+      path.join(dir, "home"),
+    );
   });
 
   afterEach(() => {
@@ -55,7 +56,7 @@ describe("worker operations", () => {
   });
 
   it("prunes old job worktrees through their repository and keeps the branches", async () => {
-    const root = workerWorktreesRoot(config);
+    const root = workerPaths(config.home).repositoryWorktrees("repo1");
     mkdirSync(root, { recursive: true });
     const old = await createWorktree(repo, "main", "ggjira/KAN-1-old", root);
     const fresh = await createWorktree(repo, "main", "ggjira/KAN-2-new", root);
@@ -87,10 +88,41 @@ describe("worker operations", () => {
     });
     const items = await runWorkerCheck(config, { client, commandRuns: () => true });
     expect(items).toEqual([
-      { level: "fail", message: expect.stringContaining("missing-credential.json") },
+      { level: "fail", message: expect.stringContaining("credential.json") },
       { level: "ok", message: expect.stringContaining('repository "repo1": git repository') },
+      { level: "warn", message: expect.stringContaining('repository "repo1": no validateCommand') },
       { level: "ok", message: expect.stringContaining('provider "default"') },
       { level: "fail", message: expect.stringContaining("ECONNREFUSED") },
     ]);
+  });
+
+  it("accepts a home inside another project but not a plain folder inside a repository (ADR 0065)", async () => {
+    writeFileSync(path.join(dir, "AGENTS.md"), "host instructions");
+    const plain = path.join(repo, "plain");
+    mkdirSync(plain);
+    expect(await isGitRepository(repo)).toBe(true);
+    expect(await isGitRepository(plain)).toBe(false);
+
+    const inside = resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl: "https://router.example",
+        repositories: [{ id: "plain", path: plain }],
+        providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
+      },
+      path.join(repo, "data", "worker"),
+    );
+    const client = new RouterClient({
+      routerUrl: config.routerUrl,
+      fetch: async () => {
+        throw new Error("connect ECONNREFUSED");
+      },
+    });
+    const items = await runWorkerCheck(inside, { client, commandRuns: () => true });
+    expect(items.filter((item) => item.message.includes("AGENTS.md"))).toEqual([]);
+    expect(items).toContainEqual({
+      level: "fail",
+      message: expect.stringContaining(`${plain} is inside the repository at ${repo}`),
+    });
   });
 });

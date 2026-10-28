@@ -10,13 +10,18 @@ import {
   type ResultGit,
   type ScopeCheck,
 } from "../contracts/implementation.js";
-import { matchesAnyGlob } from "../issue/paths.js";
 import type { WorkerProviderConfig } from "../contracts/provider.js";
-import { runValidateCommand } from "../worker/validate.js";
-import { type CreatePullRequest, createPullRequest } from "../worker/github.js";
-import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provider.js";
-import { buildImplementPrompt } from "../worker/prompt.js";
+import { matchesAnyGlob } from "../issue/paths.js";
 import {
+  type CreatePullRequest,
+  type RetirePullRequest,
+  createPullRequest,
+} from "../worker/github.js";
+import { buildImplementPrompt } from "../worker/prompt.js";
+import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provider.js";
+import { runValidateCommand } from "../worker/validate.js";
+import {
+  type WorktreeChange,
   changedFilesSince,
   commitAll,
   createWorktree,
@@ -29,11 +34,16 @@ import {
   pushBranch,
   remoteUrl,
   revParse,
-  type WorktreeChange,
   writeStagedPatch,
 } from "../worker/worktree.js";
+import { integrationTarget } from "../worker/worktree.js";
 import type { WorkerConfig } from "./config.js";
+import { workerPaths } from "./paths.js";
 import { executePlanningEnvelope } from "./planning.js";
+import type { ExecutionStage } from "./progress.js";
+import { executeQualityEnvelope } from "./quality.js";
+import { executeAssembly } from "./assembly.js";
+import { mergeResultCommits } from "../worker/worktree.js";
 
 /** A result minus the identifiers the runner stamps on (`resultId`, `jobId`, ...). */
 export type ExecutionOutcome = Omit<
@@ -42,16 +52,18 @@ export type ExecutionOutcome = Omit<
 >;
 
 export interface ExecutorDeps {
+  onSource?: (sha: string, observedAt: string) => Promise<void>;
+  onProgress?: (stage: ExecutionStage) => void;
   config: WorkerConfig;
   /** Resolves a local provider entry to a runnable provider. Tests pass a Fake here. */
   createProvider: (provider: WorkerProviderConfig) => WorkerProvider;
-  worktreesRoot: string;
   /** Aborted when Router asks to cancel or the lease is lost. */
   signal: AbortSignal;
   /** Router's `jobs/{id}/authorize`; `false` means stop before this side effect. */
   authorize: (stage: "commit" | "validate" | "push") => Promise<boolean>;
   /** Opens the pull request after a push; tests pass a fake. */
   createPullRequest?: CreatePullRequest;
+  retirePullRequest?: RetirePullRequest;
   /** Plan usage the provider reported while running this job (ADR 0028). */
   onUsage?: (provider: WorkerProviderConfig, usage: UsageReading) => void;
 }
@@ -139,6 +151,7 @@ export async function executeEnvelope(
   envelope: JobEnvelope,
   deps: ExecutorDeps,
 ): Promise<ExecutionOutcome> {
+  deps.onProgress?.("preparing");
   const repository = deps.config.repositories.find((repo) => repo.id === envelope.repositoryId);
   if (!repository) {
     return {
@@ -148,6 +161,7 @@ export async function executeEnvelope(
     };
   }
   const providerConfig = deps.config.providers.find((entry) => entry.id === envelope.providerId);
+  if (envelope.kind === "assemble_pr") return executeAssembly(envelope, deps, repository);
   if (!providerConfig) {
     return {
       status: "failed",
@@ -177,26 +191,76 @@ async function executeWithProvider(
     return executePlanningEnvelope(envelope, {
       repository,
       provider,
-      worktreesRoot: deps.worktreesRoot,
-      logPath: deps.config.logPath,
+      worktreesRoot: workerPaths(deps.config.home).repositoryWorktrees(repository.id),
+      logPath: workerPaths(deps.config.home).logs,
       signal: deps.signal,
       ...(onUsage ? { onUsage } : {}),
+      ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
     });
   }
 
+  if (envelope.kind === "quality_review")
+    return { status: "failed", summary: "General AI review has been retired; use FCI analysis." };
+  if (envelope.kind === "integration_check")
+    return executeQualityEnvelope(envelope, {
+      repository,
+      provider,
+      worktreesRoot: workerPaths(deps.config.home).repositoryWorktrees(repository.id),
+      logPath: workerPaths(deps.config.home).logs,
+      signal: deps.signal,
+      ...(onUsage ? { onUsage } : {}),
+      ...(deps.onProgress ? { onProgress: deps.onProgress } : {}),
+    });
+
   const issue = envelope.issueSnapshot;
+  if (envelope.deferPullRequest && !repository.pushRemote)
+    return { status: "failed", summary: "자식 구현 결과를 보존할 pushRemote 설정이 필요합니다." };
   const gitMode = await isGitRepository(repository.path);
+  if (envelope.deferPullRequest && !gitMode)
+    return { status: "failed", summary: "부모 통합 PR 흐름에는 Git 저장소가 필요합니다." };
+  if (envelope.integration && envelope.integration.baseBranch !== repository.baseBranch)
+    return {
+      status: "failed",
+      summary: "Router and Worker base branches differ.",
+      failureReason: "integration baseBranch configuration mismatch",
+    };
+  if (envelope.integration && !gitMode)
+    return {
+      status: "failed",
+      summary: "Lifecycle v2 requires Git integration evidence.",
+      failureReason: "non-Git lifecycle v2 is unsupported",
+    };
   const branch = gitMode ? `ggjira/${issue.key}-${envelope.attemptId.slice(0, 8)}` : undefined;
   let cwd = repository.path;
+  let executionBase = repository.baseBranch;
   if (branch) {
     try {
+      executionBase = await integrationTarget(
+        repository.path,
+        repository.pushRemote ?? "origin",
+        repository.baseBranch,
+        envelope.integration?.mergeCommits ?? [],
+      );
       cwd = (
-        await createWorktree(repository.path, repository.baseBranch, branch, deps.worktreesRoot)
+        await createWorktree(
+          repository.path,
+          executionBase,
+          branch,
+          workerPaths(deps.config.home).repositoryWorktrees(repository.id),
+        )
       ).path;
+      if (envelope.integration?.resultCommits?.length) {
+        await mergeResultCommits(
+          cwd,
+          repository.pushRemote ?? "origin",
+          envelope.integration.resultCommits,
+        );
+        executionBase = await revParse(cwd, "HEAD");
+      }
     } catch (error) {
       return {
         status: "failed",
-        summary: "Could not create a git worktree for this job.",
+        summary: "Could not fetch the latest base or create a git worktree for this job.",
         failureReason: errorMessage(error),
       };
     }
@@ -204,6 +268,7 @@ async function executeWithProvider(
   // M4-11: the commit the branch starts from, so a review can name exactly what it looked at.
   // Unreadable → left out (the result then says "unknown", never a guessed commit).
   const baseSha = branch ? await revParse(cwd, "HEAD").catch(() => undefined) : undefined;
+  if (baseSha) await deps.onSource?.(baseSha, new Date().toISOString()).catch(() => undefined);
   const git = (headSha?: string): { git: ResultGit } => ({
     git: branch
       ? {
@@ -217,11 +282,13 @@ async function executeWithProvider(
   });
   const withBranch = { ...(branch ? { branch } : {}), ...git() };
 
-  mkdirSync(deps.config.logPath, { recursive: true });
-  const logFile = path.join(deps.config.logPath, `${envelope.jobId}-${envelope.attemptId}.jsonl`);
+  const logPath = workerPaths(deps.config.home).logs;
+  mkdirSync(logPath, { recursive: true });
+  const logFile = path.join(logPath, `${envelope.jobId}-${envelope.attemptId}.jsonl`);
 
   let workerResult: WorkerResult;
   try {
+    deps.onProgress?.("agent");
     workerResult = await provider.run(
       {
         prompt: buildImplementPrompt({
@@ -266,9 +333,9 @@ async function executeWithProvider(
     preserveLocalEvidence({
       cwd,
       repositoryPath: repository.path,
-      baseBranch: repository.baseBranch,
+      baseBranch: executionBase,
       branch,
-      patchFile: path.join(deps.config.logPath, `${envelope.jobId}-${envelope.attemptId}.patch`),
+      patchFile: path.join(logPath, `${envelope.jobId}-${envelope.attemptId}.patch`),
     });
 
   // ADR 0036: the run is judged by its structured report, never by the provider's exit alone.
@@ -285,7 +352,7 @@ async function executeWithProvider(
   const report = parsedReport.report;
   const scopeCheck: ScopeCheck = branch
     ? checkChangedPaths(
-        await listJobChanges(cwd, repository.baseBranch),
+        await listJobChanges(cwd, executionBase),
         envelope.executionContract?.allowedPaths ?? [],
       )
     : { checked: false, reason: "not a git workspace", changedPaths: [], outsideAllowed: [] };
@@ -316,6 +383,8 @@ async function executeWithProvider(
       ...withBranch,
     };
   }
+  // A child with only not_verified checks still commits and pushes: Router keeps it waiting for a
+  // human to confirm those checks before it counts as done (ADR 0061).
   const failedChecks = report.verification.filter((entry) => entry.status === "fail");
   if (failedChecks.length > 0) {
     return {
@@ -333,12 +402,14 @@ async function executeWithProvider(
     if (!(await deps.authorize("commit"))) {
       return cancelled("Stopped before commit: Router withdrew execution authority.", withBranch);
     }
+    deps.onProgress?.("committing");
     await commitAll(cwd, `GGJIRA worker: ${issue.key} ${issue.summary}`.slice(0, 200));
-    changes = await changedFilesSince(cwd, repository.baseBranch);
+    changes = await changedFilesSince(cwd, executionBase);
   }
   // Read after commit, whether or not this run committed: an agent that committed on its own
   // still left a head; a run with no commit leaves HEAD at the base and reports no head.
   const head = branch ? await revParse(cwd, "HEAD").catch(() => undefined) : undefined;
+  if (branch && head && head !== baseSha) changes = await changedFilesSince(cwd, executionBase);
   const committed = { ...withBranch, ...git(head && head !== baseSha ? head : undefined) };
 
   const validation: string[] = [];
@@ -349,13 +420,26 @@ async function executeWithProvider(
         changes,
       });
     }
-    const validated = await runValidateCommand(repository.validateCommand, cwd);
+    deps.onProgress?.("validating");
+    // Bounded like the integration check (quality.ts): a hung command must not outlive the lease.
+    const validated = await runValidateCommand(repository.validateCommand, cwd, {
+      signal: deps.signal,
+      timeoutMs: envelope.timeoutMs,
+    });
     validation.push(validated.summary);
+    if (validated.stopped === "cancelled") {
+      return cancelled("Stopped during validation: Router asked to cancel or the lease was lost.", {
+        ...committed,
+        changes,
+        validation,
+      });
+    }
     if (!validated.ok) {
       return {
         status: "failed",
         summary: report.summary,
         failureReason: `Validation command failed: ${validated.summary}`,
+        ...(validated.stopped === "timeout" ? { timedOut: true } : {}),
         changes,
         validation,
         ...reported,
@@ -377,6 +461,30 @@ async function executeWithProvider(
         changes,
         validation,
       });
+    }
+    deps.onProgress?.("pushing");
+    if (envelope.deferPullRequest) {
+      try {
+        await pushBranch(cwd, repository.pushRemote, branch);
+      } catch (error) {
+        return {
+          status: "failed",
+          summary: "자식 결과 커밋을 원격에 보존하지 못했습니다.",
+          failureReason: errorMessage(error),
+          ...committed,
+          changes,
+          validation,
+        };
+      }
+      return {
+        status: "succeeded",
+        summary: report.summary,
+        changes,
+        validation,
+        ...reported,
+        ...committed,
+        artifacts: [...artifacts, `pushed: ${repository.pushRemote}/${branch}`],
+      };
     }
     const pushed = await pushJobBranch(repository, cwd, branch, {
       issueKey: issue.key,
@@ -550,7 +658,7 @@ async function pushJobBranch(
         job.summary,
         ...(job.changes.length ? ["", "Changes:", ...job.changes.map((c) => `- ${c}`)] : []),
         "",
-        `Opened by GGJIRA for ${job.issueKey}. When GGJIRA Router can read this repository, it notes the merge on the Jira issue and, if a done status is configured, moves the issue there.`,
+        `Opened by GGJIRA for ${job.issueKey}. After a human merges this PR, GGJIRA runs trusted integration checks and optional FCI analysis. Done remains a manual decision.`,
         `<!-- ggjira issue=${job.issueKey} job=${job.jobId} attempt=${job.attemptId} -->`,
       ].join("\n"),
     });

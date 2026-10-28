@@ -12,9 +12,11 @@ const workspace: WorkspaceConfig = {
   projectKeys: ["KAN"],
   workflow: {
     requestStatus: "AI 계획 요청",
-    planReviewStatus: "계획 검토 대기",
+    planningInProgressStatus: "AI 계획중",
+    integrationPendingStatus: "AI 통합 대기",
+    implementationCompleteStatus: "AI 구현 완료",
+    doneStatus: "Done",
     inProgressStatus: "작업 중",
-    reviewStatus: "결과 검토",
   },
 };
 
@@ -40,7 +42,6 @@ function requirements(overrides: Partial<IssueRequirements> = {}): IssueRequirem
     acceptanceCriteria: ["It works"],
     dependencies: [],
     constraints: [],
-    requiredCapabilities: ["programming"],
     suggestedExecutionStrategy: null,
     verification: ["npm run test"],
     inScope: [],
@@ -88,26 +89,17 @@ describe("RuleDecisionProvider", () => {
     expect(result.target).toBe("human");
   });
 
-  it("waits when there are unresolved dependencies, even if capabilities are also unknown", () => {
+  it("waits when there are unresolved dependencies", () => {
     const provider = new RuleDecisionProvider();
     const result = provider.decide(
       context({
         unresolvedDependencies: ["KAN-5"],
-        requirements: requirements({ requiredCapabilities: ["not-a-real-capability"] }),
       }),
     );
     expect(result).toEqual({
       target: "wait",
       reason: expect.stringContaining("KAN-5"),
     });
-  });
-
-  it("holds for a human when required capabilities are unknown", () => {
-    const provider = new RuleDecisionProvider();
-    const result = provider.decide(
-      context({ requirements: requirements({ requiredCapabilities: ["not-a-real-capability"] }) }),
-    );
-    expect(result.target).toBe("human");
   });
 
   it("holds for a human when the execution-agent option isn't mapped to a worker", () => {

@@ -41,9 +41,8 @@ export const CloneUrlSchema = z
   );
 
 /** What Router's policy for this worker says, so `worker start` can write its config without the
- *  operator typing capabilities or repositories (ADR 0025). Local paths stay the worker's choice. */
+ *  operator typing repositories (ADR 0025). Local paths stay the worker's choice. */
 export const WorkerProfileSchema = z.object({
-  capabilities: z.array(z.string().min(1)),
   providerId: z.string().min(1),
   repositories: z.array(
     z.object({
@@ -92,7 +91,6 @@ export const WorkerHeartbeatRequestSchema = z.object({
   sessionId: z.string().min(1),
   workerId: z.string().min(1),
   availability: z.object({
-    capabilities: z.array(z.string().min(1)).default([]),
     repositoryIds: z.array(z.string().min(1)).default([]),
     busy: z.boolean(),
   }),
@@ -227,7 +225,6 @@ export const AdminAddWorkerRequestSchema = z.object({
   workerId: z
     .string()
     .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "use letters, digits, '.', '_' or '-' (max 64)"),
-  allowedCapabilities: z.array(z.string().min(1)).default([]),
   allowedRepositoryIds: z.array(z.string().min(1)).min(1),
   providerId: z.string().min(1).optional(),
 });
@@ -246,13 +243,16 @@ export const AdminJiraProjectRequestSchema = z.object({ projectKey: z.string().m
  *  project's real transitions. */
 export const AdminWorkflowCheckRequestSchema = z.object({
   projectKey: z.string().min(1),
-  workflow: z.object({
-    requestStatus: z.string().min(1),
-    planReviewStatus: z.string().min(1),
-    inProgressStatus: z.string().min(1),
-    reviewStatus: z.string().min(1),
-    doneStatus: z.string().min(1).optional(),
-  }),
+  workflow: z
+    .object({
+      requestStatus: z.string().min(1),
+      planningInProgressStatus: z.string().min(1),
+      integrationPendingStatus: z.string().min(1),
+      implementationCompleteStatus: z.string().min(1),
+      inProgressStatus: z.string().min(1),
+      doneStatus: z.string().min(1),
+    })
+    .strict(),
 });
 
 /** `POST /api/v1/admin/reviews/:targetId/judgments` (F01, ADR 0043). A record only; a hold or a

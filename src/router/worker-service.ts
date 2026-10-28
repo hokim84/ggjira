@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type {
   AdminCreatePairingCodeResponse,
   JobAuthorizeRequest,
@@ -13,8 +13,8 @@ import type {
   JobsNextRequest,
   WorkerHeartbeatRequest,
   WorkerHeartbeatResponse,
-  WorkerRegisterRequest,
   WorkerProfile,
+  WorkerRegisterRequest,
   WorkerRegisterResponse,
   WorkerSessionRequest,
   WorkerSessionResponse,
@@ -23,12 +23,13 @@ import type {
 } from "../contracts/api.js";
 import type { AttemptState } from "../contracts/attempt-state.js";
 import type { JobEnvelope, JobResult } from "../contracts/envelope.js";
+import { type FciOutcome, ShaSchema } from "../contracts/fci.js";
 import type { JobState } from "../contracts/job-state.js";
+import { inputHashMatches } from "./approval.js";
+import { resultAttention } from "./attention.js";
 import { buildWorkerAvailability, isWorkerDispatchable } from "./availability.js";
 import type { RouterConfig } from "./config.js";
-import { inputHashMatches } from "./approval.js";
 import { getApproval } from "./db/approvals.js";
-import type { ApprovalSnapshot } from "./issue-check.js";
 import {
   type AttemptRow,
   bindAttemptToRequest,
@@ -40,20 +41,20 @@ import {
   setAttemptResultId,
   transitionAttemptState,
 } from "./db/attempts.js";
-import { countEarlierJobsForIssue, getJob, type JobRow, transitionJobState } from "./db/jobs.js";
-import { type CauseCategory, recordExecution } from "./db/execution-records.js";
-import { getApprovalHoldActor, INPUTS_CHANGED_HOLD_ACTOR } from "./db/holds.js";
-import { consumePairingCode, createPairingCode, PairingCodeRejectedError } from "./db/pairing.js";
+import { type AttentionOutcome, recordAttention, resolveAttention } from "./db/attention.js";
 import { appendAudit } from "./db/audit.js";
+import { type CauseCategory, recordExecution } from "./db/execution-records.js";
+import { INPUTS_CHANGED_HOLD_ACTOR, getApprovalHoldActor } from "./db/holds.js";
+import { type JobRow, countEarlierJobsForIssue, getJob, transitionJobState } from "./db/jobs.js";
+import { PairingCodeRejectedError, consumePairingCode, createPairingCode } from "./db/pairing.js";
+import { recordPlanReview } from "./db/plan-delegation.js";
 import { saveProviderUsage } from "./db/provider-usage.js";
 import { recordPullRequest } from "./db/pull-requests.js";
-import { insertReportBatch, type NewReportStep } from "./db/report-steps.js";
-import { recordResult, ResultConflictError } from "./db/results.js";
+import { type NewReportStep, insertReportBatch } from "./db/report-steps.js";
+import { ResultConflictError, recordResult } from "./db/results.js";
 import { recordReviewTarget } from "./db/review-targets.js";
-import { type AttentionOutcome, recordAttention, resolveAttention } from "./db/attention.js";
-import { resultAttention } from "./attention.js";
-import { assessResult } from "./review-gate.js";
 import {
+  type WorkerRow,
   findWorkerByTokenHash,
   getWorker,
   hashWorkerToken,
@@ -61,10 +62,13 @@ import {
   registerWorker,
   startWorkerSession,
   touchWorkerHeartbeat,
-  type WorkerRow,
 } from "./db/workers.js";
+import { planDeploymentAuthorizes } from "./delegation.js";
 import { buildJobEnvelope } from "./envelope.js";
+import { FciService } from "./fci-service.js";
+import type { ApprovalSnapshot } from "./issue-check.js";
 import { expireLeases } from "./leases.js";
+import { latestPlanningRequest } from "./planning-requests.js";
 import {
   buildRecoveredSteps,
   buildResultSteps,
@@ -73,9 +77,8 @@ import {
   recoveredBatchId,
   startBatchId,
 } from "./report-journal.js";
-import { planDeploymentAuthorizes } from "./delegation.js";
-import { recordPlanReview } from "./db/plan-delegation.js";
-import { assignQueuedJobs, LEASE_DURATION_MS } from "./scheduler.js";
+import { assessResult } from "./review-gate.js";
+import { LEASE_DURATION_MS, assignQueuedJobs } from "./scheduler.js";
 
 /** §3 "long polling: 25초". */
 export const LONG_POLL_MS = 25_000;
@@ -100,7 +103,7 @@ export class WorkerApiError extends Error {
 }
 
 export interface WorkerServiceDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   config: RouterConfig;
   now?: () => string;
   genId?: () => string;
@@ -122,12 +125,13 @@ function defaultSleep(ms: number): Promise<void> {
 
 /**
  * The SQLite-backed half of `/api/v1/*`. Each method validates identity → session → attempt →
- * lease inside a single synchronous DB transaction (better-sqlite3 is synchronous, so two
+ * lease inside a single synchronous DB transaction (node:sqlite is synchronous, so two
  * concurrent HTTP requests can never interleave inside one), and only `nextJob`'s long-poll
  * wait happens outside a transaction (§3 "네트워크 호출을 DB 트랜잭션 안에서 기다리지 않는다").
  */
 export class WorkerService {
-  private readonly db: Database.Database;
+  readonly fci: FciService;
+  private readonly db: RouterDatabase;
   private config: RouterConfig;
   private readonly now: () => string;
   private readonly genId: () => string;
@@ -137,6 +141,7 @@ export class WorkerService {
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(deps: WorkerServiceDeps) {
+    this.fci = new FciService(deps.db, deps.config, deps.now);
     this.db = deps.db;
     this.config = deps.config;
     this.now = deps.now ?? (() => new Date().toISOString());
@@ -150,6 +155,7 @@ export class WorkerService {
   /** Swaps in an applied config; calls already in flight finish on the one they read. */
   setConfig(config: RouterConfig): void {
     this.config = config;
+    this.fci.setConfig(config);
   }
 
   // --- admin ---------------------------------------------------------------------------
@@ -211,13 +217,12 @@ export class WorkerService {
     return { workerId, workerToken: token, profile: this.profileFor(workerId) };
   }
 
-  /** The worker's policy as `worker start` needs it: allowed capabilities and repositories (with
+  /** The worker's policy as `worker start` needs it: allowed repositories (with
    *  clone URLs) and the provider id Router will name in its envelopes (ADR 0025). */
   private profileFor(workerId: string): WorkerProfile {
     const policy = this.config.workers.find((entry) => entry.workerId === workerId);
     const repositories = new Map(this.config.repositories.map((repo) => [repo.id, repo]));
     return {
-      capabilities: policy?.allowedCapabilities ?? [],
       providerId: policy?.providerId ?? "default",
       repositories: (policy?.allowedRepositoryIds ?? []).map((id) => {
         const repo = repositories.get(id);
@@ -263,7 +268,6 @@ export class WorkerService {
     expireLeases(this.db, now);
     recordWorkerHeartbeat(this.db, {
       workerId: worker.id,
-      capabilities: request.availability.capabilities,
       repositoryIds: request.availability.repositoryIds,
       now,
     });
@@ -283,6 +287,45 @@ export class WorkerService {
   }
 
   // --- jobs/next -----------------------------------------------------------------------
+
+  fciSession(worker: WorkerRow, sessionId: string) {
+    this.assertCurrentSession(worker.id, sessionId);
+  }
+
+  source(
+    worker: WorkerRow,
+    jobId: string,
+    request: {
+      sessionId: string;
+      attemptId: string;
+      leaseToken: string;
+      sha: string;
+      observedAt: string;
+    },
+  ) {
+    const attempt = getAttempt(this.db, request.attemptId);
+    if (
+      !attempt ||
+      attempt.jobId !== jobId ||
+      attempt.workerId !== worker.id ||
+      attempt.leaseToken !== request.leaseToken
+    )
+      throw new WorkerApiError(
+        409,
+        "source_mismatch",
+        "source observation does not match the worker attempt",
+      );
+    ShaSchema.parse(request.sha);
+    const prior = this.db
+      .prepare("SELECT sha FROM fci_sources WHERE attempt_id=?")
+      .get(attempt.id) as { sha: string } | undefined;
+    if (prior && prior.sha !== request.sha)
+      throw new WorkerApiError(409, "source_mismatch", "attempt start SHA is immutable");
+    this.db
+      .prepare("INSERT OR IGNORE INTO fci_sources VALUES (?,?,?)")
+      .run(attempt.id, request.sha, request.observedAt);
+    return { accepted: true };
+  }
 
   /**
    * Returns this worker's reservation, or `null` (→ 204) once `longPollMs` passes with nothing
@@ -326,6 +369,7 @@ export class WorkerService {
       }
 
       const active = getActiveAttemptForWorker(this.db, workerId);
+      if (!active && this.fci.busy(workerId)) return null;
       if (active) {
         if (active.state !== "leased") {
           throw new WorkerApiError(
@@ -364,7 +408,14 @@ export class WorkerService {
   private envelopeFor(attempt: AttemptRow): JobEnvelope {
     const job = getJob(this.db, attempt.jobId);
     if (!job) throw new Error(`attempt ${attempt.id} references missing job ${attempt.jobId}`);
-    return buildJobEnvelope(this.db, this.config, job, attempt);
+    const envelope = buildJobEnvelope(this.db, this.config, job, attempt);
+    this.db
+      .prepare("INSERT OR IGNORE INTO attempt_prompts (attempt_id, system_prompt) VALUES (?, ?)")
+      .run(attempt.id, envelope.systemPrompt);
+    const frozen = this.db
+      .prepare("SELECT system_prompt FROM attempt_prompts WHERE attempt_id=?")
+      .get(attempt.id) as { system_prompt: string };
+    return { ...envelope, systemPrompt: frozen.system_prompt };
   }
 
   // --- jobs/{id}/* ---------------------------------------------------------------------
@@ -573,6 +624,7 @@ export class WorkerService {
         ? "requirements_change"
         : "not_applicable";
     }
+    if (job.kind === "integration_check" && finalState === "failed") return "unknown";
     if (result.status === "succeeded" || result.status === "planned") return "none";
     if (result.status === "needs_decision") return "not_applicable";
     const exit = result.execution?.exitReason;
@@ -592,6 +644,23 @@ export class WorkerService {
     result: JobResultRequest,
     now: string,
   ): ClosedJobState {
+    const frozenCheck =
+      job.kind === "integration_check"
+        ? (this.db.prepare("SELECT context FROM workflow_checks WHERE job_id=?").get(job.id) as
+            | { context: string }
+            | undefined)
+        : undefined;
+    const expectedSha = frozenCheck ? JSON.parse(frozenCheck.context).expectedSha : undefined;
+    if (
+      job.kind === "integration_check" &&
+      result.status === "succeeded" &&
+      (!result.quality?.verificationPassed ||
+        (expectedSha && result.quality.targetSha !== expectedSha))
+    ) {
+      transitionAttemptState(this.db, attempt.id, "failed", now);
+      transitionJobState(this.db, job.id, "failed", now);
+      return "failed";
+    }
     // A cancel request wins: even a successful run is closed as cancelled, since approval was
     // withdrawn while it ran.
     if (attempt.state === "cancel_requested") {
@@ -634,12 +703,39 @@ export class WorkerService {
   private journalStart(job: JobRow, attempt: AttemptRow, now: string): void {
     const workspace = this.workspaceFor(job);
     if (!workspace) return;
+    const steps = buildStartSteps(job, workspace, attempt.id, this.config.reporting.language);
+    const snapshot = getApproval(this.db, job.issueKey)?.inputSnapshot as
+      | ApprovalSnapshot
+      | undefined;
+    const parentKey = snapshot?.planTask?.parentKey ?? snapshot?.issue.parentKey;
+    const request = parentKey ? latestPlanningRequest(this.db, parentKey) : undefined;
+    if (job.kind === "implementation" && parentKey && request)
+      steps.push({
+        kind: "transition",
+        params: {
+          issueKey: parentKey,
+          parentProgress: true,
+          to: workspace.workflow.inProgressStatus,
+          from: [
+            workspace.workflow.planningInProgressStatus,
+            workspace.workflow.integrationPendingStatus,
+            workspace.workflow.implementationCompleteStatus,
+          ],
+          approvalId: request.id,
+          approvalStatus: workspace.workflow.requestStatus,
+          approvalRule: {
+            kind: "parent-stage",
+            requestId: request.id,
+            inputHash: request.input_hash,
+          },
+        },
+      });
     insertReportBatch(this.db, {
       batchId: startBatchId(attempt.id),
       jobId: job.id,
       attemptId: attempt.id,
       issueKey: job.issueKey,
-      steps: buildStartSteps(job, workspace, attempt.id, this.config.reporting.language),
+      steps,
       now,
     });
   }
@@ -658,6 +754,96 @@ export class WorkerService {
     const snapshot = getApproval(this.db, job.issueKey)?.inputSnapshot as
       | ApprovalSnapshot
       | undefined;
+    if (job.kind === "quality_review" || job.kind === "integration_check") {
+      const passed = finalState === "succeeded" && !!result.quality?.verificationPassed;
+      if (["failed", "timed_out"].includes(finalState))
+        recordAttention(this.db, {
+          issueKey: job.issueKey,
+          approvalId: job.approvalId,
+          kind: "failed",
+          cause: `${job.kind}:${job.id}`,
+          severity: "immediate",
+          reason:
+            result.failureReason ??
+            "통합 검증에 실패했습니다. 원인을 해결한 뒤 담당자가 재시도 댓글을 남기세요.",
+          evidence: {
+            kind: job.kind,
+            targetSha: result.quality?.targetSha ?? null,
+            verification: result.quality?.verificationEvidence ?? [],
+          },
+          now,
+        });
+      this.db
+        .prepare("UPDATE workflow_checks SET report=?,verified=? WHERE job_id=?")
+        .run(
+          result.quality ? JSON.stringify(result.quality) : null,
+          passed && job.kind === "integration_check" ? 1 : 0,
+          job.id,
+        );
+      const body = result.quality
+        ? [
+            job.kind === "integration_check" ? "통합 검증 결과" : "AI 리뷰 결과 (권고)",
+            result.quality.summary,
+            `검증: ${passed ? "통과" : "미통과"}`,
+            ...(snapshot?.quality?.expectedSha &&
+            result.quality.targetSha !== snapshot.quality.expectedSha
+              ? [`대상 불일치: 고정 SHA ${snapshot.quality.expectedSha}의 검증 결과가 필요합니다.`]
+              : []),
+            `대상: ${result.quality.targetSha}`,
+            ...result.quality.verificationEvidence,
+            ...result.quality.findings.map(
+              (finding) =>
+                `- [${finding.category}] ${finding.summary}\n  근거: ${finding.evidence.join("; ")}\n  영향: ${finding.impact}\n  수정 제안: ${finding.remediation.title}`,
+            ),
+            job.kind === "quality_review"
+              ? "평가는 권고입니다. Done, AI 구현(수정), AI 계획(재계획) 중 다음 행동을 선택하세요."
+              : "",
+          ].join("\n")
+        : `평가·검증 미완료: ${result.failureReason ?? result.summary}\n원인 확인 후 ‘재시도’ 댓글을 남기세요.`;
+      insertReportBatch(this.db, {
+        batchId: result.resultId,
+        resultId: result.resultId,
+        jobId: job.id,
+        attemptId: attempt.id,
+        issueKey: job.issueKey,
+        steps: [
+          {
+            kind: "comment",
+            params: {
+              body,
+            },
+          },
+          {
+            kind:
+              passed || (job.kind === "quality_review" && !!result.quality)
+                ? "remove-label"
+                : "add-label",
+            params: { label: this.config.reporting.failureLabel },
+          },
+          ...(job.kind === "integration_check" && passed
+            ? [
+                {
+                  kind: "transition",
+                  params: {
+                    to: workspace.workflow.implementationCompleteStatus,
+                    from: [workspace.workflow.integrationPendingStatus],
+                    approvalStatus: workspace.workflow.integrationPendingStatus,
+                    approvalId: job.approvalId,
+                    approvalRule: {
+                      kind: "workflow-job",
+                      jobId: job.id,
+                      inputHash: job.inputHash,
+                      workspace,
+                    },
+                  },
+                },
+              ]
+            : []),
+        ],
+        now,
+      });
+      return;
+    }
     if (result.pullRequest && finalState === "succeeded") {
       recordPullRequest(this.db, {
         ...result.pullRequest,
@@ -666,6 +852,12 @@ export class WorkerService {
         attemptId: attempt.id,
         now,
       });
+      if (job.kind === "assemble_pr")
+        this.db
+          .prepare(
+            "UPDATE pull_requests SET job_id=?,attempt_id=?,updated_at=? WHERE lower(repo)=lower(?) AND number=? AND state='open'",
+          )
+          .run(job.id, attempt.id, now, result.pullRequest.repo, result.pullRequest.number);
     }
     // M4-11: pin what a human reviews to this exact result, in the same transaction.
     const review =
@@ -831,6 +1023,9 @@ export class WorkerService {
     const approval = getApproval(this.db, job.issueKey);
     if (!approval || approval.approvalId !== job.approvalId) return false;
     if (!inputHashMatches(job.inputHash, approval.inputHash)) return false;
+    if (job.kind === "quality_review" || job.kind === "integration_check") {
+      return !!this.db.prepare("SELECT 1 FROM workflow_checks WHERE job_id=?").get(job.id);
+    }
     if (job.kind !== "implementation") return true;
     const snapshot = approval.inputSnapshot as ApprovalSnapshot | null;
     return planDeploymentAuthorizes(this.db, job, snapshot?.planTask?.parentKey ?? null);

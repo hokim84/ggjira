@@ -2,15 +2,16 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
-import { WorkerConfigSchema } from "../src/worker-runtime/config.js";
+import { resolveWorkerConfig } from "../src/worker-runtime/config.js";
 import { executeEnvelope } from "../src/worker-runtime/executor.js";
 import { fakeSuccessResult } from "../src/worker/fake.js";
-import type { WorkerProvider, WorkerRequest } from "../src/worker/provider.js";
 import { createPullRequest, pullRequestFromUrl } from "../src/worker/github.js";
+import type { WorkerProvider, WorkerRequest } from "../src/worker/provider.js";
 import { githubCompareUrl, githubRepoSlug } from "../src/worker/worktree.js";
+import * as worktree from "../src/worker/worktree.js";
 
 function git(args: string[], cwd: string): string {
   return execFileSync(
@@ -88,21 +89,22 @@ describe("pushing the job branch", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
   });
 
   function config(pushRemote?: string, createPullRequest = false) {
-    return WorkerConfigSchema.parse({
-      configVersion: 5,
-      routerUrl: "http://127.0.0.1:8787",
-      credentialPath: path.join(dir, "credential.json"),
-      repositories: [
-        { id: "repo1", path: clone, createPullRequest, ...(pushRemote ? { pushRemote } : {}) },
-      ],
-      providers: [{ id: "default", type: "claude-code" }],
-      dataDir: path.join(dir, "data"),
-      logPath: path.join(dir, "logs"),
-    });
+    return resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl: "http://127.0.0.1:8787",
+        repositories: [
+          { id: "repo1", path: clone, createPullRequest, ...(pushRemote ? { pushRemote } : {}) },
+        ],
+        providers: [{ id: "default", type: "claude-code" }],
+      },
+      path.join(dir, "data"),
+    );
   }
 
   function run(pushRemote: string | undefined, authorize = async (_stage: string) => true) {
@@ -110,7 +112,6 @@ describe("pushing the job branch", () => {
     const outcome = executeEnvelope(envelope(), {
       config: config(pushRemote),
       createProvider: () => new WritingProvider(),
-      worktreesRoot: path.join(dir, "data", "worktrees"),
       signal: new AbortController().signal,
       authorize: async (stage) => {
         stages.push(stage);
@@ -142,6 +143,8 @@ describe("pushing the job branch", () => {
   });
 
   it("reports a failed push without failing the job", async () => {
+    git(["remote", "add", "nosuchremote", remote], clone);
+    git(["remote", "set-url", "--push", "nosuchremote", path.join(dir, "missing.git")], clone);
     const { outcome } = run("nosuchremote");
     const result = await outcome;
     expect(result.status).toBe("succeeded");
@@ -159,11 +162,12 @@ describe("pushing the job branch", () => {
     // origin looks like GitHub for the PR, but pushes still go to the local bare repository.
     git(["remote", "set-url", "origin", "https://github.com/acme/app.git"], clone);
     git(["remote", "set-url", "--push", "origin", remote], clone);
+    git(["config", `url.${remote}.insteadOf`, "https://github.com/acme/app.git"], clone);
+    vi.spyOn(worktree, "remoteUrl").mockResolvedValue("https://github.com/acme/app.git");
     const calls: Array<Record<string, string>> = [];
     const result = await executeEnvelope(envelope(), {
       config: config("origin", true),
       createProvider: () => new WritingProvider(),
-      worktreesRoot: path.join(dir, "data", "worktrees"),
       signal: new AbortController().signal,
       authorize: async () => true,
       createPullRequest: async (input) => {
@@ -191,10 +195,11 @@ describe("pushing the job branch", () => {
   it("reports a failed pull request with a manual link, keeping the job succeeded", async () => {
     git(["remote", "set-url", "origin", "https://github.com/acme/app.git"], clone);
     git(["remote", "set-url", "--push", "origin", remote], clone);
+    git(["config", `url.${remote}.insteadOf`, "https://github.com/acme/app.git"], clone);
+    vi.spyOn(worktree, "remoteUrl").mockResolvedValue("https://github.com/acme/app.git");
     const result = await executeEnvelope(envelope(), {
       config: config("origin", true),
       createProvider: () => new WritingProvider(),
-      worktreesRoot: path.join(dir, "data", "worktrees"),
       signal: new AbortController().signal,
       authorize: async () => true,
       createPullRequest: async () => {
@@ -222,7 +227,8 @@ describe("pushing the job branch", () => {
         '  if [ -f "$0.exists" ]; then echo "a pull request already exists" >&2; exit 1; fi',
         '  echo "https://github.com/acme/app/pull/21"; touch "$0.exists"; exit 0',
         "fi",
-        'echo \'{"number":21,"url":"https://github.com/acme/app/pull/21"}\'',
+        'if [ "$2" = "edit" ]; then exit 0; fi',
+        'echo \'{"number":21,"url":"https://github.com/acme/app/pull/21","state":"OPEN","baseRefName":"main","headRefName":"ggjira/KAN-1-x"}\'',
       ].join("\n"),
       { mode: 0o755 },
     );

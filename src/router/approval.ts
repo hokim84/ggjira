@@ -4,6 +4,7 @@ import type { IssueRequirements } from "../issue/requirements.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraChangelogEntry, JiraIssue } from "../jira/types.js";
 import type { PlanTaskMetadata } from "../pm/metadata.js";
+import { requirementDescription } from "../pm/plan-render.js";
 
 /**
  * Identifies *which* entry into `requestStatus` this job is for
@@ -49,7 +50,7 @@ export interface DelegationApprovalIds {
 export async function computeDelegationApprovalIds(
   jira: JiraGateway,
   issue: JiraIssue,
-  statuses: { requestStatus: string; planReviewStatus: string; inProgressStatus: string },
+  statuses: { requestStatus: string; inProgressStatus: string },
 ): Promise<DelegationApprovalIds> {
   // Oldest first; entries Jira stamped with the same time keep the order Jira listed them in.
   const ordered = (await jira.getIssueChangelog(issue.key))
@@ -75,7 +76,7 @@ export async function computeDelegationApprovalIds(
     if (isStatusMove(entry, null, statuses.requestStatus)) {
       request = entry;
       approval = undefined;
-    } else if (isStatusMove(entry, statuses.planReviewStatus, statuses.inProgressStatus)) {
+    } else if (isStatusMove(entry, statuses.requestStatus, statuses.inProgressStatus)) {
       approval = entry;
     }
   }
@@ -88,8 +89,8 @@ export async function computeDelegationApprovalIds(
 /**
  * Hashes everything a worker is told to do (ADR 0035, `src/issue/input-hash.ts`), so the
  * scheduler can detect any edit to the title, description, strategy, scope contract,
- * capabilities, dependencies or plan placement underneath an already-open job
- * (§2 "실행 중 작업 설명·요구 capability·의존성 변경도 취소하고 새 승인을 요구한다").
+ * dependencies or plan placement underneath an already-open job
+ * (§2 "실행 중 작업 설명·의존성 변경도 취소하고 새 승인을 요구한다").
  */
 export function computeInputHash(input: {
   kind: JobKind;
@@ -100,7 +101,10 @@ export function computeInputHash(input: {
   return computeExecutionInputHash({
     kind: input.kind,
     summary: input.issue.summary,
-    description: input.issue.description,
+    description:
+      input.kind === "planning"
+        ? requirementDescription(input.issue.description)
+        : input.issue.description,
     requirements: input.requirements,
     planTask: input.planTask,
   });

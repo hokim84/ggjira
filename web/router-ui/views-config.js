@@ -24,20 +24,16 @@ const FORM_KEYS = new Set([
 
 /** The workflow's statuses (ADR 0044, ADR 0047): delegated by status, always planned first. */
 const STATUS_FIELDS = [
-  ["requestStatus", "요청 상태", "사람이 AI에게 맡길 때 옮기는 상태. 항상 계획부터 시작"],
+  ["requestStatus", "AI 계획", "사람이 계획을 요청"],
+  ["planningInProgressStatus", "AI 계획중", "실제 계획 실행부터 질문·계획 게시까지 자동 표시"],
+  ["inProgressStatus", "AI 구현", "사람이 개별 작업을 승인. 첫 자식 실행 시 부모도 이동"],
+  ["integrationPendingStatus", "AI 통합 대기", "PR을 사람이 머지하면 통합 검증"],
   [
-    "planReviewStatus",
-    "계획 검토 상태",
-    "계획이 사람의 검토를 기다리는 상태. 여기서 진행 상태로 옮기면 그 계획을 승인",
+    "implementationCompleteStatus",
+    "AI 구현 완료",
+    "자식: 구현·자체 테스트 완료 / 부모·단독: 병합 후 통합 검증 성공",
   ],
-  ["inProgressStatus", "진행 상태", "사람과 AI가 함께 쓰는 작업 상태"],
-  ["reviewStatus", "검토 상태", "작업이 끝나면 Router가 옮김. 사람이 확인 후 완료 처리"],
-  [
-    "doneStatus",
-    "완료 상태",
-    "워커가 연 GitHub PR이 머지되면 검토 상태에서 옮김. 비우면 댓글만",
-    true,
-  ],
+  ["doneStatus", "Done", "사람이 최종 완료로 이동"],
 ];
 
 const HOP_BADGES = {
@@ -397,6 +393,7 @@ export async function renderConfig(root, ctx) {
 
   // Jira project info (statuses, subtask types) per project key, loaded on demand.
   const jiraInfo = new Map();
+  const workflowMessages = new Map();
   const hopTimers = new Map();
 
   async function loadJira(projectKey, force = false) {
@@ -468,16 +465,15 @@ export async function renderConfig(root, ctx) {
     if (
       !projectKey ||
       !workflow.requestStatus ||
-      !workflow.planReviewStatus ||
       !workflow.inProgressStatus ||
-      !workflow.reviewStatus
+      !workflow.implementationCompleteStatus
     ) {
       fill(
         el,
         h(
           "p",
           { class: "muted" },
-          "프로젝트 키와 요청, 계획 검토, 진행, 검토 상태를 정하면 전이를 확인합니다.",
+          "프로젝트 키와 AI 계획·AI 계획중·AI 구현·AI 통합 대기·AI 구현 완료 상태를 정하면 전이를 확인합니다.",
         ),
       );
       return;
@@ -518,6 +514,34 @@ export async function renderConfig(root, ctx) {
             type: "button",
             class: "btn btn-small",
             disabled: !projectKey,
+            onclick: async (event) => {
+              const button = event.currentTarget;
+              button.disabled = true;
+              fill(hopsEl, notice("info", "누락된 AI 상태와 전이를 자동으로 추가합니다."));
+              try {
+                const result = await admin("POST", "/jira/ensure-workflow", { projectKey });
+                workflowMessages.set(projectKey, {
+                  tone: result.complete ? "ok" : "warn",
+                  text: result.messages.join(" "),
+                });
+                await loadJira(projectKey, true);
+              } catch (error) {
+                if (error.status === 401) return ctx.logout();
+                workflowMessages.set(projectKey, { tone: "error", text: error.message });
+                workspaces.redraw();
+              } finally {
+                button.disabled = false;
+              }
+            },
+          },
+          "AI 상태 자동 구성",
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "btn btn-small",
+            disabled: !projectKey,
             onclick: () => loadJira(projectKey, true),
           },
           info?.statuses ? "Jira에서 다시 불러오기" : "Jira에서 상태 불러오기",
@@ -525,10 +549,13 @@ export async function renderConfig(root, ctx) {
       ),
       info?.loading ? h("p", { class: "muted" }, `${projectKey} 상태를 불러오는 중…`) : null,
       info?.error ? errorNotice({ message: `${projectKey}: ${info.error}` }) : null,
+      workflowMessages.has(projectKey)
+        ? notice(workflowMessages.get(projectKey).tone, workflowMessages.get(projectKey).text)
+        : null,
       h(
         "p",
         { class: "muted" },
-        "요청 상태로 옮기면 계획부터 시작하고, 계획 검토 → 진행 상태로 옮기면 승인된 계획을 실행합니다.",
+        "계획과 구현 승인은 사람이 결정합니다. 통합 검증 후 구현 완료로 자동 이동하며, AI 리뷰는 선택 사항입니다.",
       ),
       h(
         "div",
@@ -608,10 +635,6 @@ export async function renderConfig(root, ctx) {
     "workers",
     (i) => [
       field(state, `workers.${i}.workerId`, "workerId"),
-      field(state, `workers.${i}.allowedCapabilities`, "허용 capabilities", {
-        kind: "list",
-        hint: "예: programming, testing",
-      }),
       field(state, `workers.${i}.allowedRepositoryIds`, "허용 저장소 id", { kind: "list" }),
       field(state, `workers.${i}.providerId`, "providerId", {
         optional: true,
@@ -619,7 +642,7 @@ export async function renderConfig(root, ctx) {
       }),
       field(state, `workers.${i}.enabled`, "배정 허용", { kind: "checkbox" }),
     ],
-    () => ({ workerId: "", allowedCapabilities: [], allowedRepositoryIds: [] }),
+    () => ({ workerId: "", allowedRepositoryIds: [] }),
     "워커 추가",
   );
 
@@ -639,8 +662,8 @@ export async function renderConfig(root, ctx) {
     ),
     section("계획(PM)", "계획에서 생성할 하위 작업의 유형과 개수를 설정합니다.", planningFields),
     section(
-      "GitHub PR 머지 → 완료",
-      "워커가 연 PR이 머지되면 이슈를 검토 상태에서 '완료 상태'로 옮깁니다. 웹훅으로 바로 알고, 놓친 것은 주기적으로 GitHub에 확인합니다.",
+      "GitHub PR 머지 → 통합 검증",
+      "AI 통합 대기에서 사람이 PR을 머지하면 대상 브랜치를 검증합니다. 검증 통과 후 AI 구현 완료로 옮기며, Done은 사람이 결정합니다. 웹훅과 주기적 GitHub 조회로 머지를 확인합니다.",
       githubSection(view.github ?? { webhook: false, token: NO_SECRET, pullRequests: [] }, ctx),
     ),
     section(
@@ -648,7 +671,11 @@ export async function renderConfig(root, ctx) {
       "새 job마다 모델 등급과 준비 상태를 Jev에 묻고 기록만 합니다(관찰 모드). 이 영역은 위아래 '저장'과 따로 즉시 적용됩니다.",
       jevSection(view.jev ?? NO_SECRET, ctx),
     ),
-    section("워커 정책", "워커별로 허용하는 capability와 저장소입니다.", workers),
+    section(
+      "워커 정책",
+      "가용한 워커는 모든 기능을 수행합니다. 워커별로 허용 저장소를 설정합니다.",
+      workers,
+    ),
     section(
       "고급 (JSON)",
       "db, http, reconciliation, execution, reporting, executionAgent, github, scheduling",
@@ -727,13 +754,49 @@ export async function renderConfig(root, ctx) {
 }
 
 export function renderCheck(root, ctx) {
+  function checkMessage(item) {
+    const m = item.message;
+    if (/Jira authentication works/.test(m)) return "Jira 연결이 정상입니다.";
+    if (/Jira authentication failed/.test(m))
+      return "Jira 인증에 실패했습니다. 설정의 Jira 주소와 인증 정보를 확인하세요.";
+    if (/confirm by hand/.test(m))
+      return "새 하위 작업을 Jira에서 AI 구현 상태로 옮길 수 있는지 직접 확인하세요. 이 이동이 개별 구현 승인입니다.";
+    const transition = m.match(/transition "([^"]+)" → "([^"]+)".*?not verified — (.*)/);
+    if (transition)
+      return `${transition[1]} → ${transition[2]}: ${transition[3].includes("상태인 이슈가 없어") ? "표본 이슈가 없어 자동 확인하지 못했습니다. Jira 워크플로에서 전이를 확인하세요." : transition[3]}`;
+    if (/GitHub.*pull requests are readable/.test(m)) return "GitHub PR 조회 권한이 정상입니다.";
+    if (/GitHub/.test(m) && item.level === "fail")
+      return "GitHub PR을 조회할 수 없습니다. 저장소 주소와 조회 권한을 확인하세요.";
+    if (/no workers/.test(m)) return "등록된 워커가 없어 작업을 시작할 수 없습니다.";
+    const status = m.match(/(?:Status|status) "([^"]+)" exists/);
+    if (status) return `${status[1]} 상태를 확인했습니다.`;
+    if (item.level === "fail")
+      return "설정과 실제 프로젝트·상태·권한이 일치하는지 확인이 필요합니다.";
+    if (item.level === "warn")
+      return "자동으로 확인하지 못한 연동 조건이 있습니다. 세부 근거를 확인하세요.";
+    return "연동 조건을 확인했습니다.";
+  }
+  function checkRows(items) {
+    return h(
+      "ul",
+      { class: "check-list" },
+      items.map((item) =>
+        h(
+          "li",
+          { class: `check-${item.level}` },
+          h("strong", {}, checkMessage(item)),
+          h("details", {}, h("summary", {}, "세부 근거"), h("code", {}, item.message)),
+        ),
+      ),
+    );
+  }
   const issueInput = h("input", {
     type: "text",
     placeholder: "예: PROJ-123 (선택)",
     autocomplete: "off",
   });
   const results = h("div");
-  const button = h("button", { type: "submit", class: "btn btn-primary" }, "점검 실행");
+  const button = h("button", { type: "submit", class: "btn btn-primary" }, "연동 진단 실행");
   const form = h(
     "form",
     { class: "inline-form" },
@@ -747,27 +810,32 @@ export function renderCheck(root, ctx) {
     try {
       const issueKey = issueInput.value.trim();
       const { items } = await admin("POST", "/check", issueKey ? { issueKey } : {});
+      const failures = items.filter((item) => item.level === "fail");
+      const warnings = items.filter((item) => item.level === "warn");
+      const passed = items.filter((item) => item.level === "ok");
       fill(
         results,
-        h(
-          "ul",
-          { class: "check-list" },
-          items.map((item) =>
-            h(
-              "li",
-              { class: `check-${item.level}` },
-              h(
-                "span",
-                {
-                  class: `badge badge-${item.level === "ok" ? "ok" : item.level === "warn" ? "warn" : "bad"}`,
-                },
-                item.level.toUpperCase(),
-              ),
-              " ",
-              item.message,
-            ),
-          ),
+        notice(
+          failures.length ? "error" : warnings.length ? "warn" : "ok",
+          `문제 ${failures.length}개 · 직접 확인 ${warnings.length}개 · 정상 ${passed.length}개`,
         ),
+        failures.length
+          ? h("section", {}, h("h2", {}, "수정이 필요한 연결·설정"), checkRows(failures))
+          : null,
+        warnings.length
+          ? h(
+              "section",
+              {},
+              h("h2", {}, "직접 확인할 항목"),
+              h(
+                "p",
+                { class: "muted" },
+                "표본 이슈가 없는 항목은 연결 오류를 뜻하지 않습니다. 진단을 위해 실제 작업 상태를 바꿀 필요 없이 Jira 워크플로 화면에서 전이를 확인할 수 있습니다.",
+              ),
+              checkRows(warnings),
+            )
+          : null,
+        h("details", {}, h("summary", {}, `정상 항목 ${passed.length}개`), checkRows(passed)),
       );
     } catch (error) {
       if (error.status === 401) return ctx.logout();
@@ -778,11 +846,11 @@ export function renderCheck(root, ctx) {
   });
   fill(
     root,
-    h("h1", {}, "Jira 연결 점검"),
+    h("h1", {}, "연동 진단"),
     h(
       "p",
       { class: "muted" },
-      "저장된 설정 파일 기준으로 Jira 인증, 프로젝트, 상태와 전이를 읽기 전용으로 확인합니다.",
+      "처음 연결했을 때, 설정을 바꿨을 때, 작업이 시작되지 않거나 병합을 인식하지 못할 때 사용하세요. 저장된 설정과 실제 Jira 상태·전이, 하위 작업 유형, GitHub PR 조회 권한을 읽기 전용으로 확인합니다. 코드를 실행하는 통합 검증과는 별개이며 문제를 자동 수정하지 않습니다.",
     ),
     form,
     results,

@@ -5,6 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { WorkerProviderConfigSchema } from "../src/contracts/provider.js";
 import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
+import { type FetchLike, RouterClient } from "../src/worker-runtime/client.js";
+import type { WorkerConfig } from "../src/worker-runtime/config.js";
+import { WorkerRunner } from "../src/worker-runtime/runner.js";
+import { ResultSpool } from "../src/worker-runtime/spool.js";
+import { formatWorkerProgress, type WorkerProgress } from "../src/worker-runtime/progress.js";
+import { FakeWorkerProvider, fakeSuccessResult } from "../src/worker/fake.js";
 import type {
   UsageReading,
   WorkerProvider,
@@ -12,16 +18,11 @@ import type {
   WorkerResult,
   WorkerRunHooks,
 } from "../src/worker/provider.js";
-import { FakeWorkerProvider, fakeSuccessResult } from "../src/worker/fake.js";
-import { type FetchLike, RouterClient } from "../src/worker-runtime/client.js";
-import type { WorkerConfig } from "../src/worker-runtime/config.js";
-import { WorkerRunner } from "../src/worker-runtime/runner.js";
-import { ResultSpool } from "../src/worker-runtime/spool.js";
 import {
-  issueDescription,
   REQUEST_STATUS,
   TODO_STATUS,
   WORKFLOW_TRANSITIONS,
+  issueDescription,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
@@ -103,9 +104,9 @@ describe("WorkerRunner against a live Router", () => {
 
   function workerConfig(): WorkerConfig {
     return {
-      configVersion: 5,
+      configVersion: 6,
+      home: path.join(workDir, "worker-home"),
       routerUrl,
-      credentialPath: path.join(workDir, "credential.json"),
       // A plain (non-git) directory: the executor edits it directly instead of making a worktree.
       repositories: [
         {
@@ -116,17 +117,20 @@ describe("WorkerRunner against a live Router", () => {
           createPullRequest: false,
         },
       ],
-      capabilities: ["programming"],
-      backends: [],
       providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
-      dataDir: path.join(workDir, "worker-data"),
-      logPath: path.join(workDir, "logs"),
     };
   }
 
   async function makeRunner(
     provider: WorkerProvider,
-    opts: { fetch?: FetchLike; token?: string; sleep?: (ms: number) => Promise<void> } = {},
+    opts: {
+      fetch?: FetchLike;
+      token?: string;
+      sleep?: (ms: number) => Promise<void>;
+      onProgress?: (event: WorkerProgress) => void;
+      nowMs?: () => number;
+      leaseLossMs?: number;
+    } = {},
   ): Promise<{ runner: WorkerRunner; spool: ResultSpool; token: string }> {
     let token = opts.token;
     if (!token) {
@@ -149,10 +153,11 @@ describe("WorkerRunner against a live Router", () => {
       workerId: "worker-1",
       spool,
       createProvider: () => provider,
-      worktreesRoot: path.join(workDir, "worktrees"),
       heartbeatIntervalMs: 20,
-      leaseLossMs: 300,
+      leaseLossMs: opts.leaseLossMs ?? 300,
       ...(opts.sleep ? { sleep: opts.sleep } : {}),
+      ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+      ...(opts.nowMs ? { nowMs: opts.nowMs } : {}),
     });
     return { runner, spool, token };
   }
@@ -167,6 +172,73 @@ describe("WorkerRunner against a live Router", () => {
 
     expect(getJob(router.db, jobId)?.state).toBe("succeeded");
     expect(spool.listPending()).toEqual([]);
+  });
+  it("shows a job lifecycle and suppresses repeated idle messages", async () => {
+    const events: WorkerProgress[] = [];
+    const { runner } = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()), {
+      onProgress: (event) => events.push(event),
+    });
+    await runner.connect();
+    await runner.pollOnce();
+    await runner.pollOnce();
+    expect(events.filter((event) => event.state === "waiting")).toHaveLength(1);
+    await router.seedQueuedJob();
+    await runner.pollOnce();
+    expect(
+      events.filter((event) => event.issueKey === "KAN-1").map((event) => event.state),
+    ).toEqual(["started", "progress", "reporting", "finished"]);
+    expect(events.at(-1)).toMatchObject({
+      state: "finished",
+      resultStatus: "succeeded",
+      delivered: true,
+    });
+    expect(formatWorkerProgress(events.at(-1) as WorkerProgress)).toContain(
+      "KAN-1 구현 완료 · Router 전송 완료",
+    );
+    await runner.pollOnce();
+    expect(events.filter((event) => event.state === "waiting")).toHaveLength(2);
+  });
+  it("reports the real execution stage every 30 seconds without an extra timer", async () => {
+    await router.seedQueuedJob();
+    const events: WorkerProgress[] = [];
+    let clock = 0;
+    let inAgent = false;
+    let finish: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const provider: WorkerProvider = {
+      run: async () => {
+        await ready;
+        return fakeSuccessResult();
+      },
+    };
+    const { runner } = await makeRunner(provider, {
+      nowMs: () => clock,
+      leaseLossMs: 1_000_000_000,
+      sleep: async (ms) => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        if (ms === 1000 && inAgent) clock += 15_000;
+      },
+      onProgress: (event) => {
+        events.push(event);
+        if (event.state === "progress" && event.stage === "agent") {
+          inAgent = true;
+          if ((event.elapsedMs ?? 0) >= 60_000) finish();
+        }
+      },
+    });
+    await runner.connect();
+    await runner.pollOnce();
+    expect(
+      events
+        .filter((event) => event.state === "progress")
+        .map((event) => [event.stage, event.elapsedMs]),
+    ).toEqual([
+      ["agent", 0],
+      ["agent", 30_000],
+      ["agent", 60_000],
+    ]);
   });
 
   it("reports plan usage once on connect and again after each job (ADR 0028)", async () => {
@@ -343,6 +415,8 @@ describe("WorkerRunner against a live Router", () => {
     );
     await router.reconcile();
     const plan = {
+      acceptanceCriteria: ["The API works"],
+      verification: ["Run API integration tests"],
       needsDecision: false,
       summary: "Two steps",
       tasks: [
@@ -352,7 +426,6 @@ describe("WorkerRunner against a live Router", () => {
           description: "Endpoints",
           acceptance: ["GET /items answers 200"],
           verification: ["npm run test -- api"],
-          requiredCapabilities: ["programming"],
         },
       ],
     };
@@ -407,6 +480,7 @@ describe("WorkerRunner against a live Router", () => {
   });
 
   it("resends a result that was spooled but never acknowledged, after a worker restart", async () => {
+    const events: WorkerProgress[] = [];
     await router.seedQueuedJob();
     const jobId = getOpenJobForIssue(router.db, "KAN-1")?.id ?? "";
     const dropResults: FetchLike = async (input, init) => {
@@ -415,19 +489,30 @@ describe("WorkerRunner against a live Router", () => {
     };
     const first = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()), {
       fetch: dropResults,
+      onProgress: (event) => events.push(event),
     });
     await first.runner.connect();
     await first.runner.pollOnce();
     expect(first.spool.listPending()).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({
+      state: "finished",
+      delivered: false,
+      resultStatus: "succeeded",
+    });
+    expect(formatWorkerProgress(events.at(-1) as WorkerProgress)).toContain(
+      "결과 보관됨, Router 전송 미완료",
+    );
     expect(getJob(router.db, jobId)?.state).toBe("running");
 
     // Same credential, new process, working network.
     const second = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()), {
       token: first.token,
+      onProgress: (event) => events.push(event),
     });
     await second.runner.connect();
 
     expect(second.spool.listPending()).toEqual([]);
+    expect(events.some((event) => event.state === "resent" && event.count === 1)).toBe(true);
     expect(getJob(router.db, jobId)?.state).toBe("succeeded");
   });
 

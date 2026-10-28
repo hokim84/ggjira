@@ -64,7 +64,6 @@ describe("computeApprovalId", () => {
 describe("computeDelegationApprovalIds (ADR 0044)", () => {
   const STATUSES = {
     requestStatus: "AI 계획 요청",
-    planReviewStatus: "계획 검토 대기",
     inProgressStatus: "작업 중",
   };
 
@@ -93,25 +92,24 @@ describe("computeDelegationApprovalIds (ADR 0044)", () => {
   it("is the move from plan review to in progress after the latest request", async () => {
     const jira = seeded();
     await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
-    await jira.transitionIssueToStatus("KAN-1", STATUSES.planReviewStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
     await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
     const changelog = await jira.getIssueChangelog("KAN-1");
     expect(await idsOf(jira)).toEqual({
       requestApprovalId: changelog[0]?.id,
-      planApprovalId: changelog[2]?.id,
+      planApprovalId: changelog[1]?.id,
     });
   });
 
   it("forgets an approval once the issue is requested again", async () => {
     const jira = seeded();
     await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
-    await jira.transitionIssueToStatus("KAN-1", STATUSES.planReviewStatus);
-    await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
     await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
     await jira.transitionIssueToStatus("KAN-1", STATUSES.inProgressStatus);
+    await jira.transitionIssueToStatus("KAN-1", STATUSES.requestStatus);
     const changelog = await jira.getIssueChangelog("KAN-1");
     expect(await idsOf(jira)).toEqual({
-      requestApprovalId: changelog[3]?.id,
+      requestApprovalId: changelog[2]?.id,
       planApprovalId: null,
     });
   });
@@ -123,7 +121,6 @@ function requirements(overrides: Partial<IssueRequirements> = {}): IssueRequirem
     acceptanceCriteria: ["It works"],
     dependencies: [],
     constraints: [],
-    requiredCapabilities: ["programming"],
     suggestedExecutionStrategy: null,
     verification: ["npm run test"],
     inScope: [],
@@ -182,7 +179,6 @@ describe("computeInputHash (v2, ADR 0035)", () => {
     ["the allowed paths", { requirements: { allowedPaths: ["src/**"] } }],
     ["the affected areas", { requirements: { affectedAreas: ["src/api"] } }],
     ["the constraints", { requirements: { constraints: ["No new deps"] } }],
-    ["the capabilities", { requirements: { requiredCapabilities: ["programming", "testing"] } }],
     ["the plan version", { planTask: { ...planTask, planVersion: "v2" } }],
     ["the plan task id", { planTask: { ...planTask, taskId: "t2" } }],
     ["the job kind", { kind: "planning" as const }],
@@ -200,12 +196,9 @@ describe("computeInputHash (v2, ADR 0035)", () => {
     expect(hash({ description: "Body\n\ntext" })).not.toBe(hash({ description: "Body\ntext" }));
   });
 
-  it("does not depend on dependency or capability order, but does on acceptance order", () => {
+  it("does not depend on dependency order, but does on acceptance order", () => {
     expect(hash({ requirements: { dependencies: ["KAN-1", "KAN-2"] } })).toBe(
       hash({ requirements: { dependencies: ["KAN-2", "KAN-1"] } }),
-    );
-    expect(hash({ requirements: { requiredCapabilities: ["testing", "programming"] } })).toBe(
-      hash({ requirements: { requiredCapabilities: ["programming", "testing"] } }),
     );
     expect(hash({ requirements: { acceptanceCriteria: ["A", "B"] } })).not.toBe(
       hash({ requirements: { acceptanceCriteria: ["B", "A"] } }),

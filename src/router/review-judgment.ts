@@ -1,4 +1,5 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
+import type { JobResult } from "../contracts/envelope.js";
 import type { RouterConfig } from "./config.js";
 import { getApproval } from "./db/approvals.js";
 import { resolveAttention } from "./db/attention.js";
@@ -15,11 +16,18 @@ import {
   listReviewTargets,
   type ReviewRecordRow,
 } from "./db/review-targets.js";
-import { buildReviewJudgmentSteps, reviewJudgmentBatchId } from "./report-journal.js";
+import type { ApprovalSnapshot } from "./issue-check.js";
+import {
+  buildHumanConfirmedChildSteps,
+  buildReviewJudgmentSteps,
+  reviewJudgmentBatchId,
+} from "./report-journal.js";
+import { awaitingHumanCheck } from "./workflow-checks.js";
 
 /**
  * A human's judgment on one review target, from the review screen (F01, ADR 0043). It is a record:
- * nothing here moves a Jira status, merges a pull request, creates an approval or reruns anything.
+ * nothing here merges a pull request, creates an approval or reruns anything. The one status move
+ * is a confirm that completes a child waiting on checks its agent could not verify (ADR 0061).
  * A judgment only ever applies to the target that is current for its issue under the issue's
  * current approval; anything older is refused so a past look is never reused for a newer result.
  */
@@ -65,7 +73,7 @@ function parseAction(action: string): JudgmentAction {
  * is written for them.
  */
 export function judgeReviewTarget(
-  db: Database.Database,
+  db: RouterDatabase,
   config: RouterConfig,
   input: JudgeInput,
 ): ReviewRecordRow {
@@ -90,7 +98,23 @@ export function judgeReviewTarget(
   }
 }
 
-function judge(db: Database.Database, config: RouterConfig, input: JudgeInput): ReviewRecordRow {
+/** Whether the attempt's result is a child's that waits for a person to confirm its checks. */
+function childAwaitingHumanCheck(db: RouterDatabase, jobId: string, attemptId: string): boolean {
+  const result = db
+    .prepare("SELECT payload FROM results WHERE attempt_id=? ORDER BY rowid DESC LIMIT 1")
+    .get(attemptId) as { payload: string } | undefined;
+  const input = db.prepare("SELECT snapshot FROM job_inputs WHERE job_id=?").get(jobId) as
+    | { snapshot: string }
+    | undefined;
+  if (!result || !input) return false;
+  const snapshot = JSON.parse(input.snapshot) as ApprovalSnapshot;
+  return (
+    Boolean(snapshot.planTask || snapshot.integration?.parentKey) &&
+    awaitingHumanCheck(JSON.parse(result.payload) as JobResult)
+  );
+}
+
+function judge(db: RouterDatabase, config: RouterConfig, input: JudgeInput): ReviewRecordRow {
   const action = parseAction(input.action);
   const note = input.note?.trim() ?? "";
   if (action !== "confirm" && !note) {
@@ -146,6 +170,27 @@ function judge(db: Database.Database, config: RouterConfig, input: JudgeInput): 
       resolution: `review confirmed by ${input.actor}`,
       now: input.now,
     });
+    // ADR 0061: for a child waiting on checks its agent could not verify, the confirm is that
+    // evidence and completes it. Every other confirm stays a record only (ADR 0043).
+    const job = getJob(db, target.jobId);
+    const workspace = job && config.workspaces.find((entry) => entry.id === job.workspaceId);
+    if (job && workspace && childAwaitingHumanCheck(db, job.id, target.attemptId)) {
+      insertReportBatch(db, {
+        batchId: reviewJudgmentBatchId(recordId),
+        jobId: job.id,
+        attemptId: target.attemptId,
+        issueKey: target.issueKey,
+        steps: buildHumanConfirmedChildSteps({
+          job,
+          workspace,
+          attemptId: target.attemptId,
+          headSha: target.headSha,
+          actor: input.actor,
+          language: config.reporting.language,
+        }),
+        now: input.now,
+      });
+    }
   } else {
     const job = getJob(db, target.jobId);
     const workspace = job && config.workspaces.find((entry) => entry.id === job.workspaceId);

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export interface WorktreeHandle {
@@ -31,11 +31,13 @@ function runGit(
   return new Promise((resolve, reject) => {
     const child = spawn("git", args, {
       cwd,
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
       ...(opts.env ? { env: opts.env } : {}),
       ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
     });
     const stderrChunks: string[] = [];
+    const stdoutChunks: string[] = [];
+    child.stdout?.on("data", (chunk: Buffer) => stdoutChunks.push(chunk.toString("utf-8")));
     child.stderr?.on("data", (chunk: Buffer) => stderrChunks.push(chunk.toString("utf-8")));
     child.on("error", (err) => reject(err));
     child.on("close", (code) => {
@@ -43,7 +45,7 @@ function runGit(
         resolve();
         return;
       }
-      const stderr = stderrChunks.join("").trim();
+      const stderr = [...stderrChunks, ...stdoutChunks].join("").trim();
       reject(
         new GitCommandError(`git ${args.join(" ")} failed (exit ${code}): ${stderr}`, args, stderr),
       );
@@ -130,10 +132,24 @@ export function githubCompareUrl(
   return `https://github.com/${owner}/${repo}/compare/${ref(baseBranch)}...${ref(branch)}?expand=1`;
 }
 
-/** Checks the configured workspace itself, so worktree failures in real repos stay visible. */
+/** The same folder, ignoring how the path is spelled (separators, links, drive letter case). */
+function sameFolder(a: string, b: string): boolean {
+  try {
+    const [x, y] = [realpathSync.native(a), realpathSync.native(b)];
+    return process.platform === "win32" ? x.toLowerCase() === y.toLowerCase() : x === y;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the configured workspace is the top of a git work tree, so worktree failures in real
+ * repos stay visible. A plain folder inside another repository (for example under a worker home
+ * in the GGJIRA checkout, ADR 0065) is not: its jobs must not branch from that repository.
+ */
 export function isGitRepository(workspacePath: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn("git", ["rev-parse", "--is-inside-work-tree"], {
+    const child = spawn("git", ["rev-parse", "--show-toplevel"], {
       cwd: workspacePath,
       stdio: ["ignore", "pipe", "ignore"],
     });
@@ -142,7 +158,7 @@ export function isGitRepository(workspacePath: string): Promise<boolean> {
       output += chunk.toString("utf-8");
     });
     child.on("error", () => resolve(false));
-    child.on("close", (code) => resolve(code === 0 && output.trim() === "true"));
+    child.on("close", (code) => resolve(code === 0 && sameFolder(output.trim(), workspacePath)));
   });
 }
 
@@ -222,7 +238,12 @@ export interface WorktreeChange {
 /** Runs git and resolves its raw stdout; rejects on a non-zero exit. */
 function gitOutput(args: string[], cwd: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("git", args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    });
     const stdout: Buffer[] = [];
     const stderr: string[] = [];
     child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
@@ -396,4 +417,102 @@ export function listRepositoryWorktreePaths(repoPath: string): Promise<string[]>
   });
 }
 
+/** Fetch without changing a shared checkout; require every dependency on the selected branch. */
+export async function integrationTarget(
+  repoPath: string,
+  remote: string,
+  baseBranch: string,
+  commits: readonly string[],
+): Promise<string> {
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote) ||
+    baseBranch.startsWith("-") ||
+    !/^[A-Za-z0-9_./-]+$/.test(baseBranch)
+  )
+    throw new Error("invalid integration ref");
+  await runGit(["fetch", "--no-tags", remote, `refs/heads/${baseBranch}`], repoPath, {
+    timeoutMs: 60_000,
+  });
+  const sha = await revParse(repoPath, "FETCH_HEAD");
+  for (const commit of commits) {
+    if (!/^[a-f0-9]{40}$/i.test(commit)) throw new Error("invalid merge commit");
+    await runGit(["merge-base", "--is-ancestor", commit, sha], repoPath);
+  }
+  return sha;
+}
+
+/** Merge published task results in a disposable worktree, without touching the target branch. */
+export async function mergeResultCommits(
+  cwd: string,
+  remote: string,
+  commits: readonly string[],
+): Promise<void> {
+  if (!REMOTE_NAME_PATTERN.test(remote)) throw new Error("invalid result remote");
+  for (const sha of [...new Set(commits)]) {
+    if (!/^[a-f0-9]{40}$/i.test(sha)) throw new Error("invalid result SHA");
+    await runGit(["fetch", "--no-tags", remote, sha], cwd, { timeoutMs: 60000 });
+    await runGit(
+      [
+        "-c",
+        "user.name=GGJIRA",
+        "-c",
+        "user.email=ggjira@localhost",
+        "merge",
+        "--no-edit",
+        "--no-ff",
+        sha,
+      ],
+      cwd,
+      { timeoutMs: 60000 },
+    );
+  }
+}
+export async function fetchResultCommit(cwd: string, remote: string, sha: string): Promise<void> {
+  if (!REMOTE_NAME_PATTERN.test(remote) || !/^[a-f0-9]{40}$/i.test(sha))
+    throw new Error("invalid result commit");
+  await runGit(["fetch", "--no-tags", remote, sha], cwd, { timeoutMs: 60000 });
+}
+
+export async function remoteBranchHead(
+  cwd: string,
+  remote: string,
+  branch: string,
+): Promise<string | undefined> {
+  if (
+    !REMOTE_NAME_PATTERN.test(remote) ||
+    !/^[A-Za-z0-9_./-]+$/.test(branch) ||
+    branch.startsWith("-")
+  )
+    throw new Error("invalid result branch");
+  const output = (await gitOutput(["ls-remote", "--heads", remote, `refs/heads/${branch}`], cwd))
+    .toString("utf8")
+    .trim();
+  return output ? output.split(/\s+/)[0] : undefined;
+}
+export async function pushResultHead(cwd: string, remote: string, branch: string): Promise<void> {
+  if (
+    !REMOTE_NAME_PATTERN.test(remote) ||
+    !/^[A-Za-z0-9_./-]+$/.test(branch) ||
+    branch.startsWith("-")
+  )
+    throw new Error("invalid result branch");
+  await runGit(["push", remote, `HEAD:refs/heads/${branch}`], cwd, {
+    timeoutMs: 120000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+}
+export async function commitIsAncestor(
+  cwd: string,
+  ancestor: string,
+  head: string,
+): Promise<boolean> {
+  if (![ancestor, head].every((s) => /^[a-f0-9]{40}$/i.test(s)))
+    throw new Error("invalid ancestor SHA");
+  try {
+    await runGit(["merge-base", "--is-ancestor", ancestor, head], cwd);
+    return true;
+  } catch {
+    return false;
+  }
+}
 export { GitCommandError };

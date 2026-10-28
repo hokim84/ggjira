@@ -6,13 +6,13 @@ import {
   runRouterCheck,
 } from "../src/router/check.js";
 import {
-  buildRouterConfig,
   DONE_STATUS,
   IN_PROGRESS_STATUS,
   PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
   REVIEW_STATUS,
   TODO_STATUS,
+  buildRouterConfig,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
@@ -32,6 +32,9 @@ function jiraWithProject(statuses: string[]): FakeJiraGateway {
 }
 
 const ALL_STATUSES = [
+  "AI 계획중",
+  "AI 통합 대기",
+  "AI 구현 완료",
   TODO_STATUS,
   REQUEST_STATUS,
   PLAN_REVIEW_STATUS,
@@ -55,33 +58,33 @@ describe("router check", () => {
 
   it("fails on a status the project does not have", async () => {
     const items = await runRouterCheck(
-      jiraWithProject(ALL_STATUSES.filter((s) => s !== REVIEW_STATUS)),
+      jiraWithProject(ALL_STATUSES.filter((s) => s !== "AI 구현 완료")),
       config,
     );
     expect(items).toContainEqual({
       level: "fail",
-      message: expect.stringContaining(`reviewStatus "${REVIEW_STATUS}"`),
+      message: expect.stringContaining('implementationCompleteStatus "AI 구현 완료"'),
     });
   });
 
   it("checks the transitions Router needs on a sample issue", async () => {
     const jira = jiraWithProject(ALL_STATUSES);
     jira.seedIssue({ key: "KAN-1", statusName: REQUEST_STATUS, projectKey: "KAN" }, [
-      { id: "1", name: "Planned", toStatusName: PLAN_REVIEW_STATUS },
+      { id: "1", name: "Plan", toStatusName: "AI 계획중" },
     ]);
     jira.seedIssue({ key: "KAN-2", statusName: IN_PROGRESS_STATUS, projectKey: "KAN" }, []);
 
     const ok = await runRouterCheck(jira, config, { issueKey: "KAN-1" });
     expect(ok).toContainEqual({
       level: "ok",
-      message: expect.stringContaining(`→ "${PLAN_REVIEW_STATUS}"`),
+      message: expect.stringContaining('→ "AI 계획중"'),
     });
 
     const missing = await runRouterCheck(jira, config, { issueKey: "KAN-2" });
     expect(missing).toContainEqual({
       level: "fail",
       message: expect.stringContaining(
-        `no transition from "${IN_PROGRESS_STATUS}" to "${REVIEW_STATUS}"`,
+        `no transition from "${IN_PROGRESS_STATUS}" to "AI 통합 대기"`,
       ),
     });
   });

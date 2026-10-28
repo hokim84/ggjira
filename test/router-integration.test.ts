@@ -1,30 +1,31 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkerProviderConfigSchema } from "../src/contracts/provider.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { AdminClient } from "../src/router/admin-client.js";
+import { RouterDaemon } from "../src/router/daemon.js";
 import { openRouterDb } from "../src/router/db/connection.js";
 import { getOpenJobForIssue, listJobs } from "../src/router/db/jobs.js";
-import { RouterDaemon } from "../src/router/daemon.js";
-import type { WorkerRequest, WorkerResult } from "../src/worker/provider.js";
-import { fakeSuccessResult } from "../src/worker/fake.js";
+import { syncPlanningRequest } from "../src/router/planning-requests.js";
 import { RouterClient } from "../src/worker-runtime/client.js";
-import { WorkerConfigSchema } from "../src/worker-runtime/config.js";
+import { resolveWorkerConfig } from "../src/worker-runtime/config.js";
 import { pairWorker } from "../src/worker-runtime/ops.js";
 import { WorkerRunner } from "../src/worker-runtime/runner.js";
 import { ResultSpool } from "../src/worker-runtime/spool.js";
+import { fakeSuccessResult } from "../src/worker/fake.js";
+import type { WorkerRequest, WorkerResult } from "../src/worker/provider.js";
 import {
-  buildRouterConfig,
   IN_PROGRESS_STATUS,
-  issueDescription,
   PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
   REVIEW_STATUS,
-  singlePlan,
   WORKFLOW_TRANSITIONS,
+  buildRouterConfig,
+  issueDescription,
+  singlePlan,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
@@ -47,7 +48,21 @@ class RecordingProvider {
           summary: `planned by ${this.workerId}`,
           structuredOutput: singlePlan(),
         })
-      : fakeSuccessResult({ summary: `done by ${this.workerId}` });
+      : fakeSuccessResult({
+          summary: `done by ${this.workerId}`,
+          structuredOutput: {
+            outcome: "completed",
+            summary: `done by ${this.workerId}`,
+            noChangeReason: "Existing result already meets the request",
+            verification: [
+              {
+                acceptance: "The change works",
+                status: "pass",
+                evidence: "Checked the existing output",
+              },
+            ],
+          },
+        });
   }
 }
 
@@ -58,7 +73,7 @@ class RecordingProvider {
  */
 describe("Router with two workers over HTTP", () => {
   let dir: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
   let daemon: RouterDaemon;
   let routerUrl: string;
   const jira = new FakeJiraGateway();
@@ -82,6 +97,9 @@ describe("Router with two workers over HTTP", () => {
         WORKFLOW_TRANSITIONS,
       );
     }
+    for (const key of ["KAN-1", "KAN-2", "KAN-3"])
+      await syncPlanningRequest(db, jira, await jira.getIssue(key), REQUEST_STATUS);
+
     daemon = new RouterDaemon({
       db,
       jira,
@@ -129,23 +147,22 @@ describe("Router with two workers over HTTP", () => {
       workerName: workerId,
       credentialPath,
     });
-    const config = WorkerConfigSchema.parse({
-      configVersion: 5,
-      routerUrl,
-      credentialPath,
-      // Plain directories: the executor edits in place, no git needed for the scenario.
-      repositories: [{ id: "repo1", path: repoDir }],
-      capabilities: ["programming"],
-      providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
-      dataDir: path.join(workerDir, "data"),
-    });
+    const config = resolveWorkerConfig(
+      {
+        configVersion: 6,
+        routerUrl,
+        // Plain directories: the executor edits in place, no git needed for the scenario.
+        repositories: [{ id: "repo1", path: repoDir }],
+        providers: [WorkerProviderConfigSchema.parse({ id: "default" })],
+      },
+      path.join(workerDir, "data"),
+    );
     const runner = new WorkerRunner({
       config,
       client: new RouterClient({ routerUrl, workerToken: credential.workerToken }),
       workerId: credential.workerId,
       spool: new ResultSpool(path.join(workerDir, "data", "spool")),
       createProvider: () => new RecordingProvider(workerId, log),
-      worktreesRoot: path.join(workerDir, "data", "worktrees"),
       heartbeatIntervalMs: 50,
     });
     const controller = new AbortController();
@@ -161,7 +178,16 @@ describe("Router with two workers over HTTP", () => {
     await vi.waitFor(
       async () => {
         for (const key of ["KAN-1", "KAN-2", "KAN-3"]) {
-          expect((await jira.getIssue(key)).statusName).toBe(PLAN_REVIEW_STATUS);
+          expect((await jira.getIssue(key)).statusName).toBe("AI 계획중");
+          expect(
+            (
+              db
+                .prepare(
+                  "SELECT ready_history FROM planning_requests WHERE issue_key = ? ORDER BY rowid DESC LIMIT 1",
+                )
+                .get(key) as { ready_history: string | null } | undefined
+            )?.ready_history,
+          ).toBeTruthy();
         }
       },
       { timeout: 20_000, interval: 100 },
@@ -176,7 +202,7 @@ describe("Router with two workers over HTTP", () => {
     await vi.waitFor(
       async () => {
         for (const key of ["KAN-1", "KAN-2", "KAN-3"]) {
-          expect((await jira.getIssue(key)).statusName).toBe(REVIEW_STATUS);
+          expect((await jira.getIssue(key)).statusName).toBe("AI 구현 완료");
         }
       },
       { timeout: 20_000, interval: 100 },

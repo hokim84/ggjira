@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { CloneUrlSchema } from "../contracts/api.js";
+import { FciConfigSchema } from "../contracts/fci.js";
+import { RolePromptsSchema } from "../contracts/prompts.js";
 
 /** See src/config.ts's `nfc` for why status/transition names get normalized. */
 function nfc(value: string): string {
@@ -9,28 +11,16 @@ function nfc(value: string): string {
 
 const nfcString = z.string().min(1).transform(nfc);
 
-/**
- * A workspace's statuses (ADR 0044, ADR 0047). People delegate by moving issues on the board:
- *
- *   human -> requestStatus -> [Router plans] planReviewStatus
- *         -> human approves: planReviewStatus -> inProgressStatus (shared with people)
- *         -> [Router runs the approved plan] reviewStatus -> [merge] doneStatus
- *
- * Every request is planned first; only a human's move from `planReviewStatus` to
- * `inProgressStatus` approves a plan. Labels play no part. Keys of the removed workflows (`mode`,
- * `planningStatus`, `needsDecisionStatus`, `optInLabel`) are rejected, never reinterpreted.
- */
+/** Six board stages; FCI is independent analysis, not a workflow stage. */
 const WorkflowStatusSchema = z
   .object({
     requestStatus: nfcString,
-    /** Where a plan waits for a human. Moving the issue from here to `inProgressStatus` approves
-     *  the plan. */
-    planReviewStatus: nfcString,
+    planningInProgressStatus: nfcString,
     inProgressStatus: nfcString,
-    reviewStatus: nfcString,
-    /** Where Router moves an issue from `reviewStatus` once the worker's GitHub pull request is
-     *  merged (ADR 0027), and what completes a dependency. Unset: a merge is only commented on. */
-    doneStatus: nfcString.optional(),
+    integrationPendingStatus: nfcString,
+    implementationCompleteStatus: nfcString,
+    /** Final completion is always a human status move. */
+    doneStatus: nfcString,
   })
   .strict()
   .superRefine((workflow, ctx) => {
@@ -38,9 +28,10 @@ const WorkflowStatusSchema = z
     const seen = new Map<string, string>();
     for (const field of [
       "requestStatus",
-      "planReviewStatus",
+      "planningInProgressStatus",
       "inProgressStatus",
-      "reviewStatus",
+      "integrationPendingStatus",
+      "implementationCompleteStatus",
       "doneStatus",
     ] as const) {
       const status = workflow[field];
@@ -65,6 +56,7 @@ const RepositorySchema = z.object({
   cloneUrl: CloneUrlSchema.optional(),
   /** Branch job worktrees start from; workers default to "main". */
   baseBranch: z.string().min(1).optional(),
+  fci: FciConfigSchema.optional(),
 });
 export type RepositoryConfig = z.infer<typeof RepositorySchema>;
 
@@ -106,7 +98,6 @@ export type WorkspaceConfig = z.infer<typeof WorkspaceSchema>;
  */
 const WorkerPolicySchema = z.object({
   workerId: z.string().min(1),
-  allowedCapabilities: z.array(z.string().min(1)).default([]),
   allowedRepositoryIds: z.array(z.string().min(1)).min(1),
   enabled: z.boolean().default(true),
   /** The worker-local provider (`WorkerConfig.providers[].id`) Router names in this worker's
@@ -136,6 +127,7 @@ const DatabaseConfigSchema = z.object({
 });
 
 const HttpConfigSchema = z.object({
+  localUiWithoutToken: z.boolean().optional(),
   host: z.string().min(1).default("127.0.0.1"),
   port: z.number().int().positive().default(8787),
 });
@@ -162,6 +154,7 @@ const ExecutionConfigSchema = z.object({
 /** How Router applies a PM plan to Jira (the v5 counterpart of v4's `pm.*` settings). */
 const PlanningConfigSchema = z.object({
   subtaskIssueType: nfcString.default("Sub-task"),
+  followupIssueType: nfcString.default("Task"),
   maxTasksPerPlan: z.number().int().positive().default(10),
 });
 
@@ -206,7 +199,8 @@ const JevConfigSchema = z.object({
 
 export const RouterConfigSchema = z
   .object({
-    configVersion: z.literal(5),
+    configVersion: z.literal(7),
+    prompts: RolePromptsSchema.default({}),
     jira: z.object({ baseUrl: z.string().url() }),
     repositories: z.array(RepositorySchema).min(1),
     workspaces: z.array(WorkspaceSchema).min(1),

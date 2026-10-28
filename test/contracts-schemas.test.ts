@@ -57,7 +57,6 @@ describe("RouteResultSchema", () => {
     });
     expect(isRouteDispatch(result)).toBe(true);
     if (!isRouteDispatch(result)) throw new Error("expected a dispatch result");
-    expect(result.requiredCapabilities).toEqual([]);
   });
 
   it("accepts a hold result and isRouteDispatch rejects it", () => {

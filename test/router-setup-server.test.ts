@@ -2,12 +2,12 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
-import { RouterConfigSchema } from "../src/router/config.js";
 import { routerConfigTemplate } from "../src/router/config-store.js";
+import { RouterConfigSchema } from "../src/router/config.js";
 import { loadRouterSecrets } from "../src/router/secrets.js";
-import { buildSetupServer, type JiraCredentials } from "../src/router/setup-server.js";
+import { type JiraCredentials, buildSetupServer } from "../src/router/setup-server.js";
 
 const SETUP_TOKEN = "setup-token-for-tests-0123456789";
 const auth = { authorization: `Bearer ${SETUP_TOKEN}` };
@@ -166,6 +166,7 @@ describe("setup server", () => {
   });
 
   it("rejects a Jira email that is not an email address", async () => {
+    const provision = vi.spyOn(jira, "ensureAiWorkflow");
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/setup/complete",
@@ -174,5 +175,61 @@ describe("setup server", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: "invalid_secrets" });
+    expect(provision).not.toHaveBeenCalled();
+  });
+
+  it("automatically adds missing AI states at project selection and returns an explanation", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/setup/jira/ensure-workflow",
+      headers: auth,
+      payload: { ...credentials, projectKey: "KAN" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      complete: true,
+      statuses: expect.arrayContaining([
+        "AI 계획",
+        "AI 계획중",
+        "AI 구현",
+        "AI 통합 대기",
+        "AI 구현 완료",
+        "Done",
+      ]),
+      messages: [expect.stringContaining("자동 추가")],
+    });
+    const repeated = await app.inject({
+      method: "POST",
+      url: "/api/v1/setup/jira/ensure-workflow",
+      headers: auth,
+      payload: { ...credentials, projectKey: "KAN" },
+    });
+    expect(repeated.json().added).toEqual([]);
+  });
+
+  it("does not save or retire the setup token while Jira is applying the workflow", async () => {
+    vi.spyOn(jira, "ensureAiWorkflow").mockResolvedValue({
+      complete: false,
+      statuses: [],
+      added: [],
+      workflowsUpdated: [],
+      messages: ["Jira 적용 대기"],
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/setup/complete",
+      headers: auth,
+      payload: {
+        config: routerConfigTemplate(),
+        jiraEmail: "bot@example.com",
+        jiraApiToken: "jira-token",
+      },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: "workflow_pending" });
+    expect(() => statSync(configPath)).toThrow();
+    expect(
+      (await app.inject({ method: "GET", url: "/api/v1/setup/state", headers: auth })).statusCode,
+    ).toBe(200);
   });
 });

@@ -3,7 +3,7 @@
 ## Context
 
 M4는 일반 할 일/진행/검토/완료 흐름에 opt-in 라벨을 얹는 label 모드를 도입했다(ADR 0037, 0039). 구현 뒤
-방향을 조정했다(`docs/M4_STATUS_DELEGATION_CHANGE_REVIEW.md`). 그 결과 다음이 사용자 확정 사항이 됐다.
+방향을 조정했다(`docs/history/M4_STATUS_DELEGATION_CHANGE_REVIEW.md`). 그 결과 다음이 사용자 확정 사항이 됐다.
 
 - 라벨이 아니라 Jira 상태 전이(보드에서 드래그)로 AI에 위임한다. 라벨은 위임·실행·취소 권한의 기준이 아니다.
 - 별도 플랜 모드를 두지 않는다. 새 위임은 항상 계획부터 시작한다.

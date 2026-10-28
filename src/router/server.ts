@@ -1,14 +1,15 @@
 import { timingSafeEqual } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
-import type { z } from "zod";
+import { z } from "zod";
+import { z as schema } from "zod";
 import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
-  AdminReviewJudgmentRequestSchema,
   AdminJiraProjectRequestSchema,
-  AdminWorkflowCheckRequestSchema,
+  AdminReviewJudgmentRequestSchema,
   AdminSecretRequestSchema,
+  AdminWorkflowCheckRequestSchema,
   type ApiErrorResponse,
   JobAuthorizeRequestSchema,
   JobHeartbeatRequestSchema,
@@ -20,25 +21,34 @@ import {
   WorkerSessionRequestSchema,
   WorkerUsageReportRequestSchema,
 } from "../contracts/api.js";
+import {
+  FciConfigSchema,
+  FciLeaseRequestSchema,
+  FciNextRequestSchema,
+  FciResultRequestSchema,
+  FciSnapshotSchema,
+  ShaSchema,
+} from "../contracts/fci.js";
 import { JOB_STATES } from "../contracts/job-state.js";
+import { AiRoleSchema, UpdateRolePromptSchema } from "../contracts/prompts.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
 import { AdminError, type AdminService } from "./admin-service.js";
-import { RecoveryError } from "./recovery.js";
-import {
-  ingestJiraWebhookEvent,
-  isRelevantJiraWebhook,
-  summarizeJiraWebhook,
-  verifyJiraWebhookSignature,
-} from "./webhook.js";
+import { recordGithubDelivery } from "./db/pull-requests.js";
 import {
   type PullRequestClosed,
   type PullRequestOutcome,
   parsePullRequestClosed,
   verifyGithubSignature,
 } from "./github.js";
-import { recordGithubDelivery } from "./db/pull-requests.js";
-import { registerWebUi } from "./web-ui.js";
 import { getPromptCatalog } from "./prompt-catalog.js";
+import { RecoveryError } from "./recovery.js";
+import { registerWebUi } from "./web-ui.js";
+import {
+  ingestJiraWebhookEvent,
+  isRelevantJiraWebhook,
+  summarizeJiraWebhook,
+  verifyJiraWebhookSignature,
+} from "./webhook.js";
 import { WorkerApiError, type WorkerService } from "./worker-service.js";
 
 const SIGNATURE_HEADER = "x-hub-signature";
@@ -47,7 +57,7 @@ const DELIVERY_ID_HEADER = "x-atlassian-webhook-identifier";
 export const JIRA_WEBHOOK_BODY_LIMIT = 1024 * 1024;
 
 export interface RouterServerDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   webhookSecret: string;
   /** Identifies the single Jira site this Router instance serves
    *  (docs/router-service-implementation-plan.md §3 "첫 버전은 Jira 사이트 하나를 지원"),
@@ -61,6 +71,8 @@ export interface RouterServerDeps {
   workerService?: WorkerService;
   /** Bearer token for `/api/v1/admin/*`. Admin routes are not registered without it. */
   adminToken?: string;
+  /** Explicit temporary bypass for same-origin web UI requests arriving over loopback only. */
+  localUiWithoutToken?: boolean;
   /** Enables the admin routes beyond pairing codes (workers, jobs, reports, sync, backup). */
   adminService?: AdminService;
   /** Where the web UI's static files live; defaults to the repo's `web/router-ui/`. */
@@ -92,6 +104,22 @@ export function tokensEqual(presented: string | undefined, expected: string): bo
   const a = Buffer.from(presented, "utf-8");
   const b = Buffer.from(expected, "utf-8");
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function localUiRequest(request: FastifyRequest, requireHeader = true): boolean {
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.raw.socket.remoteAddress ?? ""))
+    return false;
+  if (requireHeader && request.headers["x-ggjira-local-ui"] !== "1") return false;
+  const site = headerValue(request.headers["sec-fetch-site"]);
+  if (site && !["same-origin", "none"].includes(site)) return false;
+  try {
+    const host = new URL(`${request.protocol}://${headerValue(request.headers.host)}`);
+    if (!["localhost", "127.0.0.1", "[::1]"].includes(host.hostname)) return false;
+    const origin = headerValue(request.headers.origin);
+    return !origin || new URL(origin).origin === host.origin;
+  } catch {
+    return false;
+  }
 }
 
 function sendError(reply: FastifyReply, status: number, body: ApiErrorResponse): FastifyReply {
@@ -135,7 +163,13 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
     }
   });
 
-  app.get("/health", async () => ({ status: "ok", mode: "router" }));
+  app.get("/health", async (request) => ({
+    status: "ok",
+    mode: "router",
+    ...(deps.localUiWithoutToken && localUiRequest(request, false)
+      ? { localUiWithoutToken: true }
+      : {}),
+  }));
   registerWebUi(app, deps.webUiRoot);
 
   app.post("/webhooks/jira", { bodyLimit: JIRA_WEBHOOK_BODY_LIMIT }, async (request, reply) => {
@@ -218,7 +252,7 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
   const service = deps.workerService;
   if (service) registerWorkerRoutes(app, service);
   if (deps.adminToken && (service || deps.adminService)) {
-    registerAdminRoutes(app, deps.adminToken, service, deps.adminService);
+    registerAdminRoutes(app, deps.adminToken, service, deps.adminService, deps.localUiWithoutToken);
   }
 
   return app;
@@ -226,6 +260,79 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
 
 function registerWorkerRoutes(app: FastifyInstance, service: WorkerService): void {
   const worker = (request: FastifyRequest) => service.authenticate(bearerToken(request));
+  app.post("/api/v1/fci/next", async (request, reply) => {
+    const w = worker(request);
+    const body = parseBody(FciNextRequestSchema, request.body);
+    service.fciSession(w, body.sessionId);
+    if (body.workerId !== w.id)
+      throw new WorkerApiError(403, "worker_mismatch", "worker ID differs");
+    const task = service.fci.next(w.id, body.sessionId, body.requestId, body.providers);
+    return task ?? reply.code(204).send();
+  });
+  app.post<{ Params: { id: string } }>("/api/v1/fci/:id/heartbeat", async (request) => {
+    const w = worker(request);
+    const body = parseBody(FciLeaseRequestSchema, request.body);
+    service.fciSession(w, body.sessionId);
+    return service.fci.beat(w.id, request.params.id, body.leaseToken, body.sessionId);
+  });
+  app.post<{ Params: { id: string } }>("/api/v1/fci/:id/lookup", async (request) => {
+    const w = worker(request);
+    const body = parseBody(FciLeaseRequestSchema.extend({ sha: ShaSchema }), request.body);
+    service.fciSession(w, body.sessionId);
+    return {
+      snapshot: service.fci.lookup(
+        w.id,
+        request.params.id,
+        body.leaseToken,
+        body.sessionId,
+        body.sha,
+      ),
+    };
+  });
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/fci/:id/result",
+    { bodyLimit: 16 * 1024 * 1024 },
+    async (request) => {
+      const w = worker(request);
+      const body = parseBody(FciResultRequestSchema, request.body);
+      return service.fci.finish(
+        w.id,
+        request.params.id,
+        body.leaseToken,
+        body.resultId,
+        body.outcome,
+      );
+    },
+  );
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/fci/:id/snapshot",
+    { bodyLimit: 16 * 1024 * 1024 },
+    async (request) => {
+      const w = worker(request);
+      const body = parseBody(
+        FciLeaseRequestSchema.extend({ snapshot: FciSnapshotSchema }),
+        request.body,
+      );
+      service.fciSession(w, body.sessionId);
+      return service.fci.publish(
+        w.id,
+        request.params.id,
+        body.leaseToken,
+        body.sessionId,
+        body.snapshot,
+      );
+    },
+  );
+  app.post<{ Params: { id: string } }>("/api/v1/jobs/:id/source", async (request) =>
+    service.source(
+      worker(request),
+      request.params.id,
+      parseBody(
+        JobStartRequestSchema.extend({ sha: ShaSchema, observedAt: schema.string().datetime() }),
+        request.body,
+      ),
+    ),
+  );
 
   app.post("/api/v1/workers/register", async (request) =>
     service.register(parseBody(WorkerRegisterRequestSchema, request.body)),
@@ -310,11 +417,15 @@ function registerAdminRoutes(
   adminToken: string,
   service: WorkerService | undefined,
   admin: AdminService | undefined,
+  localUiWithoutToken = false,
 ): void {
   app.register(
     async (scope) => {
       scope.addHook("onRequest", async (request, reply) => {
-        if (!tokensEqual(bearerToken(request), adminToken)) {
+        if (
+          !tokensEqual(bearerToken(request), adminToken) &&
+          !(localUiWithoutToken && localUiRequest(request))
+        ) {
           return sendError(reply, 401, {
             error: "unauthenticated",
             message: "admin token required",
@@ -329,13 +440,84 @@ function registerAdminRoutes(
         });
       }
       scope.get("/prompts", async (_request, reply) =>
-        reply.header("cache-control", "no-store").send(getPromptCatalog()),
+        reply
+          .header("cache-control", "no-store")
+          .send(admin?.prompts() ?? { ...getPromptCatalog(), editable: false }),
       );
 
       if (!admin) return;
+      scope.get<{ Querystring: { summary?: string } }>("/fci", async (request) =>
+        admin.fci().view(undefined, request.query.summary === "1"),
+      );
+      scope.get<{ Params: { id: string }; Querystring: { offset?: string; limit?: string } }>(
+        "/repositories/:id/fci/history",
+        async (request) =>
+          admin
+            .fci()
+            .historyView(
+              request.params.id,
+              Number(request.query.offset) || 0,
+              Number(request.query.limit) || 100,
+            ),
+      );
+      scope.get<{ Params: { id: string; sha: string } }>(
+        "/repositories/:id/fci/commits/:sha",
+        async (request) =>
+          admin
+            .fci()
+            .historyDetail(request.params.id, parseBody(ShaSchema, { parsed: request.params.sha })),
+      );
+      scope.post<{ Params: { id: string } }>("/repositories/:id/fci/control", async (request) => {
+        const body = parseBody(
+          z.object({
+            action: z.enum(["all", "next", "pause", "resume", "explain"]),
+            sha: ShaSchema.optional(),
+          }),
+          request.body,
+        );
+        return admin.fci().historyControl(request.params.id, body.action, body.sha);
+      });
+      scope.get<{ Params: { id: string } }>("/fci/:id", async (request) =>
+        admin.fci().detail(request.params.id),
+      );
+      scope.post<{ Params: { id: string } }>("/fci/:id/retry", async (request) =>
+        admin.fci().retry(request.params.id),
+      );
+      scope.post<{ Params: { id: string } }>("/fci/:id/reanalyze", async (request) =>
+        admin.fci().retry(request.params.id, true),
+      );
+      scope.post<{ Params: { id: string } }>("/fci/:id/report-retry", async (request) =>
+        admin.fci().retryReport(request.params.id),
+      );
+      scope.put<{ Params: { id: string } }>("/repositories/:id/fci", async (request) =>
+        admin.configureFci(
+          request.params.id,
+          parseBody(FciConfigSchema, request.body),
+          actorOf(request),
+        ),
+      );
+
+      scope.put<{ Params: { role: string } }>("/prompts/:role", async (request, reply) => {
+        const role = AiRoleSchema.safeParse(request.params.role);
+        if (!role.success) throw new AdminError(400, "invalid_role", "unknown AI role");
+        const body = parseBody(UpdateRolePromptSchema, request.body);
+        return reply
+          .header("cache-control", "no-store")
+          .send(await admin.updatePrompt(role.data, body.additionalInstructions, actorOf(request)));
+      });
 
       type IdParams = { Params: { id: string } };
       scope.get("/status", async () => admin.status());
+      scope.get<{ Querystring: { offset?: string; limit?: string } }>("/tasks", async (request) => {
+        const query = parseBody(
+          z.object({
+            offset: z.coerce.number().int().min(0).default(0),
+            limit: z.coerce.number().int().min(1).max(100).default(30),
+          }),
+          { parsed: request.query },
+        );
+        return admin.tasks(query.offset, query.limit);
+      });
 
       scope.get("/workers", async () => ({ workers: admin.listWorkers() }));
       scope.post("/workers", async (request, reply) =>
@@ -414,9 +596,16 @@ function registerAdminRoutes(
         admin.issueReviews(request.params.key),
       );
       scope.get<{
-        Querystring: { class?: string; state?: string; assignee?: string; parent?: string };
+        Querystring: {
+          class?: string;
+          state?: string;
+          assignee?: string;
+          parent?: string;
+          issue?: string;
+        };
       }>("/reviews", async (request) =>
         admin.reviewQueue({
+          ...(request.query.issue ? { issueKey: request.query.issue } : {}),
           ...(request.query.class ? { reviewClass: request.query.class } : {}),
           ...(request.query.state
             ? { states: request.query.state.split(",").filter(Boolean) }
@@ -467,12 +656,19 @@ function registerAdminRoutes(
         const body = parseBody(AdminWorkflowCheckRequestSchema, request.body);
         return admin.checkWorkflow(body.projectKey, {
           requestStatus: body.workflow.requestStatus,
-          planReviewStatus: body.workflow.planReviewStatus,
+          planningInProgressStatus: body.workflow.planningInProgressStatus,
+          integrationPendingStatus: body.workflow.integrationPendingStatus,
+          implementationCompleteStatus: body.workflow.implementationCompleteStatus,
           inProgressStatus: body.workflow.inProgressStatus,
-          reviewStatus: body.workflow.reviewStatus,
-          ...(body.workflow.doneStatus ? { doneStatus: body.workflow.doneStatus } : {}),
+          doneStatus: body.workflow.doneStatus,
         });
       });
+      scope.post("/jira/ensure-workflow", async (request) =>
+        admin.ensureWorkflow(
+          parseBody(AdminJiraProjectRequestSchema, request.body).projectKey,
+          actorOf(request),
+        ),
+      );
       scope.post<{ Body: ParsedBody | undefined }>("/check", async (request) => {
         const issueKey = (request.body?.parsed as { issueKey?: unknown } | undefined)?.issueKey;
         return admin.check(typeof issueKey === "string" && issueKey ? issueKey : undefined);

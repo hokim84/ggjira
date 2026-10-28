@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { JobState } from "../contracts/job-state.js";
 import type { JobKind } from "../contracts/protocol.js";
 import { JiraApiError } from "../jira/client.js";
@@ -27,6 +27,13 @@ export class IssueViewError extends Error {
 }
 
 export interface IssueView {
+  latestResult?: {
+    summary: string;
+    kind: string;
+    at: string;
+    pullRequest: { url: string; number: number } | null;
+  } | null;
+  fci?: ReturnType<import("./fci-service.js").FciService["forJob"]>;
   issueKey: string;
   /** The issue in Jira's own UI, for people to open next to Router's view. */
   issueUrl: string;
@@ -42,7 +49,7 @@ export interface IssueView {
 }
 
 interface IssueViewDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   jira: JiraGateway;
   config: RouterConfig;
 }
@@ -132,6 +139,15 @@ async function buildView(
     workspaceId: workspace.id,
     requestStatus: workspace.workflow.requestStatus,
     openJob: job ? { jobId: job.id, kind: job.kind, state: job.state } : null,
-    delegation: await readIssueDelegation(deps, workspace, issue),
+    delegation: await readIssueDelegation(
+      {
+        ...deps,
+        baseBranch:
+          deps.config.repositories.find((repo) => repo.id === workspace.repositoryId)?.baseBranch ??
+          "main",
+      },
+      workspace,
+      issue,
+    ),
   };
 }

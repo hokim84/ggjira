@@ -1,10 +1,10 @@
-import { insertReportBatch, listBatchReportSteps } from "../src/router/db/report-steps.js";
-import { processReportJournal } from "../src/router/report-processor.js";
 import { expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { computeApprovalId } from "../src/router/approval.js";
 import { buildWorkspaceJql, findWorkspaceCandidates } from "../src/router/candidates.js";
 import { RouterConfigSchema } from "../src/router/config.js";
+import { insertReportBatch, listBatchReportSteps } from "../src/router/db/report-steps.js";
+import { processReportJournal } from "../src/router/report-processor.js";
 import {
   IN_PROGRESS_STATUS,
   REQUEST_STATUS,
@@ -21,6 +21,9 @@ it("rejects removed label mode and stale opt-in keys in every supported mode", (
     { ...testWorkspace.workflow, optInLabel: "ai-enabled" },
     {
       requestStatus: "Request",
+      planningInProgressStatus: "AI 계획중",
+      integrationPendingStatus: "AI 통합 대기",
+      implementationCompleteStatus: "AI 구현 완료",
       inProgressStatus: "Progress",
       reviewStatus: "Review",
       optInLabel: "ai-enabled",

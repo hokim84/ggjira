@@ -9,6 +9,7 @@ import type {
 } from "./provider.js";
 import { runProcessWithTimeout } from "./spawn.js";
 import { type ClaudeCallInfo, readClaudeCallEvent } from "./call-usage.js";
+import { instructionFilesAbove } from "./instruction-files.js";
 import { parseClaudeRateLimitEvent } from "./usage.js";
 
 export type ClaudeCodeEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -109,6 +110,9 @@ export class ClaudeCodeCliProvider implements WorkerProvider {
       this.model,
       "--effort",
       this.effort,
+      // Only the repository's own instructions, not those of a project the worker home is in.
+      "--settings",
+      JSON.stringify({ claudeMdExcludes: instructionFilesAbove(request.cwd) }),
     ];
     if (request.systemPrompt) {
       args.push("--append-system-prompt", request.systemPrompt);

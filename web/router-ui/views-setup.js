@@ -179,25 +179,35 @@ export function renderSetup(root) {
         h(
           "p",
           { class: "muted full-row" },
-          "요청 상태로 옮기면 계획부터 시작하고, 계획 검토 → 작업 중으로 옮기면 승인된 계획을 실행합니다.",
+          "실행할 자식을 AI 구현으로 옮겨 개별 승인합니다. 모두 구현 완료되면 부모 PR을 만들고, 사람이 병합한 뒤 통합 검증을 진행합니다. 검증 통과 후 AI 구현 완료가 되며 Done은 수동으로 처리합니다.",
         ),
-        field(ws, "workflow.requestStatus", "AI 계획 요청 상태 (사람이 AI에게 맡김)", {
-          kind,
-          options,
-        }),
-        field(ws, "workflow.planReviewStatus", "계획 검토 상태 (승인 대기)", { kind, options }),
-        field(ws, "workflow.inProgressStatus", "작업 중 상태", { kind, options }),
-        field(ws, "workflow.reviewStatus", "결과 검토 상태", { kind, options }),
+        ...[
+          ["requestStatus", "AI 계획"],
+          ["planningInProgressStatus", "AI 계획중"],
+          ["inProgressStatus", "AI 구현"],
+          ["integrationPendingStatus", "AI 통합 대기"],
+          ["implementationCompleteStatus", "AI 구현 완료"],
+          ["doneStatus", "Done"],
+        ].map(([key, label]) => field(ws, `workflow.${key}`, label, { kind, options })),
       );
     }
 
     async function loadStatuses(projectKey) {
       wizard.statuses = [];
+      wizard.workflowReady = false;
       if (projectKey) {
         try {
-          wizard.statuses = (
-            await setup("POST", "/jira/statuses", { ...creds(), projectKey })
-          ).statuses;
+          fill(
+            message,
+            notice(
+              "info",
+              "프로젝트의 AI 상태를 확인합니다. 없는 상태와 전이는 자동으로 추가합니다.",
+            ),
+          );
+          const result = await setup("POST", "/jira/ensure-workflow", { ...creds(), projectKey });
+          wizard.statuses = result.statuses;
+          wizard.workflowReady = result.complete;
+          fill(message, notice(result.complete ? "ok" : "warn", result.messages.join(" ")));
         } catch (error) {
           fill(message, errorNotice(error));
         }
@@ -246,9 +256,26 @@ export function renderSetup(root) {
       event.preventDefault();
       ws.repositoryId = repository().id;
       const missing = [];
+      if (!wizard.workflowReady) {
+        fill(
+          message,
+          notice(
+            "warn",
+            "AI 상태 구성이 완료되어야 계속할 수 있습니다. 프로젝트를 다시 선택하여 재시도하세요.",
+          ),
+        );
+        return;
+      }
       if (!ws.projectKeys?.length)
         missing.push({ path: "workspaces.0.projectKeys", message: "프로젝트를 선택하세요" });
-      for (const key of ["requestStatus", "planReviewStatus", "inProgressStatus", "reviewStatus"]) {
+      for (const key of [
+        "requestStatus",
+        "planningInProgressStatus",
+        "inProgressStatus",
+        "integrationPendingStatus",
+        "implementationCompleteStatus",
+        "doneStatus",
+      ]) {
         if (!ws.workflow[key]) missing.push({ path: `workflow.${key}`, message: "필수입니다" });
       }
       if (missing.length) {
@@ -265,7 +292,6 @@ export function renderSetup(root) {
     if (!cfg.workers.length) {
       cfg.workers.push({
         workerId: "worker-1",
-        allowedCapabilities: ["programming", "testing"],
         allowedRepositoryIds: [],
         providerId: "default",
       });
@@ -277,10 +303,6 @@ export function renderSetup(root) {
       "div",
       { class: "grid" },
       field(worker, "workerId", "workerId", { hint: "워커 머신을 구분하는 이름" }),
-      field(worker, "allowedCapabilities", "허용 capabilities", {
-        kind: "list",
-        hint: "쉼표로 구분",
-      }),
       field(worker, "providerId", "providerId", { optional: true, placeholder: "default" }),
     );
     skip.addEventListener("change", () => {
@@ -341,7 +363,7 @@ export function renderSetup(root) {
 
   function finalConfig() {
     const cfg = structuredClone(wizard.config);
-    cfg.configVersion = 5;
+    cfg.configVersion = 6;
     if (wizard.skipWorker) cfg.workers = [];
     return cfg;
   }
@@ -421,7 +443,7 @@ export function renderSetup(root) {
         h(
           "li",
           {},
-          "재시작 후 이 페이지를 새로고침하고 관리자 토큰으로 로그인해 '점검'과 '워커 페어링'을 진행하세요.",
+          "재시작 후 이 페이지를 새로고침하고 로그인한 뒤 설정 → 연동 진단과 워커 페어링을 진행하세요.",
         ),
       ),
     );

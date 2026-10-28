@@ -1,15 +1,35 @@
+import { FCI_EXPLANATION_OUTPUT_SCHEMA } from "../contracts/fci.js";
 import { IMPLEMENTATION_REPORT_JSON_SCHEMA } from "../contracts/implementation.js";
+import {
+  type AiRole,
+  type RolePrompts,
+  RolePromptsSchema,
+  appendRoleInstructions,
+} from "../contracts/prompts.js";
 import { PLAN_JSON_SCHEMA } from "../pm/plan.js";
 import { buildPlanningPrompt, buildPmSystemPrompt } from "../pm/prompt.js";
+import { buildFciExplanationPrompt } from "../worker/fci-prompt.js";
 import { buildImplementPrompt, buildImplementSystemPrompt } from "../worker/prompt.js";
 
+const builders = {
+  planning: buildPmSystemPrompt,
+  implementation: buildImplementSystemPrompt,
+  fci_analysis: buildFciExplanationPrompt,
+};
+
+export function roleSystemPrompt(role: AiRole, prompts: RolePrompts): string {
+  return appendRoleInstructions(builders[role](), prompts[role].additionalInstructions);
+}
+
 /** Current built-in instructions, using the same builders as execution. Examples contain no issue data. */
-export function getPromptCatalog() {
+export function getPromptCatalog(prompts = RolePromptsSchema.parse({})) {
   return {
-    agents: [
+    roles: [
       {
         id: "planning",
-        title: "PM Agent",
+        title: "플랜",
+        description:
+          "요구사항을 분석하고 서브태스크·의존성·완료 조건·검증 방법을 정의합니다. 판단이 필요하면 질문합니다.",
         source: "src/pm/prompt.ts",
         systemPrompt: buildPmSystemPrompt(),
         examplePrompt: buildPlanningPrompt({
@@ -24,7 +44,8 @@ export function getPromptCatalog() {
       },
       {
         id: "implementation",
-        title: "구현 Agent",
+        title: "구현",
+        description: "할당된 서브태스크나 간단한 작업을 구현하고 검증합니다.",
         source: "src/worker/prompt.ts",
         systemPrompt: buildImplementSystemPrompt(),
         examplePrompt: buildImplementPrompt({
@@ -42,6 +63,28 @@ export function getPromptCatalog() {
         }),
         outputSchema: IMPLEMENTATION_REPORT_JSON_SCHEMA,
       },
-    ],
+      {
+        id: "fci_analysis",
+        title: "기술부채 변화 설명",
+        description:
+          "선택한 커밋의 정적 평가 근거와 개선 우선순위를 설명합니다. AI는 점수를 변경하지 않으며 승인과 상태 전이를 차단하지 않습니다.",
+        source: "src/worker/fci-prompt.ts",
+        systemPrompt: buildFciExplanationPrompt(),
+        examplePrompt: JSON.stringify(
+          {
+            snapshotSha: "{{평가 SHA}}",
+            facts: "{{결정적으로 수집한 관측값}}",
+            tests: "{{검증 여부·근거}}",
+          },
+          null,
+          2,
+        ),
+        outputSchema: FCI_EXPLANATION_OUTPUT_SCHEMA,
+      },
+    ].map((role) => ({
+      ...role,
+      additionalInstructions: prompts[role.id as AiRole].additionalInstructions,
+      effectiveSystemPrompt: roleSystemPrompt(role.id as AiRole, prompts),
+    })),
   };
 }

@@ -19,6 +19,9 @@ export const ExecutionContractSchema = z.object({
 export type ExecutionContract = z.infer<typeof ExecutionContractSchema>;
 
 export const VERIFICATION_STATUSES = ["pass", "fail", "not_verified"] as const;
+/** How the agent checked one criterion (ADR 0059): it ran something and saw the result, or it
+ *  judged by reading code, diffs or documents. Self-reported, like the status. */
+export const VERIFICATION_METHODS = ["executed", "inspected"] as const;
 
 /**
  * What the implement agent reports in its final, structured answer — the same model call that did
@@ -29,6 +32,7 @@ export const ImplementationReportSchema = z
   .object({
     outcome: z.enum(["completed", "needs_decision"]),
     summary: z.string().min(1),
+    noChangeReason: z.string().min(1).optional(),
     scopeDeviations: z
       .array(z.object({ description: z.string().min(1), reason: z.string().min(1) }))
       .default([]),
@@ -44,6 +48,9 @@ export const ImplementationReportSchema = z
         z.object({
           acceptance: z.string().min(1),
           status: z.enum(VERIFICATION_STATUSES),
+          // Optional: results stored before ADR 0059 have none. A value outside the enum is dropped
+          // rather than failing the report, so one bad field never discards finished work.
+          method: z.enum(VERIFICATION_METHODS).optional().catch(undefined),
           evidence: z.string(),
         }),
       )
@@ -62,13 +69,14 @@ export type ImplementationReport = z.infer<typeof ImplementationReportSchema>;
 
 /**
  * Hand-authored JSON Schema mirroring ImplementationReportSchema, passed to the provider as
- * outputSchema. `test/contracts-implementation-schema.test.ts` keeps the two in step.
+ * outputSchema. `test/contracts-implementation.test.ts` keeps the two in step.
  */
 export const IMPLEMENTATION_REPORT_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["outcome", "summary", "scopeDeviations", "risks", "verification"],
   properties: {
+    noChangeReason: { type: "string" },
     outcome: { type: "string", enum: ["completed", "needs_decision"] },
     summary: { type: "string" },
     scopeDeviations: {
@@ -101,10 +109,11 @@ export const IMPLEMENTATION_REPORT_JSON_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["acceptance", "status", "evidence"],
+        required: ["acceptance", "status", "method", "evidence"],
         properties: {
           acceptance: { type: "string" },
           status: { type: "string", enum: [...VERIFICATION_STATUSES] },
+          method: { type: "string", enum: [...VERIFICATION_METHODS] },
           evidence: { type: "string" },
         },
       },

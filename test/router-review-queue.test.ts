@@ -19,6 +19,7 @@ const committed = {
     headSha: HEAD,
     committed: true,
   },
+  validation: ['"npm test" passed'],
 };
 const noCommit = { git: { repository: "none", committed: false } };
 
@@ -126,12 +127,16 @@ describe("review queue", () => {
     expect(immediate?.result.summary).toBe("changed KAN-2");
     expect(immediate?.target.assessment.reasons.map((reason) => reason.code)).toEqual([
       "no_commit",
+      "no_trusted_validation",
     ]);
 
     expect((await queue("?class=standard")).map((item) => item.target.id)).toEqual([one]);
     expect((await queue("?class=immediate")).map((item) => item.target.id)).toEqual([two]);
     expect((await queue("?assignee=user-1")).map((item) => item.target.id)).toEqual([one]);
     expect((await queue("?parent=kan-9")).map((item) => item.target.id)).toEqual([two]);
+    expect((await queue("?issue=kan-1")).map((item) => item.target.id)).toEqual([one]);
+    expect((await queue("?issue=KAN-2")).map((item) => item.target.id)).toEqual([two]);
+    expect(await queue("?issue=KAN-999")).toEqual([]);
     expect((await router.adminCall("GET", "/reviews?state=bogus")).statusCode).toBe(400);
     expect((await router.adminCall("GET", "/status")).json()).toMatchObject({
       reviews: { waiting: 2 },

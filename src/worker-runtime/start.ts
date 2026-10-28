@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import path from "node:path";
 import { type CliIo, type ParsedArgs, stringOption, UsageError } from "../cli-io.js";
@@ -14,9 +14,9 @@ import {
   prepareRepositories,
   type ProviderType,
   workerConfigFromProfile,
-  workerRepositoryPath,
   writeWorkerConfig,
 } from "./ops.js";
+import { workerPaths } from "./paths.js";
 
 /**
  * `ggjira worker start` (ADR 0025): on first use a short text setup — Router address, LLM CLI,
@@ -36,7 +36,6 @@ export interface WorkerStartDeps {
 }
 
 const DEFAULT_ROUTER_URL = "http://127.0.0.1:8787";
-const DEFAULT_CREDENTIAL = "data/worker-credential.json";
 
 function expandHome(input: string): string {
   if (input === "~") return process.env.HOME ?? input;
@@ -148,28 +147,29 @@ async function pairInteractively(input: {
 
 /**
  * For repositories without a clone URL, asks for the folder of an existing local clone. For ones
- * with a clone URL, offers the default clone location (Enter) or an existing clone.
+ * with a clone URL, offers the default clone location in the worker home (Enter) or an existing
+ * clone. Only folders the operator named are returned; the rest use the default.
  */
 async function chooseRepositoryPaths(input: {
   profile: WorkerProfile;
-  dataDir: string;
+  home: string;
   io: CliIo;
   ask?: Ask | undefined;
   isGit: (dir: string) => Promise<boolean>;
 }): Promise<Record<string, string>> {
-  const { profile, dataDir, io, ask, isGit } = input;
+  const { profile, home, io, ask, isGit } = input;
   const paths: Record<string, string> = {};
   for (const repo of profile.repositories) {
-    const fallback = workerRepositoryPath(dataDir, repo.id);
+    const fallback = workerPaths(home).repositoryClone(repo.id);
     if (!ask) continue;
     const question = repo.cloneUrl
       ? `저장소 "${repo.id}" (${repo.cloneUrl})\n  이미 clone해 둔 폴더 경로, 또는 Enter로 자동 clone [${fallback}]: `
       : `저장소 "${repo.id}" — 이 컴퓨터에 clone해 둔 폴더의 전체 경로: `;
-    paths[repo.id] = await askUntil(
+    const chosen = await askUntil(
       ask,
       question,
       async (answer) => {
-        if (!answer) return repo.cloneUrl ? { dir: fallback } : "경로를 입력하세요";
+        if (!answer) return repo.cloneUrl ? { dir: undefined } : "경로를 입력하세요";
         const dir = path.resolve(expandHome(answer));
         if (!existsSync(dir) || !statSync(dir).isDirectory()) return `${dir} 폴더가 없습니다`;
         if (!(await isGit(dir)))
@@ -179,7 +179,8 @@ async function chooseRepositoryPaths(input: {
         return { dir };
       },
       io,
-    ).then(({ dir }) => dir);
+    );
+    if (chosen.dir) paths[repo.id] = chosen.dir;
   }
   return paths;
 }
@@ -190,26 +191,27 @@ function notInteractive(): UsageError {
   );
 }
 
+type RawConfig = { repositories: Array<{ id: string; path?: string }> };
+
 async function firstRunSetup(
-  target: string,
+  home: string,
   parsed: ParsedArgs,
   io: CliIo,
   deps: WorkerStartDeps,
 ): Promise<boolean> {
   const { ask } = deps;
+  const paths = workerPaths(home);
   io.out("GGJIRA 워커 첫 설정입니다. 필요한 것만 차례로 묻습니다.\n");
+  io.out(`워커 홈: ${paths.home}\n`);
   const routerUrl = await obtainRouterUrl(parsed, io, ask);
   // The LLM is chosen before the one-time code is redeemed, so a missing CLI never burns it.
   const providerType = await obtainProvider(parsed, io, deps);
-  const baseDir = path.dirname(target);
-  const credentialPath =
-    stringOption(parsed, "credential") ?? path.join(baseDir, DEFAULT_CREDENTIAL);
   const paired = await pairInteractively({
     parsed,
     io,
     ask,
     routerUrl,
-    credentialPath,
+    credentialPath: paths.credential,
     force: Boolean(parsed.values.force),
   });
   if (!paired.profile) {
@@ -218,88 +220,83 @@ async function firstRunSetup(
     );
     return false;
   }
-  const dataDir = path.join(baseDir, "data/worker");
   const repoPaths = await chooseRepositoryPaths({
     profile: paired.profile,
-    dataDir,
+    home,
     io,
     ask,
     isGit: deps.isGitRepository ?? isGitRepository,
   });
   const config = workerConfigFromProfile({
     routerUrl,
-    credentialPath,
     profile: paired.profile,
     providerType,
-    dataDir,
-    logPath: path.join(baseDir, "data/worker-logs"),
-  }) as { repositories: Array<{ id: string; path: string }> };
+  }) as RawConfig;
   for (const repo of config.repositories) {
     const chosen = repoPaths[repo.id];
     if (chosen) repo.path = chosen;
   }
-  writeWorkerConfig(target, config);
-  io.out(`\n설정을 ${target} 에 저장했습니다.`);
+  writeWorkerConfig(paths.config, config);
+  io.out(`
+설정을 ${paths.config} 에 저장했습니다.`);
   return true;
 }
 
 /** Asks for a folder for each configured repository that has neither a local copy nor a clone
- *  URL (e.g. a config written before), and saves the answers into the config file. */
+ *  URL, and saves the answers into the config file. */
 async function fillMissingRepositoryPaths(
-  target: string,
   config: WorkerConfig,
   io: CliIo,
   deps: WorkerStartDeps,
 ): Promise<WorkerConfig> {
   const missing = config.repositories.filter((repo) => !existsSync(repo.path) && !repo.cloneUrl);
   if (!missing.length || !deps.ask) return config;
-  const paths = await chooseRepositoryPaths({
+  const chosen = await chooseRepositoryPaths({
     profile: {
-      capabilities: [],
       providerId: "default",
       repositories: missing.map((repo) => ({ id: repo.id })),
     },
-    dataDir: config.dataDir,
+    home: config.home,
     io,
     ask: deps.ask,
     isGit: deps.isGitRepository ?? isGitRepository,
   });
-  const raw = JSON.parse(JSON.stringify(config)) as {
-    repositories: Array<{ id: string; path: string }>;
-  };
+  const configPath = workerPaths(config.home).config;
+  const raw = JSON.parse(readFileSync(configPath, "utf-8")) as RawConfig;
   for (const repo of raw.repositories) {
-    const chosen = paths[repo.id];
-    if (chosen) repo.path = chosen;
+    const dir = chosen[repo.id];
+    if (dir) repo.path = dir;
   }
-  writeWorkerConfig(target, raw);
-  return loadWorkerConfig(target);
+  writeWorkerConfig(configPath, raw);
+  return loadWorkerConfig(config.home);
 }
 
 /**
  * Everything `worker start` does before running. Returns undefined when the worker cannot run yet.
  */
 export async function prepareWorkerStart(
-  target: string,
+  home: string,
   parsed: ParsedArgs,
   io: CliIo,
   deps: WorkerStartDeps = {},
 ): Promise<WorkerConfig | undefined> {
-  if (!existsSync(target)) {
-    if (!(await firstRunSetup(target, parsed, io, deps))) return undefined;
+  const paths = workerPaths(home);
+  if (!existsSync(paths.config)) {
+    if (!(await firstRunSetup(home, parsed, io, deps))) return undefined;
   }
 
-  let config = loadWorkerConfig(target);
-  if (!existsSync(config.credentialPath)) {
-    io.out(`인증 파일(${config.credentialPath})이 없어 다시 페어링합니다.`);
+  let config = loadWorkerConfig(home);
+  if (!existsSync(paths.credential)) {
+    io.out(`인증 파일(${paths.credential})이 없어 다시 페어링합니다.`);
     await pairInteractively({
       parsed,
       io,
       ask: deps.ask,
       routerUrl: config.routerUrl,
-      credentialPath: config.credentialPath,
+      credentialPath: paths.credential,
     });
   }
-  config = await fillMissingRepositoryPaths(target, config, io, deps);
+  config = await fillMissingRepositoryPaths(config, io, deps);
 
   const repos = await prepareRepositories(config, deps.clone);
   for (const id of repos.cloned) io.out(`저장소 "${id}"를 clone했습니다.`);
@@ -310,7 +307,7 @@ export async function prepareWorkerStart(
   }
   for (const { id, path: dir } of repos.missing) {
     io.err(
-      `저장소 "${id}"의 로컬 폴더(${dir})가 없습니다. 터미널에서 다시 실행해 경로를 입력하거나, ${target}의 repositories[].path를 고치세요.`,
+      `저장소 "${id}"의 로컬 폴더(${dir})가 없습니다. 터미널에서 다시 실행해 경로를 입력하거나, ${paths.config}의 repositories[].path를 고치세요.`,
     );
   }
   if (repos.failed.length || repos.missing.length) return undefined;

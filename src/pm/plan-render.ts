@@ -1,11 +1,12 @@
 import type { z } from "zod";
 import { type RenderSection, renderSections } from "../issue/description.js";
+import { normalizeExecutionText } from "../issue/input-hash.js";
 import type { Plan, PlanTaskSchema } from "./plan.js";
 
 /**
  * Pure plan rendering and validation shared by the legacy v4 PM path (`src/pm/apply.ts`) and
  * Router's v5 plan application (`src/router/report-journal.ts`) — docs/router-service-implementation-plan.md
- * §4 "capability·requirements·계획 검증 → 공유 순수 로직으로 분리". No Jira access here.
+ * §4 "requirements·계획 검증 → 공유 순수 로직으로 분리". No Jira access here.
  */
 
 export type PlanTask = z.infer<typeof PlanTaskSchema>;
@@ -48,7 +49,6 @@ export function renderTaskDescription(task: PlanTask): string {
       ...scopeContractSections(task),
       { heading: "Dependencies", items: task.dependencies ?? [] },
       { heading: "Constraints", items: task.constraints ?? [] },
-      { heading: "Required Capabilities", items: task.requiredCapabilities ?? ["programming"] },
     ]),
   ].join("\n");
 }
@@ -95,6 +95,16 @@ export function planTaskIds(plan: Plan): string[] {
 export const PLAN_START = "{noformat}[GGJIRA:PLAN:START]{noformat}";
 export const PLAN_END = "{noformat}[GGJIRA:PLAN:END]{noformat}";
 
+/** Router's display block is not a human requirement edit (ADR 0050). */
+export function requirementDescription(description: string | null): string {
+  const text = description ?? "";
+  const start = text.indexOf(PLAN_START);
+  const end = text.indexOf(PLAN_END, start);
+  return normalizeExecutionText(
+    start >= 0 && end >= start ? text.slice(0, start) + text.slice(end + PLAN_END.length) : text,
+  );
+}
+
 /** The parent's description with its GGJIRA-managed plan block replaced (or appended), leaving
  *  whatever the human wrote around it untouched. */
 export function renderParentPlan(
@@ -115,7 +125,6 @@ export function renderParentPlan(
       ...scopeContractSections(plan),
       { heading: "Dependencies", items: plan.dependencies ?? [] },
       { heading: "Constraints", items: plan.constraints ?? [] },
-      { heading: "Required Capabilities", items: plan.requiredCapabilities ?? [] },
     ]),
     PLAN_END,
   ].join("\n");

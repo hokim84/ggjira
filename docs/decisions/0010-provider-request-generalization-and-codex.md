@@ -6,7 +6,7 @@ MVP의 `WorkerRequest`는 Claude Code CLI 전용 필드(`command`, `model`, `eff
 `permissionMode`, `allowedTools`)를 그대로 담고 있었다(ADR 0003이 정의한 Provider 경계는
 지켰지만, 요청 타입 자체는 한 구현에 결합돼 있었다). 2차는 (1) PM Agent가 구조화된 출력
 (Plan JSON)과 읽기 전용 실행을 요청할 수 있어야 하고, (2) Provider 범위를 Codex CLI까지
-넓혀야 한다(`GGJira_Phase2_Implementation_Plan.md` §5.1 Provider 선택지, 사용자 결정).
+넓혀야 한다(`docs/history/GGJira_Phase2_Implementation_Plan.md` §5.1 Provider 선택지, 사용자 결정).
 
 ## Decision
 

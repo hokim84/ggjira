@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { setSecretsFileValue } from "../src/router/config-store.js";
@@ -60,7 +60,7 @@ describe("Jev API key from the web UI (ADR 0031)", () => {
   let dir: string;
   let secretsPath: string;
   let configPath: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
   let jira: FakeJiraGateway;
   let clock: ManualClock;
   let daemons: RouterDaemon[];
@@ -204,7 +204,7 @@ describe("Jev API key from the web UI (ADR 0031)", () => {
 describe("GitHub token from the web UI and poll status (ADR 0032)", () => {
   let dir: string;
   let secretsPath: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
   let clock: ManualClock;
   let daemon: RouterDaemon;
   let seen: Array<string | undefined>;

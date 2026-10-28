@@ -55,6 +55,8 @@ describe("JiraClient", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const headers = init.headers as Record<string, string>;
+    expect(headers["Accept-Language"]).toBe("en-US");
+    expect(headers["X-Force-Accept-Language"]).toBe("true");
     expect(headers.Authorization).toBe(
       `Basic ${Buffer.from("user@example.com:token-123").toString("base64")}`,
     );
@@ -303,6 +305,25 @@ describe("JiraClient", () => {
     expect(users).toEqual([
       { accountId: "acc-2", displayName: "Someone", emailAddress: "s@b.com" },
     ]);
+  });
+
+  it("getComments follows pages so recent decision replies are not lost", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        total: 2,
+        comments: [{ id: "old", body: "Question", created: "2026-01-01T00:00:00Z" }],
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        total: 2,
+        comments: [{ id: "new", body: "2", created: "2026-01-02T00:00:00Z" }],
+      }),
+    );
+    expect(
+      (await new JiraClient(secrets).getComments("KAN-1")).map((comment) => comment.body),
+    ).toEqual(["Question", "2"]);
+    expect(fetchMock.mock.calls[1]?.[0]).toContain("?startAt=1");
   });
 
   it("getComments fetches and maps a comment list", async () => {

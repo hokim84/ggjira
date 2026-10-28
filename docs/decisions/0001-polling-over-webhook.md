@@ -2,7 +2,7 @@
 
 ## Context
 
-`writing-block.md`에 합의된 기본 구조는 `Human → Jira → Webhook → GGJIRA → Job → Worker → 결과 → Jira`다.
+`docs/history/writing-block.md`에 합의된 기본 구조는 `Human → Jira → Webhook → GGJIRA → Job → Worker → 결과 → Jira`다.
 그러나 개발/운영 환경은 로컬 머신이며 외부에서 인바운드 접근이 불가능하다. Webhook을 받으려면
 ngrok/cloudflared 같은 터널을 상시 운영해야 하는데, 이는 MVP가 검증하려는 핵심 가치
 (Jira ↔ Worker 실행 경로)와 무관한 인프라 비용이다.

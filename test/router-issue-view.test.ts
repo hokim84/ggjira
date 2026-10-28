@@ -3,10 +3,10 @@ import { JiraApiError } from "../src/jira/client.js";
 import { getOpenJobForIssue } from "../src/router/db/jobs.js";
 import type { IssueView } from "../src/router/issue-view.js";
 import {
-  issueDescription,
   REQUEST_STATUS,
   TODO_STATUS,
   WORKFLOW_TRANSITIONS,
+  issueDescription,
 } from "./helpers/router-fixtures.js";
 import { RouterHarness } from "./helpers/router-harness.js";
 

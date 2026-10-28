@@ -25,10 +25,11 @@ function configuredStatuses(workspace: WorkspaceConfig): Array<[label: string, s
   const { workflow } = workspace;
   return [
     ["requestStatus", workflow.requestStatus],
-    ["planReviewStatus", workflow.planReviewStatus],
+    ["planningInProgressStatus", workflow.planningInProgressStatus],
+    ["integrationPendingStatus", workflow.integrationPendingStatus],
+    ["implementationCompleteStatus", workflow.implementationCompleteStatus],
     ["inProgressStatus", workflow.inProgressStatus],
-    ["reviewStatus", workflow.reviewStatus],
-    ...(workflow.doneStatus ? [["doneStatus", workflow.doneStatus] as [string, string]] : []),
+    ["doneStatus", workflow.doneStatus],
   ];
 }
 
@@ -103,7 +104,7 @@ async function checkProject(
   // The REST API does not expose a workflow's initial status; check it manually.
   items.push({
     level: "warn",
-    message: `${where}: confirm by hand that a new "${subtaskType}" can move to "${workspace.workflow.inProgressStatus}" — Router moves the tasks of an approved plan there (ADR 0044)`,
+    message: `${where}: confirm by hand that a new "${subtaskType}" can move to "${workspace.workflow.inProgressStatus}" — a person approves each child by moving it there`,
   });
 }
 
@@ -111,11 +112,16 @@ async function checkProject(
 function expectedNextStatuses(workspace: WorkspaceConfig, current: string): string[] {
   const { workflow } = workspace;
   const next = new Map<string, string[]>([
-    [workflow.requestStatus, [workflow.planReviewStatus]],
-    [workflow.planReviewStatus, [workflow.inProgressStatus]],
-    [workflow.inProgressStatus, [workflow.reviewStatus]],
+    [workflow.requestStatus, [workflow.planningInProgressStatus]],
+    [workflow.planningInProgressStatus, [workflow.inProgressStatus]],
+    [
+      workflow.inProgressStatus,
+      [workflow.integrationPendingStatus, workflow.implementationCompleteStatus],
+    ],
+    [workflow.integrationPendingStatus, [workflow.implementationCompleteStatus]],
+    [workflow.implementationCompleteStatus, [workflow.doneStatus]],
     ...(workflow.doneStatus
-      ? [[workflow.reviewStatus, [workflow.doneStatus]] as [string, string[]]]
+      ? [[workflow.implementationCompleteStatus, [workflow.doneStatus]] as [string, string[]]]
       : []),
   ]);
   return next.get(current) ?? [];

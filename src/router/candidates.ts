@@ -11,7 +11,15 @@ const META_LABELS = new Set(["ggjira-agent", "ggjira-workspace"]);
  *  own records instead (src/router/delegation.ts), never by the shared in-progress status. */
 export function buildWorkspaceJql(workspace: WorkspaceConfig): string {
   const projects = workspace.projectKeys.map((key) => `"${key}"`).join(", ");
-  return `project in (${projects}) AND status in ("${workspace.workflow.requestStatus}") ORDER BY created ASC`;
+  const w = workspace.workflow;
+  const statuses = [
+    w.requestStatus,
+    w.planningInProgressStatus,
+    w.inProgressStatus,
+    w.integrationPendingStatus,
+    w.implementationCompleteStatus,
+  ];
+  return `project in (${projects}) AND status in (${statuses.map((status) => `"${status.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}) ORDER BY created ASC`;
 }
 
 /**

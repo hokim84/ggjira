@@ -55,6 +55,7 @@ export function renderDecisionRequest(
   const lines = [
     DECISION_REQUEST_MARKER,
     ...(planVersion ? [`planVersion: ${planVersion}`, `decisionId: ${planVersion}-decision`] : []),
+    `decisionOptions: ${JSON.stringify(decision.options.map((option) => option.id))}`,
     "",
     text.needsDecision,
     "",
@@ -68,13 +69,16 @@ export function renderDecisionRequest(
 /** Question, options with pros/cons, and the recommendation — shared by both decision comments. */
 function decisionLines(decision: DecisionRequest, text: DecisionLabels): string[] {
   const lines = [`${text.question} ${decision.question}`, "", text.options];
-  for (const option of decision.options) {
-    lines.push(`- ${option.id}: ${option.title}`);
+  for (const [index, option] of decision.options.entries()) {
+    lines.push(`${index + 1}. ${option.title}`);
     if (option.pros.length > 0) lines.push(`  ${text.pros}: ${option.pros.join("; ")}`);
     if (option.cons.length > 0) lines.push(`  ${text.cons}: ${option.cons.join("; ")}`);
   }
   if (decision.recommendation) {
-    lines.push("", `${text.recommendation} ${decision.recommendation}`);
+    const index = decision.options.findIndex((option) => option.id === decision.recommendation);
+    const recommendation =
+      index < 0 ? decision.recommendation : `${index + 1}. ${decision.options[index]?.title}`;
+    lines.push("", `${text.recommendation} ${recommendation}`);
   }
   return lines;
 }
@@ -83,8 +87,8 @@ function decisionLines(decision: DecisionRequest, text: DecisionLabels): string[
  * The comment for an implementation run GGJIRA stopped before commit/push (ADR 0036): what
  * changed (why it stopped) → the options → impact → what the human has to do → where the evidence
  * is. Logs are not copied in; the evidence is referenced by location. Deliberately without
- * `DECISION_REQUEST_MARKER`: that marker belongs to the planning flow, whose reply is a
- * "Decision:" comment. Here the answer has to go into the description's contract, since only the
+ * `DECISION_REQUEST_MARKER`: that marker belongs to the planning flow, whose reply is an
+ * option number. Here the answer has to go into the description's contract, since only the
  * description is part of the approved input (ADR 0035).
  */
 export function renderImplementationDecisionRequest(

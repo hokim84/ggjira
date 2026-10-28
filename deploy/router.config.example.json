@@ -1,28 +1,46 @@
 {
-  "configVersion": 5,
-  "jira": { "baseUrl": "https://your-site.atlassian.net" },
-  "repositories": [{ "id": "main-repo", "displayName": "Main repository" }],
+  "configVersion": 7,
+  "prompts": {
+    "planning": { "additionalInstructions": "" },
+    "implementation": { "additionalInstructions": "" },
+    "fci_analysis": { "additionalInstructions": "" }
+  },
+  "jira": {
+    "baseUrl": "https://your-site.atlassian.net"
+  },
+  "repositories": [
+    {
+      "id": "main-repo",
+      "displayName": "Main repository"
+    }
+  ],
   "workspaces": [
     {
       "id": "default",
       "repositoryId": "main-repo",
       "projectKeys": ["PROJ"],
       "workflow": {
-        "requestStatus": "AI 계획 요청",
-        "planReviewStatus": "계획 검토 대기",
-        "inProgressStatus": "작업 중",
-        "reviewStatus": "결과 검토"
+        "requestStatus": "AI 계획",
+        "planningInProgressStatus": "AI 계획중",
+        "inProgressStatus": "AI 구현",
+        "integrationPendingStatus": "AI 통합 대기",
+        "implementationCompleteStatus": "AI 구현 완료",
+        "doneStatus": "Done"
       }
     }
   ],
   "workers": [
     {
       "workerId": "worker-1",
-      "allowedCapabilities": ["programming", "testing"],
       "allowedRepositoryIds": ["main-repo"],
       "providerId": "default"
     }
   ],
-  "db": { "path": "/data/router.sqlite3" },
-  "http": { "host": "0.0.0.0", "port": 8787 }
+  "db": {
+    "path": "/data/router.sqlite3"
+  },
+  "http": {
+    "host": "0.0.0.0",
+    "port": 8787
+  }
 }

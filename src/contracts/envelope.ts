@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AssemblyContextSchema } from "./assembly.js";
 import { PlanSchema } from "../pm/plan.js";
 import { ExecutionRecordSchema } from "./execution.js";
 import {
@@ -9,6 +10,7 @@ import {
   ScopeCheckSchema,
 } from "./implementation.js";
 import { JOB_KINDS, PROTOCOL_VERSION } from "./protocol.js";
+import { GitIntegrationSchema, QualityContextSchema, QualityReportSchema } from "./quality.js";
 
 /**
  * A read-only snapshot of the Jira issue a job is about, captured by Router
@@ -48,6 +50,10 @@ export const HumanDecisionSnapshotSchema = z.object({
 
 /** Extra context Router assembles only for `kind: "planning"` jobs. */
 export const PlanningContextSchema = z.object({
+  existingTaskContracts: z
+    .array(z.object({ issueKey: z.string(), taskId: z.string(), planVersion: z.string() }))
+    .optional(),
+  lifecycleVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   planVersion: z.string().min(1).optional(),
   comments: z.array(CommentSnapshotSchema).default([]),
   existingSubtasks: z.array(IssueSnapshotSchema).default([]),
@@ -74,6 +80,10 @@ export const JobEnvelopeSchema = z.object({
   planningContext: PlanningContextSchema.optional(),
   /** The approved scope contract, for `kind: "implementation"` jobs only (ADR 0036). */
   executionContract: ExecutionContractSchema.optional(),
+  integration: GitIntegrationSchema.optional(),
+  assembly: AssemblyContextSchema.optional(),
+  deferPullRequest: z.boolean().optional(),
+  qualityContext: QualityContextSchema.optional(),
   systemPrompt: z.string().min(1),
   timeoutMs: z.number().int().positive(),
 });
@@ -126,5 +136,6 @@ export const JobResultSchema = z.object({
   /** The provider call behind this result: provider, model, call id, usage (M4-12). Absent from
    *  older workers and from results refused before any call. */
   execution: ExecutionRecordSchema.optional(),
+  quality: QualityReportSchema.optional(),
 });
 export type JobResult = z.infer<typeof JobResultSchema>;

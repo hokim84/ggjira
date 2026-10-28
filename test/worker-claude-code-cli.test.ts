@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeCodeCliProvider } from "../src/worker/claude-code-cli.js";
 import type { WorkerRequest } from "../src/worker/provider.js";
 
@@ -53,6 +53,26 @@ describe("ClaudeCodeCliProvider", () => {
       totalCostUsd: 0.01,
       numTurns: 2,
     });
+  });
+
+  it("excludes instruction files above the repository (ADR 0065)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ggjira-claude-args-"));
+    tempDirs.push(dir);
+    const argsFile = path.join(dir, "args.txt");
+    vi.stubEnv("GGJIRA_FAKE_ARGS_FILE", argsFile);
+    try {
+      const provider = new ClaudeCodeCliProvider(undefined, {
+        command: path.join(FIXTURES_DIR, "records-args.sh"),
+      });
+      await provider.run(baseRequest({ cwd: dir }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const args = readFileSync(argsFile, "utf-8").split("\n");
+    const settings = JSON.parse(args[args.indexOf("--settings") + 1] ?? "{}");
+    const parent = path.dirname(dir).split(path.sep).join("/");
+    expect(settings.claudeMdExcludes).toContain(`${parent}/CLAUDE.md`);
+    expect(settings.claudeMdExcludes).toContain(`${parent}/AGENTS.md`);
   });
 
   it("prefers the result event's structured_output over JSON in the result text", async () => {

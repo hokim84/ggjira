@@ -21,7 +21,8 @@ export type ReviewReasonCode =
   | "high_risk"
   | "not_verified"
   | "no_commit"
-  | "commit_unknown";
+  | "commit_unknown"
+  | "no_trusted_validation";
 
 export interface ReviewReason {
   code: ReviewReasonCode;
@@ -62,6 +63,9 @@ export interface VerificationTally {
   pass: number;
   fail: number;
   notVerified: number;
+  /** How the checks were made (ADR 0059); absent from assessments stored before it. */
+  executed?: number;
+  inspected?: number;
 }
 
 export interface ReviewAssessment {
@@ -192,6 +196,8 @@ function tally(result: JobResult): VerificationTally {
     pass: entries.filter((entry) => entry.status === "pass").length,
     fail: entries.filter((entry) => entry.status === "fail").length,
     notVerified: entries.filter((entry) => entry.status === "not_verified").length,
+    executed: entries.filter((entry) => entry.method === "executed").length,
+    inspected: entries.filter((entry) => entry.method === "inspected").length,
   };
 }
 
@@ -244,6 +250,14 @@ export function assessResult(input: {
       reasons.push({
         code: "commit_unknown",
         detail: "the worker did not report which commit this is (older worker)",
+      });
+    }
+    // ADR 0059: the worker's validateCommand is the only check no agent reports on itself. It
+    // runs whenever configured, so no output means nothing but the agent's report backs this.
+    if (result.status === "succeeded" && (result.validation ?? []).length === 0) {
+      reasons.push({
+        code: "no_trusted_validation",
+        detail: "no worker validation command ran; only the agent's own report backs this result",
       });
     }
   }

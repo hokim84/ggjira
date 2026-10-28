@@ -1,32 +1,32 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InvalidAttemptStateTransitionError } from "../src/contracts/attempt-state.js";
 import { InvalidJobStateTransitionError } from "../src/contracts/job-state.js";
 import {
+  WorkerAlreadyLeasedError,
   getActiveAttemptForWorker,
   getAttempt,
   leaseAttempt,
   transitionAttemptState,
-  WorkerAlreadyLeasedError,
 } from "../src/router/db/attempts.js";
-import { currentSchemaVersion } from "../src/router/db/migrate.js";
-import { createPairingCode } from "../src/router/db/pairing.js";
 import { openRouterDb } from "../src/router/db/connection.js";
 import {
-  createJob,
   DuplicateOpenJobError,
+  createJob,
   getJob,
   getOpenJobForIssue,
   transitionJobState,
 } from "../src/router/db/jobs.js";
+import { currentSchemaVersion } from "../src/router/db/migrate.js";
+import { createPairingCode } from "../src/router/db/pairing.js";
 
 describe("Router SQLite store", () => {
   let dataDir: string;
   let dbPath: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
 
   beforeEach(() => {
     dataDir = mkdtempSync(path.join(tmpdir(), "ggjira-router-db-test-"));
@@ -39,21 +39,126 @@ describe("Router SQLite store", () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
+  function removeQualityMigration() {
+    db.exec(
+      "DROP TABLE IF EXISTS fci_history_commits; DROP TABLE IF EXISTS fci_history_state; DELETE FROM schema_migrations WHERE version=23; DROP TABLE IF EXISTS assembly_runs; DELETE FROM schema_migrations WHERE version=22; DROP TABLE IF EXISTS fci_snapshot_claims; DROP TABLE IF EXISTS fci_reports; DROP TABLE IF EXISTS fci_snapshots; DROP TABLE IF EXISTS fci_attempts; DROP TABLE IF EXISTS fci_tasks; DROP TABLE IF EXISTS fci_series; DROP TABLE IF EXISTS fci_sources; DROP TABLE IF EXISTS fci_pr_observations; DROP TABLE IF EXISTS fci_poll_errors; DELETE FROM schema_migrations WHERE version=21; DROP TABLE IF EXISTS attempt_prompts; DELETE FROM schema_migrations WHERE version=20; DROP TABLE IF EXISTS workflow_checks; DROP TABLE IF EXISTS parent_progress_entries; DROP TABLE IF EXISTS workflow_retry_comments; DROP TABLE IF EXISTS job_inputs",
+    );
+    db.exec(
+      "ALTER TABLE jobs ADD COLUMN required_capabilities TEXT NOT NULL DEFAULT '[]'; ALTER TABLE workers ADD COLUMN reported_capabilities TEXT NOT NULL DEFAULT '[]'; DELETE FROM schema_migrations WHERE version=18;",
+    );
+    db.exec(
+      "DROP TABLE child_approval_baselines; DROP TABLE plan_extensions; DROP TABLE quality_decisions; DROP TABLE quality_cycles; ALTER TABLE pull_requests DROP COLUMN merge_sha; ALTER TABLE pull_requests DROP COLUMN reviewed_head; ALTER TABLE pull_requests DROP COLUMN target_branch;",
+    );
+  }
   describe("openRouterDb / migrations", () => {
+    it("removes v17 capability columns while preserving jobs and approvals", () => {
+      createJob(db, {
+        id: "universal",
+        issueKey: "KAN-18",
+        workspaceId: "ws",
+        repositoryId: "repo",
+        kind: "implementation",
+        approvalId: "human-entry",
+        now: "2026-10-21",
+      });
+      db.exec(
+        "ALTER TABLE jobs ADD COLUMN required_capabilities TEXT NOT NULL DEFAULT '[]'; ALTER TABLE workers ADD COLUMN reported_capabilities TEXT NOT NULL DEFAULT '[]'; DELETE FROM schema_migrations WHERE version=18; UPDATE jobs SET required_capabilities='[\"ui\"]';",
+      );
+      db.close();
+      db = openRouterDb(dbPath);
+      expect(getJob(db, "universal")).toMatchObject({ approvalId: "human-entry", state: "queued" });
+      for (const [table, column] of [
+        ["jobs", "required_capabilities"],
+        ["workers", "reported_capabilities"],
+      ])
+        expect(db.pragmaRows(`table_info(${table})`).map((row) => row.name)).not.toContain(column);
+      expect(db.pragmaRows("foreign_key_check")).toEqual([]);
+    });
+    it("upgrades a v16 active plan in place without revoking or adopting it into v2", () => {
+      createJob(db, {
+        id: "legacy-plan-job",
+        issueKey: "KAN-16",
+        workspaceId: "ws",
+        repositoryId: "repo",
+        kind: "planning",
+        approvalId: "legacy-request",
+        state: "succeeded",
+        now: "2026-10-01T00:00:00Z",
+      });
+      db.exec(`INSERT INTO planning_requests (id,issue_key,entry_id,input_hash,created_at) VALUES ('legacy-request','KAN-16','entry','hash','2026-10-01');
+        INSERT INTO plan_reviews (id,issue_key,workspace_id,job_id,attempt_id,request_approval_id,plan_version,outcome,task_ids,created_at) VALUES ('legacy-plan','KAN-16','ws','legacy-plan-job','attempt','legacy-request','legacy-v1','planned','[]','2026-10-01');
+        INSERT INTO plan_deployments (issue_key,plan_review_id,plan_version,approval_id,task_ids,state,created_at,updated_at) VALUES ('KAN-16','legacy-plan','legacy-v1','approval','[]','active','2026-10-01','2026-10-01');`);
+      removeQualityMigration();
+      db.exec(
+        "ALTER TABLE planning_requests DROP COLUMN lifecycle_version; DELETE FROM schema_migrations WHERE version=17;",
+      );
+      db.close();
+      db = openRouterDb(dbPath);
+      expect(db.prepare("SELECT lifecycle_version FROM planning_requests").get()).toEqual({
+        lifecycle_version: 1,
+      });
+      expect(db.prepare("SELECT state FROM plan_deployments").get()).toEqual({ state: "active" });
+      expect(db.prepare("SELECT closed_at FROM plan_reviews").get()).toEqual({ closed_at: null });
+      expect(db.pragmaRows("foreign_key_check")).toEqual([]);
+      expect(db.pragmaValue("foreign_keys")).toBe(1);
+      expect(
+        createJob(db, {
+          id: "new-quality",
+          issueKey: "KAN-17",
+          workspaceId: "ws",
+          repositoryId: "repo",
+          kind: "quality_review",
+          approvalId: "quality:new",
+          now: "2026-10-21",
+        }).kind,
+      ).toBe("quality_review");
+    });
     it("creates the database file and enables WAL and foreign keys", () => {
       expect(existsSync(dbPath)).toBe(true);
-      expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
-      expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+      expect(db.pragmaValue("journal_mode")).toBe("wal");
+      expect(db.pragmaValue("foreign_keys")).toBe(1);
+      expect(db.pragmaValue("synchronous")).toBe(1);
+    });
+
+    it("commits a transaction, rolls it back on a throw, and nests a savepoint", () => {
+      db.exec("CREATE TABLE tx_probe (v TEXT NOT NULL UNIQUE)");
+      const insert = (v: string) => db.prepare("INSERT INTO tx_probe (v) VALUES (?)").run(v);
+      const values = () =>
+        db
+          .prepare("SELECT v FROM tx_probe ORDER BY v")
+          .all()
+          .map((row) => row.v);
+
+      db.transaction(() => insert("a"))();
+      expect(() =>
+        db.transaction(() => {
+          insert("b");
+          throw new Error("boom");
+        })(),
+      ).toThrow("boom");
+      db.transaction(() => {
+        insert("c");
+        expect(() =>
+          db.transaction(() => {
+            insert("d");
+            insert("a");
+          })(),
+        ).toThrow(/UNIQUE/);
+        insert("e");
+      })();
+
+      expect(values()).toEqual(["a", "c", "e"]);
+      expect(db.isTransaction).toBe(false);
     });
 
     it("applies every migration and records it in schema_migrations", () => {
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(23);
     });
 
     it("is idempotent: reopening an existing database does not re-run migrations", () => {
       db.close();
       const reopened = openRouterDb(dbPath);
-      expect(currentSchemaVersion(reopened)).toBe(15);
+      expect(currentSchemaVersion(reopened)).toBe(23);
       reopened.close();
       // Reopen once more so the outer afterEach's db.close() has a live handle.
       db = openRouterDb(dbPath);
@@ -77,7 +182,7 @@ describe("Router SQLite store", () => {
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(23);
       expect(getJob(db, "job-v9")?.inputHash).toBe("legacy-hash");
       expect(db.prepare("SELECT COUNT(*) AS n FROM readiness_holds").get()).toEqual({ n: 0 });
     });
@@ -112,12 +217,19 @@ describe("Router SQLite store", () => {
         "INSERT INTO results (id, job_id, attempt_id, payload, received_at, applied) VALUES (?, ?, ?, ?, ?, 1)",
       ).run("result-m3", "job-m3", "attempt-m3", '{"status":"succeeded"}', "2026-10-01T00:00:00Z");
       // Roll the file back to what the M3 Router left behind.
-      for (const table of [...DELEGATION_TABLES, ...M4_TABLES]) db.exec(`DROP TABLE ${table}`);
+      for (const table of [
+        "planning_requests",
+        "planning_baselines",
+        ...DELEGATION_TABLES,
+        ...M4_TABLES,
+      ])
+        db.exec(`DROP TABLE ${table}`);
+      removeQualityMigration();
       db.prepare("DELETE FROM schema_migrations WHERE version > 10").run();
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(23);
       expect(tables()).toEqual(expect.arrayContaining(M4_TABLES));
       expect(getJob(db, "job-m3")).toMatchObject({ state: "succeeded", inputHash: "v2:abc" });
       expect(db.prepare("SELECT COUNT(*) AS n FROM results").get()).toEqual({ n: 1 });
@@ -129,7 +241,7 @@ describe("Router SQLite store", () => {
       // Re-running the migrations (another restart) changes nothing.
       db.close();
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(23);
     });
 
     it("upgrades an M4 (version 13) database to the delegation tables without touching its rows", () => {
@@ -143,12 +255,14 @@ describe("Router SQLite store", () => {
         state: "succeeded",
         now: "2026-10-01T00:00:00.000Z",
       });
-      for (const table of DELEGATION_TABLES) db.exec(`DROP TABLE ${table}`);
+      for (const table of ["planning_requests", "planning_baselines", ...DELEGATION_TABLES])
+        db.exec(`DROP TABLE ${table}`);
+      removeQualityMigration();
       db.prepare("DELETE FROM schema_migrations WHERE version > 13").run();
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(23);
       expect(tables()).toEqual(expect.arrayContaining([...M4_TABLES, ...DELEGATION_TABLES]));
       expect(getJob(db, "job-m4")).toMatchObject({ state: "succeeded", kind: "planning" });
       // No plan or approval is made up for work done before delegation existed.
@@ -169,11 +283,13 @@ describe("Router SQLite store", () => {
            'acceptance', 'immediate', 'r', 't', 't', 'open'),
            ('i2', 'k2', 'KAN-36', 'failed', 'x', 'immediate', 'r', 't', 't', 'open')`,
       ).run();
+      db.exec("DROP TABLE planning_requests; DROP TABLE planning_baselines");
+      removeQualityMigration();
       db.prepare("DELETE FROM schema_migrations WHERE version > 14").run();
       db.close();
 
       db = openRouterDb(dbPath);
-      expect(currentSchemaVersion(db)).toBe(15);
+      expect(currentSchemaVersion(db)).toBe(23);
       expect(
         db.prepare("SELECT resolved_at IS NOT NULL AS closed FROM readiness_holds").get(),
       ).toEqual({ closed: 1 });
@@ -195,12 +311,10 @@ describe("Router SQLite store", () => {
         repositoryId: "repo-1",
         kind: "implementation",
         approvalId: "approval-1",
-        requiredCapabilities: ["backend"],
         now: "2026-01-01T00:00:00.000Z",
       });
 
       expect(job.state).toBe("queued");
-      expect(job.requiredCapabilities).toEqual(["backend"]);
       expect(getJob(db, "job-1")).toEqual(job);
     });
 

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import {
   type IssueSnapshot,
   IssueSnapshotSchema,
@@ -8,13 +8,12 @@ import {
 } from "../contracts/envelope.js";
 import { type ExecutionContract, ExecutionContractSchema } from "../contracts/implementation.js";
 import { PROTOCOL_VERSION } from "../contracts/protocol.js";
-import { buildPmSystemPrompt } from "../pm/prompt.js";
-import { buildImplementSystemPrompt } from "../worker/prompt.js";
 import { inputHashMatches } from "./approval.js";
 import type { RouterConfig } from "./config.js";
-import type { AttemptRow } from "./db/attempts.js";
 import { getApproval } from "./db/approvals.js";
+import type { AttemptRow } from "./db/attempts.js";
 import type { JobRow } from "./db/jobs.js";
+import { roleSystemPrompt } from "./prompt-catalog.js";
 
 export class EnvelopeUnavailableError extends Error {
   constructor(
@@ -90,11 +89,13 @@ function toExecutionContract(jobId: string, snapshot: unknown): ExecutionContrac
  * comments/subtasks/decision reply reconcile collected, and the PM system prompt.
  */
 export function buildJobEnvelope(
-  db: Database.Database,
+  db: RouterDatabase,
   config: RouterConfig,
   job: JobRow,
   attempt: AttemptRow,
 ): JobEnvelope {
+  if (job.kind === "quality_review")
+    throw new EnvelopeUnavailableError(job.id, "general AI review has been retired");
   const approval = getApproval(db, job.issueKey);
   if (!approval) throw new EnvelopeUnavailableError(job.id, "no approval row for its issue");
   // The snapshot below is the latest one reconcile stored, not the one the job was created from.
@@ -111,6 +112,7 @@ export function buildJobEnvelope(
     throw new EnvelopeUnavailableError(job.id, `worker ${attempt.workerId} has no config policy`);
   }
 
+  const snapshot = approval.inputSnapshot as import("./issue-check.js").ApprovalSnapshot;
   return {
     protocolVersion: PROTOCOL_VERSION,
     jobId: job.id,
@@ -125,8 +127,21 @@ export function buildJobEnvelope(
     issueSnapshot: toIssueSnapshot(job.id, approval.inputSnapshot),
     ...(job.kind === "planning"
       ? { planningContext: toPlanningContext(job.id, approval.inputSnapshot) }
-      : { executionContract: toExecutionContract(job.id, approval.inputSnapshot) }),
-    systemPrompt: job.kind === "planning" ? buildPmSystemPrompt() : buildImplementSystemPrompt(),
+      : job.kind === "integration_check"
+        ? { qualityContext: snapshot.quality }
+        : job.kind === "assemble_pr"
+          ? { assembly: snapshot.assembly }
+          : {
+              executionContract: toExecutionContract(job.id, approval.inputSnapshot),
+              ...(snapshot.planTask || snapshot.integration?.parentKey
+                ? { deferPullRequest: true }
+                : {}),
+              ...(snapshot.integration ? { integration: snapshot.integration } : {}),
+            }),
+    systemPrompt:
+      job.kind === "integration_check" || job.kind === "assemble_pr"
+        ? "Run trusted integration validation without an AI call."
+        : roleSystemPrompt(job.kind, config.prompts),
     timeoutMs: config.execution.timeoutMs,
   };
 }

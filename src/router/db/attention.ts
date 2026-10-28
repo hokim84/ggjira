@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { SQLInputValue } from "node:sqlite";
+import type { RouterDatabase } from "./connection.js";
 
 /**
  * What a human has to look at, grouped by incident (migration 12, M4-09, ADR 0041). Recording and
@@ -85,7 +86,7 @@ export function normalizeCause(text: string): string {
 }
 
 export function recordAttention(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     issueKey: string;
     approvalId: string | null;
@@ -108,7 +109,7 @@ export function recordAttention(
       db.prepare(
         `UPDATE attention_items SET occurrences = occurrences + 1, last_seen_at = ?, evidence = ?,
            severity = ?, reason = ?, approval_id = ? WHERE id = ?`,
-      ).run(input.now, evidence, input.severity, input.reason, input.approvalId, open.id);
+      ).run(input.now, evidence, input.severity, input.reason, input.approvalId, open.id as string);
       return {
         item: getAttentionItem(db, open.id as string) as AttentionItemRow,
         outcome: changed ? "changed" : "repeated",
@@ -152,7 +153,7 @@ export function recordAttention(
  * approval than `exceptApprovalId`. Returns how many were resolved.
  */
 export function resolveAttention(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     issueKey: string;
     kinds: readonly AttentionKind[];
@@ -165,19 +166,21 @@ export function resolveAttention(
   const kinds = input.kinds.map(() => "?").join(", ");
   const approvalClause =
     input.exceptApprovalId === undefined ? "" : " AND (approval_id IS NULL OR approval_id <> ?)";
-  const params: unknown[] = [input.now, input.resolution, input.issueKey, ...input.kinds];
+  const params: SQLInputValue[] = [input.now, input.resolution, input.issueKey, ...input.kinds];
   if (input.exceptApprovalId !== undefined) params.push(input.exceptApprovalId);
-  return db
-    .prepare(
-      `UPDATE attention_items SET status = 'resolved', resolved_at = ?, resolution = ?
-       WHERE issue_key = ? AND status = 'open' AND kind IN (${kinds})${approvalClause}`,
-    )
-    .run(...params).changes;
+  return Number(
+    db
+      .prepare(
+        `UPDATE attention_items SET status = 'resolved', resolved_at = ?, resolution = ?
+         WHERE issue_key = ? AND status = 'open' AND kind IN (${kinds})${approvalClause}`,
+      )
+      .run(...params).changes,
+  );
 }
 
 /** Resolves the open item of one incident, if there is one. */
 export function resolveAttentionIncident(
-  db: Database.Database,
+  db: RouterDatabase,
   input: { issueKey: string; kind: AttentionKind; cause: string; resolution: string; now: string },
 ): boolean {
   return (
@@ -194,7 +197,7 @@ export function resolveAttentionIncident(
 }
 
 export function resolveAttentionItem(
-  db: Database.Database,
+  db: RouterDatabase,
   id: string,
   resolution: string,
   now: string,
@@ -208,7 +211,7 @@ export function resolveAttentionItem(
   );
 }
 
-export function getAttentionItem(db: Database.Database, id: string): AttentionItemRow | undefined {
+export function getAttentionItem(db: RouterDatabase, id: string): AttentionItemRow | undefined {
   const row = db.prepare("SELECT * FROM attention_items WHERE id = ?").get(id) as
     | Record<string, unknown>
     | undefined;
@@ -217,11 +220,11 @@ export function getAttentionItem(db: Database.Database, id: string): AttentionIt
 
 /** Newest activity first. */
 export function listAttentionItems(
-  db: Database.Database,
+  db: RouterDatabase,
   filter: { status?: "open" | "resolved"; issueKey?: string; kind?: AttentionKind } = {},
 ): AttentionItemRow[] {
   const clauses: string[] = [];
-  const params: unknown[] = [];
+  const params: SQLInputValue[] = [];
   if (filter.status) {
     clauses.push("status = ?");
     params.push(filter.status);
@@ -242,7 +245,7 @@ export function listAttentionItems(
   ).map(toRow);
 }
 
-export function countOpenAttention(db: Database.Database): number {
+export function countOpenAttention(db: RouterDatabase): number {
   return (
     db.prepare("SELECT COUNT(*) AS n FROM attention_items WHERE status = 'open'").get() as {
       n: number;

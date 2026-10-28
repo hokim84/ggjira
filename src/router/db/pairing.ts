@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 
 /** docs/router-service-implementation-plan.md §4 "관리 CLI": "pairing code는 관리자 생성, 10분 유효,
  *  한 번만 사용 가능하게 한다". */
@@ -53,7 +53,7 @@ function randomCode(): string {
 }
 
 export function createPairingCode(
-  db: Database.Database,
+  db: RouterDatabase,
   input: CreatePairingCodeInput,
 ): PairingCodeRow {
   const code = input.genCode ? input.genCode() : randomCode();
@@ -66,7 +66,7 @@ export function createPairingCode(
   return { code, workerId: input.workerId, createdAt: input.now, expiresAt, usedAt: null };
 }
 
-export function getPairingCode(db: Database.Database, code: string): PairingCodeRow | undefined {
+export function getPairingCode(db: RouterDatabase, code: string): PairingCodeRow | undefined {
   const row = db.prepare("SELECT * FROM pairing_codes WHERE code = ?").get(code) as
     | Record<string, unknown>
     | undefined;
@@ -78,7 +78,7 @@ export function getPairingCode(db: Database.Database, code: string): PairingCode
  * the UPDATE is what makes the code single-use even if two registrations race: only one UPDATE
  * can match. Call inside the same transaction that issues the worker's token.
  */
-export function consumePairingCode(db: Database.Database, code: string, now: string): string {
+export function consumePairingCode(db: RouterDatabase, code: string, now: string): string {
   const row = getPairingCode(db, code);
   if (!row) throw new PairingCodeRejectedError("unknown");
   if (row.usedAt) throw new PairingCodeRejectedError("used");

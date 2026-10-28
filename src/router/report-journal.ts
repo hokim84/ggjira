@@ -1,10 +1,10 @@
 import path from "node:path";
 import type { JobResult } from "../contracts/envelope.js";
+import { missingContracts } from "../pm/contract.js";
 import {
   renderDecisionRequest,
   renderImplementationDecisionRequest,
 } from "../pm/decision-render.js";
-import { missingContracts } from "../pm/contract.js";
 import {
   PlanApplyError,
   type PlanTask,
@@ -14,18 +14,19 @@ import {
   validateTaskGraph,
 } from "../pm/plan-render.js";
 import type { Plan } from "../pm/plan.js";
-import type { RouterConfig, WorkspaceConfig } from "./config.js";
-import type { JobRow } from "./db/jobs.js";
-import type { NewReportStep } from "./db/report-steps.js";
 import {
   COMMENT_TEXT,
   type MergeWhy,
   type MessageLanguage,
   type PlanRefusal,
 } from "./comment-text.js";
+import type { RouterConfig, WorkspaceConfig } from "./config.js";
+import type { JobRow } from "./db/jobs.js";
+import type { NewReportStep } from "./db/report-steps.js";
 import { type FailureMatch, failureMessage, matchFailure } from "./failure-codes.js";
 import type { ApprovalSnapshot } from "./issue-check.js";
 import type { ReviewAssessment } from "./review-gate.js";
+import { awaitingHumanCheck, verifiedNoChange, verifiedImplementation } from "./workflow-checks.js";
 import { approvalStatusFor, decisionTransitionTarget, reRequestHint } from "./workflow-mode.js";
 
 /**
@@ -49,25 +50,20 @@ export interface TransitionParams {
   approvalRule?: ApprovalRule;
   /** Another issue than the step's own (a plan task moved when its plan is deployed). */
   issueKey?: string;
+  parentProgress?: boolean;
 }
 
 /**
  * How an implementation's transition re-derives the approval it was journaled under:
  *
  * - `plan-approval`: the plan's approval — the latest move of `issueKey` (the plan's parent) from
- *   `planReviewStatus` to `inProgressStatus` after its latest request.
+ *   `requestStatus` to `inProgressStatus` after its latest request.
  * - `plan-task`: a task run — the latest entry of the task into `inProgressStatus`, which is the
  *   part of the run's approval id after `@` (`taskApprovalId`).
  */
 export type ApprovalRule =
-  | {
-      kind: "plan-approval";
-      issueKey: string;
-      requestStatus: string;
-      planReviewStatus: string;
-      inProgressStatus: string;
-    }
-  | { kind: "plan-task"; inProgressStatus: string };
+  | { kind: "workflow-job"; jobId: string; inputHash: string | null; workspace?: WorkspaceConfig }
+  | { kind: "parent-stage"; requestId: string; inputHash: string };
 
 export interface CommentParams {
   body: string;
@@ -90,6 +86,7 @@ export interface ParentPlanParams {
 }
 
 export interface CreateSubtaskParams {
+  standalone?: boolean;
   taskId: string;
   projectKey: string;
   parentKey: string;
@@ -138,6 +135,7 @@ export interface PlanCommentParams {
 }
 
 export type ReportStepSpec =
+  | { kind: "children-ready"; params: { version: string; inProgressStatus: string } }
   | { kind: "transition"; params: TransitionParams }
   | { kind: "comment"; params: CommentParams }
   | { kind: "add-label"; params: LabelParams }
@@ -248,23 +246,7 @@ function transition(
 /** The rule an implementation's approval is re-derived with; `undefined` for a planning job,
  *  whose approval is the latest entry into `approvalStatus`. */
 function delegatedApprovalRule(job: JobRow, workspace: WorkspaceConfig): ApprovalRule | undefined {
-  if (job.kind !== "implementation") return undefined;
-  if (parseTaskApprovalId(job.approvalId)) {
-    return { kind: "plan-task", inProgressStatus: workspace.workflow.inProgressStatus };
-  }
-  return planApprovalRule(workspace, job.issueKey);
-}
-
-/** The `plan-approval` rule for the plan whose parent is `issueKey`. */
-export function planApprovalRule(workspace: WorkspaceConfig, issueKey: string): ApprovalRule {
-  const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
-  return {
-    kind: "plan-approval",
-    issueKey,
-    requestStatus,
-    planReviewStatus,
-    inProgressStatus,
-  };
+  return { kind: "workflow-job", jobId: job.id, inputHash: job.inputHash, workspace };
 }
 
 /**
@@ -301,11 +283,14 @@ export function buildStartSteps(
 ): NewReportStep[] {
   if (job.kind !== "planning") return [];
   return toNewSteps([
+    transition(job, workspace, workspace.workflow.planningInProgressStatus, [
+      workspace.workflow.requestStatus,
+    ]),
     {
       kind: "comment",
       params: {
         body: [
-          COMMENT_TEXT[language].planningStarted(workspace.workflow.requestStatus),
+          COMMENT_TEXT[language].planningStarted(workspace.workflow.planningInProgressStatus),
           "",
           signature(job, attemptId),
         ].join("\n"),
@@ -341,7 +326,7 @@ export function buildPullRequestClosedSteps(input: {
 }): NewReportStep[] {
   const { job, workspace } = input;
   const text = COMMENT_TEXT[input.language].pullRequest;
-  const done = input.doneWithheld ? undefined : workspace.workflow.doneStatus;
+  const done = undefined;
   const body = input.merged
     ? [
         text.merged(input.number, input.by),
@@ -359,7 +344,7 @@ export function buildPullRequestClosedSteps(input: {
   return toNewSteps([
     { kind: "comment", params: { body: [...body, "", `ggjira job: ${job.id}`].join("\n") } },
     ...(input.merged && done
-      ? [transition(job, workspace, done, [workspace.workflow.reviewStatus])]
+      ? [transition(job, workspace, done, [workspace.workflow.implementationCompleteStatus])]
       : []),
   ]);
 }
@@ -400,6 +385,55 @@ export function buildReviewJudgmentSteps(input: {
     {
       kind: "comment",
       params: { body: [...body, "", signature(job, input.attemptId)].join("\n") },
+    },
+  ]);
+}
+
+/**
+ * ADR 0061: a person confirmed the acceptance criteria a child's agent could not verify. The
+ * confirm is the child's missing evidence, so it completes like a verified child does.
+ */
+export function buildHumanConfirmedChildSteps(input: {
+  job: JobRow;
+  workspace: WorkspaceConfig;
+  attemptId: string;
+  headSha: string | null;
+  actor: string;
+  language: MessageLanguage;
+}): NewReportStep[] {
+  const { job, workspace } = input;
+  const text = COMMENT_TEXT[input.language].reviewJudgment;
+  const complete = workspace.workflow.implementationCompleteStatus;
+  const body = [
+    text.childConfirmed(text.subject(input.attemptId, input.headSha), complete),
+    text.by(input.actor),
+  ];
+  return toNewSteps([
+    transition(job, workspace, complete, [approvalStatusFor(job.kind, workspace)]),
+    {
+      kind: "comment",
+      params: { body: [...body, "", signature(job, input.attemptId)].join("\n") },
+    },
+  ]);
+}
+
+export function uncertainRunBatchId(attemptId: string): string {
+  return `uncertain:${attemptId}`;
+}
+
+/** ADR 0062: tells the assignee in Jira that a run is `recovery_required` and how to rerun it. */
+export function buildUncertainRunSteps(
+  config: RouterConfig,
+  job: JobRow,
+  attemptId: string,
+): NewReportStep[] {
+  const text = COMMENT_TEXT[config.reporting.language].failure;
+  return toNewSteps([
+    {
+      kind: "comment",
+      params: {
+        body: [text.lostContact, text.uncertainRun, "", signature(job, attemptId)].join("\n"),
+      },
     },
   ]);
 }
@@ -521,6 +555,21 @@ function failureSteps(
     summary || "(no summary)",
   ];
   if (input.result.blockingIssue) full.push("", "Blocking Issue:", input.result.blockingIssue);
+  // The agent's own checks and the worker's trusted command, so the log shows which one failed.
+  const checks = input.result.implementation?.verification ?? [];
+  if (checks.length > 0) {
+    full.push(
+      "",
+      "Acceptance Checks:",
+      ...checks.map(
+        (check) =>
+          `- ${check.status}${check.method ? ` (${check.method})` : ""}: ${check.acceptance} — ${check.evidence}`,
+      ),
+    );
+  }
+  if (input.result.validation?.length) {
+    full.push("", "Validation:", ...input.result.validation.map((line) => `- ${line}`));
+  }
   const evidence = input.result.localEvidence;
   if (evidence) {
     // ADR 0036: the run stopped before commit; say where its changes were kept.
@@ -564,11 +613,13 @@ function reviewLines(input: ResultJournalInput): string[] {
   } else {
     lines.push(text.ordinaryQueue);
   }
-  const done = workspace.workflow.doneStatus;
+  const done = workspace.workflow.implementationCompleteStatus;
   lines.push(
-    result.pullRequest
-      ? text.nextWithPullRequest(result.pullRequest.url, done)
-      : text.nextWithoutPullRequest(done),
+    input.snapshot?.planTask || input.snapshot?.integration?.parentKey
+      ? "자식 결과는 원격 커밋으로 보존합니다. 모든 자식 완료 후 부모 PR 하나를 만들며, 병합 후 평가는 부모에서 진행합니다."
+      : result.pullRequest
+        ? text.nextWithPullRequest(result.pullRequest.url, done)
+        : text.nextWithoutPullRequest(done),
   );
   const { commit, risk } = review;
   if (commit.state === "committed") {
@@ -609,7 +660,7 @@ function successComment(input: ResultJournalInput): string {
       text.acceptanceChecks,
       ...verification.map(
         (entry) =>
-          `- ${text.verificationStatus(entry.status)}: ${entry.acceptance} — ${entry.evidence}`,
+          `- ${text.verificationStatus(entry.status)}${entry.method ? `(${text.verificationMethod(entry.method)})` : ""}: ${entry.acceptance} — ${entry.evidence}`,
       ),
     );
   }
@@ -635,6 +686,40 @@ function successComment(input: ResultJournalInput): string {
 
 /** Throws `PlanApplyError` for a plan Router must not apply (the v4 `applyPlan` checks). */
 function validatePlan(input: ResultJournalInput, plan: Plan): void {
+  if (input.snapshot?.planning && !plan.needsDecision) {
+    if (!plan.acceptanceCriteria?.length || !plan.verification.length)
+      throw new PlanApplyError(
+        "Parent acceptanceCriteria and integration verification are required",
+      );
+    const existing = input.snapshot.planning.existingSubtasks;
+    const tracked = input.snapshot.planning.existingTaskContracts ?? [];
+    const keptIds = plan.keepTaskKeys.map(
+      (key) => tracked.find((task) => task.issueKey === key)?.taskId,
+    );
+    if (keptIds.some((id) => !id))
+      throw new PlanApplyError("Only Router-tracked children may be kept");
+    const allIds = [...planTaskIds(plan), ...keptIds];
+    if (new Set(allIds).size !== allIds.length)
+      throw new PlanApplyError("New and kept task IDs must be unique together");
+    const started = [
+      input.workspace.workflow.inProgressStatus,
+      input.workspace.workflow.integrationPendingStatus,
+      input.workspace.workflow.implementationCompleteStatus,
+      input.workspace.workflow.implementationCompleteStatus,
+      input.workspace.workflow.doneStatus,
+    ];
+    if (
+      existing.some(
+        (task) =>
+          tracked.some((identity) => identity.issueKey === task.key) &&
+          started.includes(task.statusName) &&
+          !plan.keepTaskKeys.includes(task.key),
+      )
+    )
+      throw new PlanApplyError("A replan must preserve started and completed tasks explicitly");
+    if (plan.keepTaskKeys.some((key) => !existing.some((task) => task.key === key)))
+      throw new PlanApplyError("keepTaskKeys must name existing children");
+  }
   if (plan.tasks.length > input.config.planning.maxTasksPerPlan) {
     throw new PlanApplyError(
       `Plan has ${plan.tasks.length} tasks, exceeding planning.maxTasksPerPlan (${input.config.planning.maxTasksPerPlan})`,
@@ -674,7 +759,13 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
   const planVersion = planVersionFor(input.attemptId);
   const taskIds = planTaskIds(plan);
   const keep = new Set(plan.keepTaskKeys);
-  const started = [workspace.workflow.inProgressStatus, workspace.workflow.reviewStatus];
+  const started = [
+    workspace.workflow.inProgressStatus,
+    workspace.workflow.integrationPendingStatus,
+    workspace.workflow.implementationCompleteStatus,
+    workspace.workflow.implementationCompleteStatus,
+    workspace.workflow.doneStatus,
+  ];
 
   const steps: ReportStepSpec[] = [{ kind: "parent-plan", params: { plan } }];
   plan.tasks.forEach((task, index) => {
@@ -717,6 +808,11 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
     params: { version: planVersion, taskIds, ...(decisionId ? { decisionId } : {}) },
   });
   for (const subtask of snapshot?.planning?.existingSubtasks ?? []) {
+    if (
+      snapshot?.planning &&
+      !snapshot.planning.existingTaskContracts?.some((task) => task.issueKey === subtask.key)
+    )
+      continue;
     if (keep.has(subtask.key)) continue;
     steps.push({
       kind: "supersede",
@@ -734,13 +830,20 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
       params: {
         summary: plan.summary,
         signature: signature(job, input.attemptId),
-        next: planReviewNext(workspace, plan.tasks.length > 0, config.reporting.language),
+        next: [
+          `계획은 "${workspace.workflow.planningInProgressStatus}"에 유지합니다. 실행할 자식(자식이 없으면 이 이슈)을 "${workspace.workflow.inProgressStatus}"으로 옮기세요.`,
+          `구현과 통합 검증 후 "${workspace.workflow.implementationCompleteStatus}"으로 자동 이동합니다. AI 리뷰는 선택 사항입니다.`,
+        ],
         language: config.reporting.language,
       },
     },
     { kind: "remove-label", params: { label: config.reporting.failureLabel } },
-    finishTransition(input, workspace.workflow.planReviewStatus),
   );
+  if (snapshot?.planning)
+    steps.push({
+      kind: "children-ready",
+      params: { version: planVersion, inProgressStatus: workspace.workflow.inProgressStatus },
+    });
   return steps;
 }
 
@@ -750,11 +853,11 @@ function planReviewNext(
   hasTasks: boolean,
   language: MessageLanguage,
 ): string[] {
-  const { requestStatus, planReviewStatus, inProgressStatus } = workspace.workflow;
+  const { requestStatus, inProgressStatus } = workspace.workflow;
   const text = COMMENT_TEXT[language].plan;
   return [
     text.nothingRunsYet(hasTasks),
-    text.toApprove(planReviewStatus, inProgressStatus),
+    text.toApprove(requestStatus, inProgressStatus),
     text.toChange(requestStatus),
   ];
 }
@@ -764,6 +867,18 @@ function planReviewNext(
  * too many tasks, a dependency cycle) is reported as a failure instead — never half-applied.
  */
 export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
+  const steps = resultSteps(input);
+  if (input.finalState === "cancelled") return steps;
+  return [
+    {
+      kind: input.result.status === "needs_decision" ? "add-label" : "remove-label",
+      params: { label: "ggjira-needs-answer" },
+    },
+    ...steps,
+  ];
+}
+
+function resultSteps(input: ResultJournalInput): NewReportStep[] {
   const { job, result, workspace } = input;
   const text = COMMENT_TEXT[input.config.reporting.language];
 
@@ -781,6 +896,23 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
     return toNewSteps(
       failureSteps(input, result.summary, result.failureReason ?? result.summary ?? "(unknown)"),
     );
+  }
+
+  if (job.kind === "assemble_pr") {
+    return toNewSteps([
+      {
+        kind: "comment",
+        params: {
+          body: [
+            result.summary,
+            result.pullRequest?.url ?? "추가 변경이 없어 PR을 만들지 않았습니다.",
+            "사람의 병합 후 부모 통합 검증을 진행합니다. FCI는 활성화된 경우 병합 후 별도로 분석합니다.",
+          ].join("\n"),
+        },
+      },
+      { kind: "remove-label", params: { label: input.config.reporting.failureLabel } },
+      finishTransition(input, workspace.workflow.integrationPendingStatus),
+    ]);
   }
 
   if (result.status === "needs_decision" && job.kind === "implementation") {
@@ -867,136 +999,60 @@ export function buildResultSteps(input: ResultJournalInput): NewReportStep[] {
     return toNewSteps(planSteps(input, result.plan));
   }
 
+  const child = Boolean(input.snapshot?.planTask || input.snapshot?.integration?.parentKey);
   return toNewSteps([
     { kind: "comment", params: { body: successComment(input) } },
     { kind: "remove-label", params: { label: input.config.reporting.failureLabel } },
-    finishTransition(input, workspace.workflow.reviewStatus),
-  ]);
-}
-
-/** Batch id of the journal for recording one plan approval (ADR 0044), one per deployment. */
-export function planDeploymentBatchId(deploymentId: number): string {
-  return `deploy:${deploymentId}`;
-}
-
-/** Batch id of the journal for the parent of a deployed plan once all its tasks are done. */
-export function planCompletedBatchId(deploymentId: number): string {
-  return `deploy-done:${deploymentId}`;
-}
-
-/** Batch id of the one notice that a move to in progress was not taken as a plan approval. */
-export function planApprovalRefusedBatchId(issueKey: string, approvalId: string): string {
-  return `approval-refused:${issueKey}:${approvalId}`;
-}
-
-/**
- * A human approved a plan (ADR 0044): say so on the parent, and move each task of the plan to
- * the shared in-progress status, where it runs once its dependencies are done. Every move is
- * re-checked against the plan's approval when it is applied, so a plan withdrawn in the meantime
- * moves nothing.
- */
-export function buildPlanDeploymentSteps(input: {
-  workspace: WorkspaceConfig;
-  parentKey: string;
-  planVersion: string;
-  approvalId: string;
-  /** Tasks found in Jira under this plan, with where each is now. */
-  tasks: ReadonlyArray<{ issueKey: string; statusName: string }>;
-  language: MessageLanguage;
-}): NewReportStep[] {
-  const { workspace, parentKey } = input;
-  const { inProgressStatus, requestStatus } = workspace.workflow;
-  const text = COMMENT_TEXT[input.language].plan;
-  const rule = planApprovalRule(workspace, parentKey);
-  const body = [
-    text.approved(input.planVersion, inProgressStatus),
-    input.tasks.length > 0
-      ? text.tasksRun(
-          input.tasks.length,
-          inProgressStatus,
-          input.tasks.map((task) => task.issueKey).join(", "),
-        )
-      : text.workInIssue,
-    "",
-    text.withdraw(inProgressStatus, requestStatus),
-    "",
-    `approval: ${input.approvalId}`,
-  ];
-  return toNewSteps([
-    { kind: "comment", params: { body: body.join("\n") } },
-    ...input.tasks
-      .filter((task) => task.statusName !== inProgressStatus)
-      .map(
-        (task): ReportStepSpec => ({
-          kind: "transition",
-          params: {
-            to: inProgressStatus,
-            from: [task.statusName],
-            approvalStatus: inProgressStatus,
-            approvalId: input.approvalId,
-            approvalRule: rule,
-            issueKey: task.issueKey,
+    ...(child && awaitingHumanCheck(input.result)
+      ? // ADR 0066: completed like a verified child; the unchecked criteria stay for a person.
+        // Comments go before the transition: a step after it finds the issue moved and is skipped.
+        [
+          {
+            kind: "comment" as const,
+            params: {
+              body: COMMENT_TEXT[input.config.reporting.language].humanCheck.waiting(
+                (input.result.implementation?.verification ?? [])
+                  .filter((check) => check.status === "not_verified")
+                  .map((check) => check.acceptance),
+                workspace.workflow.implementationCompleteStatus,
+                workspace.workflow.inProgressStatus,
+              ),
+            },
           },
-        }),
-      ),
-  ]);
-}
-
-/** Every task of a deployed plan is done: the parent goes to review, still under the plan's
- *  approval (ADR 0044). */
-export function buildPlanCompletedSteps(input: {
-  workspace: WorkspaceConfig;
-  parentKey: string;
-  approvalId: string;
-  taskKeys: readonly string[];
-  language: MessageLanguage;
-}): NewReportStep[] {
-  const { workspace, parentKey } = input;
-  const { inProgressStatus, reviewStatus } = workspace.workflow;
-  const text = COMMENT_TEXT[input.language].plan;
-  return toNewSteps([
-    {
-      kind: "comment",
-      params: {
-        body: [
-          text.completed(input.taskKeys.join(", ")),
-          text.completedNext(reviewStatus),
-          "",
-          `approval: ${input.approvalId}`,
-        ].join("\n"),
-      },
-    },
-    {
-      kind: "transition",
-      params: {
-        to: reviewStatus,
-        from: [inProgressStatus],
-        approvalStatus: inProgressStatus,
-        approvalId: input.approvalId,
-        approvalRule: planApprovalRule(workspace, parentKey),
-      },
-    },
-  ]);
-}
-
-/** A move to in progress that approves nothing, and why — said once per move (ADR 0044). */
-export function buildPlanApprovalRefusedSteps(input: {
-  workspace: WorkspaceConfig;
-  refusal: PlanRefusal;
-  language: MessageLanguage;
-}): NewReportStep[] {
-  const { requestStatus, inProgressStatus } = input.workspace.workflow;
-  const text = COMMENT_TEXT[input.language].plan;
-  return toNewSteps([
-    {
-      kind: "comment",
-      params: {
-        body: [
-          text.refused(inProgressStatus, input.refusal),
-          text.refusedImpact,
-          text.refusedNext(input.refusal, requestStatus),
-        ].join("\n"),
-      },
-    },
+          finishTransition(input, workspace.workflow.implementationCompleteStatus),
+        ]
+      : child &&
+          verifiedImplementation(input.result) &&
+          input.result.artifacts?.some((a) => a.startsWith("pushed:"))
+        ? [
+            {
+              kind: "comment" as const,
+              params: {
+                body: "자식 구현과 자체 테스트가 완료되어 결과 커밋을 보존했습니다. 나머지 자식이 완료되면 부모 통합 PR을 생성합니다. 병합 후 평가는 부모에서 수행합니다.",
+              },
+            },
+            finishTransition(input, workspace.workflow.implementationCompleteStatus),
+          ]
+        : input.result.pullRequest || verifiedNoChange(input.result)
+          ? [
+              finishTransition(
+                input,
+                input.result.pullRequest
+                  ? workspace.workflow.integrationPendingStatus
+                  : workspace.workflow.implementationCompleteStatus,
+              ),
+            ]
+          : [
+              {
+                kind: "add-label" as const,
+                params: { label: input.config.reporting.failureLabel },
+              },
+              {
+                kind: "comment" as const,
+                params: {
+                  body: "완료 보류: 변경된 코드의 PR 또는 변경이 필요 없는 작업의 검증 근거가 없습니다. 결과를 확인하고 다시 AI 구현으로 옮기세요.",
+                },
+              },
+            ]),
   ]);
 }

@@ -1,6 +1,6 @@
 # GGJIRA 2차 구현 완료 보고서
 
-`GGJira_Phase2_Implementation_Plan.md` §12 Step 5 형식. 작업 계획 원본은
+`docs/history/GGJira_Phase2_Implementation_Plan.md` §12 Step 5 형식. 작업 계획 원본은
 `/Users/hodolkim/.claude/plans/delegated-frolicking-cray.md`(세션 로컬)에 있었고, 이 문서는
 그 계획의 S1~S7 구현이 끝난 시점의 스냅샷이다.
 
@@ -108,7 +108,7 @@ subtaskIssueType,taskReadyTransitionName,maxTasksPerPlan}`. `.env`는 `JIRA_EMAI
 
 ## Deferred to Phase 3
 
-`GGJira_Phase2_Implementation_Plan.md` §13에 나열된 항목 그대로 유지: Agent Registry,
+`docs/history/GGJira_Phase2_Implementation_Plan.md` §13에 나열된 항목 그대로 유지: Agent Registry,
 Capability Matching, Scheduler, Job Lease, Heartbeat, Failover, Agent Affinity, Parallel
 Plan Execution, Review Agent, Test Agent, Model Routing, Cost Routing, Remote Agent
 Monitoring. 이번 구현 중 새로 발견된 후보는 없다.

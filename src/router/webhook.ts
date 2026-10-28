@@ -1,5 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import { DuplicateEventError, recordEvent } from "./db/events.js";
 
 const SIGNATURE_PREFIX = "sha256=";
@@ -69,17 +69,13 @@ export function summarizeJiraWebhook(payload: unknown): JiraWebhookSummary {
 }
 
 /**
- * Whether a delivery should wake the reconcile pass. Comment events never change what Router would
- * decide (comments are not part of an approval, and a decision reply only counts once the issue is
- * requested again, which is its own event), and neither does an issue outside every workspace.
- * Router's own transitions and label writes do wake it; the pass is idempotent, so they find
- * nothing to do.
+ * Workspace comments can answer a planning question or request a retry (ADR 0050).
+ * They only wake a fresh Jira read; the durable request record deduplicates execution.
  */
 export function isRelevantJiraWebhook(
   summary: JiraWebhookSummary,
   isWorkspaceProject: (projectKey: string) => boolean,
 ): boolean {
-  if (summary.webhookEvent?.startsWith("comment_")) return false;
   return summary.projectKey === null || isWorkspaceProject(summary.projectKey);
 }
 
@@ -104,7 +100,7 @@ export type IngestJiraWebhookEventResult = "accepted" | "duplicate" | "ignored";
  * this function's only job is idempotent persistence.
  */
 export function ingestJiraWebhookEvent(
-  db: Database.Database,
+  db: RouterDatabase,
   input: IngestJiraWebhookEventInput,
 ): IngestJiraWebhookEventResult {
   try {

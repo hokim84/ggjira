@@ -1,19 +1,21 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeJiraGateway } from "../src/jira/fake.js";
+import type { RouterConfig } from "../src/router/config.js";
 import { getActiveAttemptForWorker, getAttempt } from "../src/router/db/attempts.js";
 import { listAttentionItems } from "../src/router/db/attention.js";
 import { openRouterDb } from "../src/router/db/connection.js";
-import { getJob, getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
+import { createJob, getJob, getOpenJobForIssue, getQueuedJobs } from "../src/router/db/jobs.js";
+import { getActivePlanDeployment, getLatestPlanReview } from "../src/router/db/plan-delegation.js";
 import { RuleDecisionProvider } from "../src/router/decision.js";
-import type { RouterConfig } from "../src/router/config.js";
 import {
-  reconcileCandidates,
   type SchedulerDeps,
   type WorkerAvailability,
+  assignQueuedJobs,
+  reconcileCandidates,
 } from "../src/router/scheduler.js";
 import {
   type ApprovedIssueOptions,
@@ -21,24 +23,23 @@ import {
   seedApprovedIssue,
 } from "./helpers/approved-plan.js";
 import {
-  buildRouterConfig as buildConfig,
   DONE_STATUS,
   IN_PROGRESS_STATUS,
+  REQUEST_STATUS,
+  TODO_STATUS,
+  WORKFLOW_TRANSITIONS,
+  buildRouterConfig as buildConfig,
   issueDescription as description,
   makeClock,
   makeIdGenerator,
-  REQUEST_STATUS,
   singlePlan,
-  TODO_STATUS,
   testWorkspace,
-  WORKFLOW_TRANSITIONS,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
 function workerAvailability(overrides: Partial<WorkerAvailability> = {}): WorkerAvailability {
   return {
     workerId: "worker-1",
-    capabilities: ["programming"],
     repositoryIds: ["repo1"],
     lastAssignedAt: null,
     ...overrides,
@@ -47,7 +48,7 @@ function workerAvailability(overrides: Partial<WorkerAvailability> = {}): Worker
 
 describe("reconcileCandidates", () => {
   let dataDir: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
   let jira: FakeJiraGateway;
 
   beforeEach(() => {
@@ -122,7 +123,20 @@ describe("reconcileCandidates", () => {
     expect(getOpenJobForIssue(db, "KAN-1")?.kind).toBe("planning");
   });
 
-  it("never picks up an issue a person moved to in progress", async () => {
+  it("closes the plan of a deleted parent and keeps reconciling the others", async () => {
+    await approved("KAN-9");
+    await approved("KAN-1");
+    jira.deleteIssue("KAN-9");
+
+    const report = await reconcileCandidates(makeDeps(buildConfig()), []);
+
+    expect(getOpenJobForIssue(db, "KAN-1")?.kind).toBe("implementation");
+    expect(report.jobsCreated).toHaveLength(1);
+    expect(getLatestPlanReview(db, "KAN-9")?.closedReason).toBe("KAN-9 no longer exists");
+    expect(getActivePlanDeployment(db, "KAN-9")).toBeUndefined();
+  });
+
+  it("accepts a direct implementation request from in progress", async () => {
     jira.seedIssue({
       key: "KAN-1",
       statusName: IN_PROGRESS_STATUS,
@@ -133,8 +147,8 @@ describe("reconcileCandidates", () => {
 
     const report = await reconcileCandidates(makeDeps(buildConfig()), []);
 
-    expect(report.jobsCreated).toEqual([]);
-    expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
+    expect(report.jobsCreated).toHaveLength(1);
+    expect(getOpenJobForIssue(db, "KAN-1")?.kind).toBe("implementation");
   });
 
   it("holds for a human and processes other candidates when metadata is invalid or assignee is missing", async () => {
@@ -195,19 +209,28 @@ describe("reconcileCandidates", () => {
     expect(getActiveAttemptForWorker(db, "worker-1")).toBeDefined();
   });
 
-  it("leaves the job queued when no available worker has the required capability", async () => {
-    await approved("KAN-1", { plan: singlePlan({ requiredCapabilities: ["testing"] }) });
-    const config = buildConfig({
-      workers: [workerPolicy({ allowedCapabilities: ["programming"] })],
-    });
+  it.each(["planning", "implementation", "quality_review"] as const)(
+    "assigns %s without a worker capability declaration",
+    (kind) => {
+      createJob(db, {
+        id: "universal",
+        issueKey: "KAN-1",
+        workspaceId: "ws1",
+        repositoryId: "repo1",
+        kind,
+        approvalId: "human-entry",
+        now: "2026-10-21",
+      });
+      const config = buildConfig({
+        workers: [workerPolicy()],
+      });
 
-    const report = await reconcileCandidates(makeDeps(config), [
-      workerAvailability({ capabilities: ["programming"] }),
-    ]);
+      const assignments = assignQueuedJobs(makeDeps(config), [workerAvailability()]);
 
-    expect(report.jobsAssigned).toHaveLength(0);
-    expect(getOpenJobForIssue(db, "KAN-1")?.state).toBe("queued");
-  });
+      expect(assignments).toHaveLength(1);
+      expect(getOpenJobForIssue(db, "KAN-1")?.state).toBe("leased");
+    },
+  );
 
   it("leaves the job queued when the available worker isn't allowed the job's repository", async () => {
     await approved("KAN-1");
@@ -293,7 +316,7 @@ describe("reconcileCandidates", () => {
     const second = await reconcileCandidates(deps, [workerAvailability()]);
 
     // The old "waiting" row is cancelled and replaced by a fresh queued/leased job — dependency
-    // resolution re-runs the full decision (capability/pin checks included), so the row can't
+    // resolution re-runs the full decision (pin checks included), so the row can't
     // just flip state in place.
     expect(second.jobsCancelled).toContain(waitingJobId);
     const job = getOpenJobForIssue(db, "KAN-2");
@@ -337,9 +360,11 @@ describe("reconcileCandidates", () => {
     expect(getActiveAttemptForWorker(db, "worker-1")).toBeUndefined();
     // ADR 0035: the edited request is not re-run under the approval of the original one.
     expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
-    expect(report.held).toEqual([
-      expect.objectContaining({ issueKey: "KAN-1", reason: expect.stringContaining("edited") }),
-    ]);
+    expect(report.held).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ issueKey: "KAN-1", reason: expect.stringContaining("edited") }),
+      ]),
+    );
     const again = await reconcileCandidates(deps, []);
     expect(again.jobsCreated).toEqual([]);
   });
@@ -359,7 +384,7 @@ describe("reconcileCandidates", () => {
     expect(edited.jobsCancelled).toContain(first?.id);
     expect(getOpenJobForIssue(db, "KAN-1")).toBeUndefined();
 
-    await reapprove(jira, testWorkspace, "KAN-1");
+    await reapprove(jira, testWorkspace, "KAN-1", db);
     const reapproved = await reconcileCandidates(deps, []);
     expect(reapproved.jobsCreated).toHaveLength(1);
     expect(getOpenJobForIssue(db, "KAN-1")?.approvalId).not.toBe(first?.approvalId);
@@ -370,7 +395,10 @@ describe("reconcileCandidates", () => {
     const deps = makeDeps(buildConfig());
     await reconcileCandidates(deps, []);
     const job = getOpenJobForIssue(db, "KAN-1");
-    db.prepare("UPDATE jobs SET input_hash = ? WHERE id = ?").run("0".repeat(64), job?.id);
+    db.prepare("UPDATE jobs SET input_hash = ? WHERE id = ?").run(
+      "0".repeat(64),
+      job?.id as string,
+    );
 
     const report = await reconcileCandidates(deps, []);
 
@@ -386,8 +414,10 @@ describe("reconcileCandidates", () => {
     await reconcileCandidates(deps, [workerAvailability()]);
     const job = getOpenJobForIssue(db, "KAN-1");
     // Simulate the worker's `start` (normally WorkerService.start).
-    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job?.id);
-    db.prepare("UPDATE attempts SET state = 'running' WHERE id = ?").run(job?.currentAttemptId);
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(job?.id as string);
+    db.prepare("UPDATE attempts SET state = 'running' WHERE id = ?").run(
+      job?.currentAttemptId as string,
+    );
 
     await jira.transitionIssueToStatus("KAN-1", TODO_STATUS);
     const first = await reconcileCandidates(deps, []);

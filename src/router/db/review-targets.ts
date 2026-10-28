@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 import type { JobKind } from "../../contracts/protocol.js";
 import type { ReviewAssessment, ReviewClass } from "../review-gate.js";
 
@@ -82,7 +82,7 @@ function toRecord(row: Record<string, unknown>): ReviewRecordRow {
  * issue. Keyed by result id, so a replay inserts nothing and supersedes nothing.
  */
 export function recordReviewTarget(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     resultId: string;
     issueKey: string;
@@ -128,7 +128,7 @@ export function recordReviewTarget(
   ).run(input.resultId, input.now, input.issueKey, input.resultId);
 }
 
-export function getReviewTarget(db: Database.Database, id: string): ReviewTargetRow | undefined {
+export function getReviewTarget(db: RouterDatabase, id: string): ReviewTargetRow | undefined {
   const row = db.prepare("SELECT * FROM review_targets WHERE id = ?").get(id) as
     | Record<string, unknown>
     | undefined;
@@ -137,7 +137,7 @@ export function getReviewTarget(db: Database.Database, id: string): ReviewTarget
 
 /** The target recorded for one attempt's result (an attempt applies at most one result). */
 export function getReviewTargetForAttempt(
-  db: Database.Database,
+  db: RouterDatabase,
   attemptId: string,
 ): ReviewTargetRow | undefined {
   const row = db
@@ -147,7 +147,7 @@ export function getReviewTargetForAttempt(
 }
 
 /** Newest first; the first entry is current unless it too was superseded. */
-export function listReviewTargets(db: Database.Database, issueKey: string): ReviewTargetRow[] {
+export function listReviewTargets(db: RouterDatabase, issueKey: string): ReviewTargetRow[] {
   return (
     db
       .prepare(
@@ -158,7 +158,7 @@ export function listReviewTargets(db: Database.Database, issueKey: string): Revi
 }
 
 export function appendReviewRecord(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     targetId: string | null;
     issueKey: string;
@@ -188,7 +188,7 @@ export function appendReviewRecord(
   );
 }
 
-export function listReviewRecords(db: Database.Database, issueKey: string): ReviewRecordRow[] {
+export function listReviewRecords(db: RouterDatabase, issueKey: string): ReviewRecordRow[] {
   return (
     db
       .prepare("SELECT * FROM review_records WHERE issue_key = ? ORDER BY id ASC")
@@ -196,7 +196,7 @@ export function listReviewRecords(db: Database.Database, issueKey: string): Revi
   ).map(toRecord);
 }
 
-export function getReviewRecord(db: Database.Database, id: number): ReviewRecordRow | undefined {
+export function getReviewRecord(db: RouterDatabase, id: number): ReviewRecordRow | undefined {
   const row = db.prepare("SELECT * FROM review_records WHERE id = ?").get(id) as
     | Record<string, unknown>
     | undefined;
@@ -248,6 +248,7 @@ export interface ReviewQueueItem {
 }
 
 export interface ReviewQueueFilter {
+  issueKey?: string;
   reviewClass?: ReviewClass;
   /** Default: `pending` and `held`, the items still waiting on a human. */
   states?: readonly ReviewQueueState[];
@@ -258,10 +259,7 @@ export interface ReviewQueueFilter {
 const WAITING_STATES: readonly ReviewQueueState[] = ["pending", "held"];
 
 /** The latest judgment recorded against one target. */
-export function latestJudgment(
-  db: Database.Database,
-  targetId: string,
-): ReviewRecordRow | undefined {
+export function latestJudgment(db: RouterDatabase, targetId: string): ReviewRecordRow | undefined {
   const row = db
     .prepare(
       "SELECT * FROM review_records WHERE target_id = ? AND action LIKE 'judgment.%' ORDER BY id DESC LIMIT 1",
@@ -270,7 +268,7 @@ export function latestJudgment(
   return row ? toRecord(row) : undefined;
 }
 
-function mergedWithTarget(db: Database.Database, targetId: string): boolean {
+function mergedWithTarget(db: RouterDatabase, targetId: string): boolean {
   return (
     db
       .prepare(
@@ -306,7 +304,7 @@ function parseJson<T>(text: string | null | undefined): T | undefined {
  * runs are not reviewable. Reads Router's DB only.
  */
 export function listReviewQueue(
-  db: Database.Database,
+  db: RouterDatabase,
   filter: ReviewQueueFilter = {},
 ): ReviewQueueItem[] {
   const states = new Set(filter.states ?? WAITING_STATES);
@@ -317,10 +315,10 @@ export function listReviewQueue(
        FROM review_targets t
        LEFT JOIN approvals a ON a.issue_key = t.issue_key
        LEFT JOIN results r ON r.id = t.id
-       WHERE t.superseded_by IS NULL AND t.final_state <> 'cancelled'
+       WHERE t.superseded_by IS NULL AND t.final_state <> 'cancelled' AND (? IS NULL OR t.issue_key = ?)
        ORDER BY t.created_at DESC, t.rowid DESC`,
     )
-    .all() as Array<Record<string, unknown>>;
+    .all(filter.issueKey ?? null, filter.issueKey ?? null) as Array<Record<string, unknown>>;
   const items: ReviewQueueItem[] = [];
   for (const row of rows) {
     const target = toTarget(row);
@@ -360,7 +358,7 @@ export function listReviewQueue(
 }
 
 function queueState(
-  db: Database.Database,
+  db: RouterDatabase,
   target: ReviewTargetRow,
   currentApprovalId: string | null,
   judgment: ReviewRecordRow | null,
@@ -374,7 +372,7 @@ function queueState(
 }
 
 /** How many current targets still wait on a human (`pending` or `held`). */
-export function countWaitingReviews(db: Database.Database): number {
+export function countWaitingReviews(db: RouterDatabase): number {
   return listReviewQueue(db).length;
 }
 
@@ -383,7 +381,7 @@ export function countWaitingReviews(db: Database.Database): number {
  * merged the reviewed pull request (ADR 0044 counts that as a dependency done; reaching the review
  * status alone does not).
  */
-export function isLatestReviewConfirmed(db: Database.Database, issueKey: string): boolean {
+export function isLatestReviewConfirmed(db: RouterDatabase, issueKey: string): boolean {
   const current = listReviewTargets(db, issueKey)[0];
   if (!current || current.supersededBy !== null || current.kind !== "implementation") return false;
   if (mergedWithTarget(db, current.id)) return true;

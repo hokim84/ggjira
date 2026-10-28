@@ -1,4 +1,4 @@
-import { StatusNotReachableError } from "./client.js";
+import { JiraApiError, StatusNotReachableError } from "./client.js";
 import type { JiraGateway } from "./gateway.js";
 import type {
   CreateIssueInput,
@@ -54,6 +54,29 @@ function unquote(value: string): string {
  * exercise `findAssignedJobs` and PM subtask lookups without a real Jira.
  */
 export class FakeJiraGateway implements JiraGateway {
+  async ensureAiWorkflow(
+    projectKey: string,
+    mapping?: import("./workflow-provisioning.js").DEFAULT_AI_WORKFLOW_TYPE,
+  ): Promise<import("./workflow-provisioning.js").WorkflowProvisionResult> {
+    const { DEFAULT_AI_WORKFLOW } = await import("./workflow-provisioning.js");
+    const previous = await this.listProjectStatuses(projectKey);
+    const added = Object.values(mapping ?? DEFAULT_AI_WORKFLOW).filter(
+      (name) => !previous.includes(name),
+    );
+    const statuses = [...previous, ...added];
+    this.seedProjectStatuses(projectKey, statuses);
+    return {
+      statuses,
+      added,
+      workflowsUpdated: added.length ? [projectKey] : [],
+      messages: [
+        added.length
+          ? `AI 상태를 자동 추가했습니다: ${added.join(", ")}`
+          : "필요한 AI 상태가 이미 있습니다.",
+      ],
+      complete: true,
+    };
+  }
   readonly comments: RecordedComment[] = [];
   readonly transitions: RecordedTransition[] = [];
   readonly labelChanges: RecordedLabel[] = [];
@@ -245,9 +268,16 @@ export class FakeJiraGateway implements JiraGateway {
     return opts.maxResults ? all.slice(0, opts.maxResults) : all;
   }
 
+  /** A human deleted the issue in Jira. */
+  deleteIssue(key: string): void {
+    this.issues.delete(key);
+  }
+
   async getIssue(key: string): Promise<JiraIssue> {
     const issue = this.issues.get(key);
-    if (!issue) throw new Error(`FakeJiraGateway: unknown issue ${key}`);
+    // Jira answers 404 for an issue that was deleted or never existed.
+    if (!issue)
+      throw new JiraApiError(`FakeJiraGateway: unknown issue ${key}`, 404, `/issue/${key}`);
     return issue;
   }
 
@@ -267,6 +297,11 @@ export class FakeJiraGateway implements JiraGateway {
 
   async getComments(key: string): Promise<JiraComment[]> {
     return this.commentsByKey.get(key) ?? [];
+  }
+  async updateComment(key: string, id: string, body: string): Promise<void> {
+    const comment = this.commentsByKey.get(key)?.find((c) => c.id === id);
+    if (!comment) throw new Error("comment missing");
+    comment.body = body;
   }
 
   async getTransitions(key: string): Promise<JiraTransition[]> {

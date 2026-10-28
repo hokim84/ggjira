@@ -6,3 +6,6 @@ services:
     build:
       context: .
       target: test
+    # An init process as PID 1 reaps orphaned grandchildren, as a host does; without it the
+    # process-tree kill tests see killed processes linger as zombies.
+    init: true

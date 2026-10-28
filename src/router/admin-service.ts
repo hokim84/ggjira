@@ -1,8 +1,11 @@
 import { mkdirSync, statSync } from "node:fs";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
+import type { z } from "zod";
 import type { AdminAddWorkerRequest, ProviderUsage } from "../contracts/api.js";
+import type { FciConfigSchema } from "../contracts/fci.js";
 import type { JobState } from "../contracts/job-state.js";
+import type { AiRole } from "../contracts/prompts.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import { isWorkerDispatchable } from "./availability.js";
 import { type CheckItem, githubRepositoriesToCheck, runRouterCheck } from "./check.js";
@@ -71,6 +74,7 @@ import {
   listReviewTargets,
 } from "./db/review-targets.js";
 import { getWorker, listWorkers, revokeWorker, setWorkerEnabled } from "./db/workers.js";
+import { FciService } from "./fci-service.js";
 import type { PullRequestPollReport } from "./github.js";
 import {
   type IssueView,
@@ -78,6 +82,7 @@ import {
   type IssueViewErrorCode,
   readIssueView,
 } from "./issue-view.js";
+import { getPromptCatalog } from "./prompt-catalog.js";
 import { resolveRecoveryJob, retryJob, retryReportBatch } from "./recovery.js";
 import { JudgmentError, judgeReviewTarget } from "./review-judgment.js";
 import { type SchedulerReport, cancelStaleJob } from "./scheduler.js";
@@ -124,7 +129,6 @@ export interface AdminWorkerView {
   lastHeartbeatAt: string | null;
   /** Could be handed a job right now (session, fresh heartbeat, enabled, not revoked). */
   online: boolean;
-  reportedCapabilities: string[];
   reportedRepositoryIds: string[];
   /** repositoryId → local path on the worker machine (display only). */
   repositoryPaths: Record<string, string>;
@@ -136,6 +140,7 @@ export interface AdminWorkerView {
 }
 
 export interface AdminJobDetail {
+  fci: ReturnType<FciService["forJob"]>;
   job: JobRow;
   attempts: AttemptRow[];
   reportSteps: ReportStepRow[];
@@ -216,7 +221,7 @@ export interface BackupResult {
 }
 
 export interface AdminServiceDeps {
-  db: Database.Database;
+  db: RouterDatabase;
   jira: JiraGateway;
   config: RouterConfig;
   now?: () => string;
@@ -255,17 +260,7 @@ const MAX_PAGE_SIZE = 200;
 /** The workflow fields that decide which issues are approved work (see
  *  `assertApprovalRulesUnchangedUnderLiveJobs`). */
 function approvalRules(workspace: WorkspaceConfig) {
-  // ADR 0044: the plan-review status is where approvals come from, and a run's own moves to
-  // review/done are re-checked against it.
-  const { requestStatus, planReviewStatus, inProgressStatus, reviewStatus, doneStatus } =
-    workspace.workflow;
-  return {
-    requestStatus,
-    planReviewStatus,
-    inProgressStatus,
-    reviewStatus,
-    doneStatus: doneStatus ?? null,
-  };
+  return workspace.workflow;
 }
 
 function elapsedMs(since: string | null, now: string): number | null {
@@ -299,7 +294,7 @@ function backupFileName(now: string): string {
 }
 
 export class AdminService {
-  private readonly db: Database.Database;
+  private readonly db: RouterDatabase;
   private readonly now: () => string;
   /** The config currently applied (changes on every apply). */
   private config: RouterConfig;
@@ -338,7 +333,6 @@ export class AdminService {
         revokedAt: row?.revokedAt ?? null,
         lastHeartbeatAt: row?.lastHeartbeatAt ?? null,
         online: row ? isWorkerDispatchable(row, this.config, now) : false,
-        reportedCapabilities: row?.reportedCapabilities ?? [],
         reportedRepositoryIds: row?.reportedRepositoryIds ?? [],
         repositoryPaths: row?.reportedRepositoryPaths ?? {},
         activeAttempt: active
@@ -424,6 +418,7 @@ export class AdminService {
   showJob(jobId: string): AdminJobDetail {
     const job = this.requireJob(jobId);
     return {
+      fci: this.fci().forJob(jobId),
       job,
       attempts: listAttemptsForJob(this.db, jobId),
       reportSteps: listJobReportSteps(this.db, jobId),
@@ -534,7 +529,7 @@ export class AdminService {
       path.join(path.dirname(path.resolve(this.startedWith.db.path)), "backups");
     mkdirSync(dir, { recursive: true });
     const target = path.join(dir, backupFileName(now));
-    await this.db.backup(target);
+    await this.db.backupTo(target);
     appendAudit(this.db, {
       at: now,
       actor,
@@ -589,6 +584,55 @@ export class AdminService {
       github: this.githubInfo(),
       jev: this.secretInfo("jev"),
     };
+  }
+
+  prompts() {
+    return { ...getPromptCatalog(this.config.prompts), editable: Boolean(this.deps.configPath) };
+  }
+  fci() {
+    return new FciService(this.db, this.config, this.now);
+  }
+  async configureFci(repositoryId: string, fci: z.infer<typeof FciConfigSchema>, actor: string) {
+    const raw = readRawRouterConfig(this.requireConfigPath()) as RouterConfig;
+    if (!raw.repositories.some((r) => r.id === repositoryId))
+      throw new AdminError(404, "unknown_repository", "repository not configured");
+    const next = {
+      ...raw,
+      repositories: raw.repositories.map((r) => (r.id === repositoryId ? { ...r, fci } : r)),
+    };
+    await this.updateConfig(next, actor);
+    this.fci().sync();
+    appendAudit(this.db, {
+      at: this.now(),
+      actor,
+      action: "fci.configured",
+      subject: repositoryId,
+    });
+    return this.fci().view(repositoryId);
+  }
+
+  async updatePrompt(role: AiRole, additionalInstructions: string, actor: string) {
+    const configPath = this.requireConfigPath();
+    let raw: unknown;
+    try {
+      raw = readRawRouterConfig(configPath);
+    } catch (error) {
+      throw new AdminError(409, "config_unreadable", (error as Error).message);
+    }
+    const validation = validateRouterConfig(raw);
+    if (!validation.ok) {
+      throw new AdminError(400, "invalid_config", "config is invalid", validation.issues);
+    }
+    const next = {
+      ...(raw as Record<string, unknown>),
+      prompts: {
+        ...validation.config.prompts,
+        [role]: { additionalInstructions },
+      },
+    };
+    await this.updateConfig(next, actor);
+    appendAudit(this.db, { at: this.now(), actor, action: "prompt.updated", subject: role });
+    return this.prompts();
   }
 
   /** Validates, saves (keeping `.bak`) and applies to the running Router at once. */
@@ -653,7 +697,6 @@ export class AdminService {
         ...workers,
         {
           workerId: input.workerId,
-          allowedCapabilities: input.allowedCapabilities,
           allowedRepositoryIds: input.allowedRepositoryIds,
           ...(input.providerId ? { providerId: input.providerId } : {}),
         },
@@ -727,6 +770,7 @@ export class AdminService {
 
   /** Current review targets and where each stands; by default only those still waiting. */
   reviewQueue(filter: {
+    issueKey?: string;
     reviewClass?: string;
     states?: string[];
     assignee?: string;
@@ -748,6 +792,7 @@ export class AdminService {
     const browse = `${this.config.jira.baseUrl.replace(/\/+$/, "")}/browse/`;
     return {
       items: listReviewQueue(this.db, {
+        ...(filter.issueKey ? { issueKey: filter.issueKey.toUpperCase() } : {}),
         ...(filter.reviewClass
           ? { reviewClass: filter.reviewClass as "immediate" | "standard" }
           : {}),
@@ -791,7 +836,26 @@ export class AdminService {
   /** The issue's status and what keeps Router from starting it (read-only). */
   async issueView(issueKey: string): Promise<IssueView> {
     try {
-      return await readIssueView(this.issueViewDeps(), issueKey);
+      const view = await readIssueView(this.issueViewDeps(), issueKey);
+      const tasks = this.db
+        .prepare("SELECT id FROM fci_tasks WHERE issue_key=? ORDER BY created_at DESC")
+        .all(view.issueKey) as { id: string }[];
+      const last = this.db
+        .prepare(
+          "SELECT r.payload,r.received_at,j.kind FROM results r JOIN jobs j ON j.id=r.job_id WHERE r.applied=1 AND j.id=(SELECT id FROM jobs WHERE issue_key=? ORDER BY created_at DESC,rowid DESC LIMIT 1) ORDER BY r.received_at DESC,r.rowid DESC LIMIT 1",
+        )
+        .get(view.issueKey) as { payload: string; received_at: string; kind: string } | undefined;
+      const result = last ? JSON.parse(last.payload) : null;
+      const latestResult = last
+        ? {
+            summary:
+              typeof result.summary === "string" ? result.summary : "요약이 보고되지 않았습니다.",
+            kind: last.kind,
+            at: last.received_at,
+            pullRequest: result.pullRequest ?? null,
+          }
+        : null;
+      return { ...view, latestResult, fci: tasks.map((t) => this.fci().detail(t.id)) };
     } catch (error) {
       throw toAdminError(error);
     }
@@ -804,6 +868,31 @@ export class AdminService {
   /** Statuses and subtask issue types of a Jira project, for the web UI pickers (read-only). */
   async jiraProject(projectKey: string): Promise<ProjectWorkflowInfo> {
     return this.callJira(() => inspectProjectWorkflow(this.deps.jira, projectKey));
+  }
+  async ensureWorkflow(projectKey: string, actor = "admin") {
+    const workspace = this.deps.config.workspaces.find((ws) => ws.projectKeys.includes(projectKey));
+    if (!workspace)
+      throw new AdminError(400, "unknown_project", "설정에 등록된 프로젝트를 선택하세요.");
+    const ensure = this.deps.jira.ensureAiWorkflow?.bind(this.deps.jira);
+    if (!ensure)
+      throw new AdminError(
+        502,
+        "workflow_unavailable",
+        "Jira 상태 자동 추가를 지원하지 않는 연결입니다.",
+      );
+    const result = await this.callJira(() => ensure(projectKey, workspace.workflow));
+    appendAudit(this.deps.db, {
+      at: this.now(),
+      actor,
+      action: "jira.workflow.provisioned",
+      subject: projectKey,
+      detail: {
+        added: result.added,
+        workflowsUpdated: result.workflowsUpdated,
+        complete: result.complete,
+      },
+    });
+    return result;
   }
 
   /** Whether Router's own status moves exist in the project's workflow (read-only). */
@@ -887,6 +976,56 @@ export class AdminService {
    * reported and a count of what was not. `includeChildren` adds the issues whose original
    * requirement `issueKey` is (plan tasks, subtasks). Read-only; JSON is the export format.
    */
+  /** Local execution overview; no Jira lookup per dashboard row. */
+  tasks(offset = 0, limit = 30) {
+    const recent =
+      "FROM jobs j WHERE NOT EXISTS (SELECT 1 FROM jobs newer WHERE newer.issue_key=j.issue_key AND (newer.created_at>j.created_at OR (newer.created_at=j.created_at AND newer.rowid>j.rowid)))";
+    const rows = this.db
+      .prepare(`SELECT j.*, COALESCE((SELECT json_extract(i.snapshot,'$.issue.summary') FROM job_inputs i WHERE i.job_id=j.id),(SELECT json_extract(a.input_snapshot,'$.issue.summary') FROM approvals a WHERE a.issue_key=j.issue_key)) AS title,
+      (SELECT json_extract(i.snapshot,'$.planTask.parentKey') FROM job_inputs i WHERE i.job_id=j.id) AS parent_key,
+      (SELECT json_extract(r.payload,'$.summary') FROM results r WHERE r.job_id=j.id AND r.applied=1 ORDER BY r.received_at DESC,r.rowid DESC LIMIT 1) AS summary,
+      (SELECT json_extract(r.payload,'$.status') FROM results r WHERE r.job_id=j.id AND r.applied=1 ORDER BY r.received_at DESC,r.rowid DESC LIMIT 1) AS result_status
+      ${recent} ORDER BY CASE WHEN j.state IN ('succeeded','cancelled') THEN 1 ELSE 0 END,j.updated_at DESC,j.rowid DESC LIMIT ? OFFSET ?`)
+      .all(
+        Math.max(1, Math.min(100, Math.trunc(limit) || 30)),
+        Math.max(0, Math.trunc(offset) || 0),
+      ) as Array<{
+      issue_key: string;
+      title: string | null;
+      kind: string;
+      state: string;
+      updated_at: string;
+      summary: string | null;
+      parent_key: string | null;
+      result_status: string | null;
+      id: string;
+    }>;
+    const browse = `${this.config.jira.baseUrl.replace(/\/$/, "")}/browse/`;
+    return {
+      total: (this.db.prepare(`SELECT COUNT(*) n ${recent}`).get() as { n: number }).n,
+      items: rows.map((row) => ({
+        issueKey: row.issue_key,
+        title: row.title,
+        kind: row.kind,
+        state: row.state,
+        updatedAt: row.updated_at,
+        summary: row.summary,
+        parentKey: row.parent_key,
+        resultStatus: row.result_status,
+        issueUrl: `${browse}${encodeURIComponent(row.issue_key)}`,
+        pullRequest:
+          this.db
+            .prepare(
+              "SELECT url,state,number FROM pull_requests WHERE job_id=? ORDER BY updated_at DESC LIMIT 1",
+            )
+            .get(row.id) ?? null,
+        attention: listAttentionItems(this.db, { issueKey: row.issue_key, status: "open" }).map(
+          (a) => ({ kind: a.kind, reason: a.reason }),
+        ),
+      })),
+    };
+  }
+
   executions(filter: { issueKey?: string; includeChildren?: boolean }): {
     records: ExecutionRecordRow[];
     totals: ExecutionTotals;

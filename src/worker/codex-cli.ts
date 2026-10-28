@@ -94,6 +94,10 @@ export class CodexCliProvider implements WorkerProvider {
       "--skip-git-repo-check",
       "-C",
       request.cwd,
+      // No project root: AGENTS.md is read from request.cwd only, never from a folder above the
+      // repository such as a project the worker home is in (ADR 0065).
+      "-c",
+      "project_root_markers=[]",
       "--sandbox",
       sandbox,
       ...(this.model ? ["-m", this.model] : []),

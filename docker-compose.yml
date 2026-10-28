@@ -9,10 +9,12 @@
 #   3. export GGJIRA_DOMAIN=router.example.com  (DNS must point here; Caddy obtains the certificate)
 services:
   router:
+    # The released image (ADR 0064); GGJIRA_VERSION=0.2.0 pins one. When it cannot be pulled, or
+    # with `up --build`, Compose builds this checkout instead.
+    image: ghcr.io/hokim84/ggjira-router:${GGJIRA_VERSION:-latest}
     build:
       context: .
       target: runtime
-    image: ggjira-router:local
     restart: unless-stopped
     environment:
       # Lets `docker compose exec router node dist/cli.js router status` find the admin address

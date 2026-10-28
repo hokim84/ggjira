@@ -2,23 +2,23 @@ import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../src/router/db/connection.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { FakeJiraGateway } from "../src/jira/fake.js";
 import { AdminService } from "../src/router/admin-service.js";
 import type { RouterConfig } from "../src/router/config.js";
+import { RouterDaemon, SYNC_FAILURE_BACKOFF_MS } from "../src/router/daemon.js";
 import { openRouterDb } from "../src/router/db/connection.js";
 import { listUnprocessedEvents, recordEvent } from "../src/router/db/events.js";
 import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { listJobReportSteps } from "../src/router/db/report-steps.js";
-import { RouterDaemon, SYNC_FAILURE_BACKOFF_MS } from "../src/router/daemon.js";
 import {
-  buildRouterConfig,
   IN_PROGRESS_STATUS,
-  issueDescription,
   ManualClock,
   REQUEST_STATUS,
+  buildRouterConfig,
+  issueDescription,
   workerPolicy,
 } from "./helpers/router-fixtures.js";
 
@@ -31,7 +31,7 @@ function sign(body: string): string {
 
 describe("RouterDaemon", () => {
   let dir: string;
-  let db: Database.Database;
+  let db: RouterDatabase;
   let jira: FakeJiraGateway;
   let clock: ManualClock;
   let config: RouterConfig;
@@ -62,6 +62,7 @@ describe("RouterDaemon", () => {
       },
       [
         { id: "start", name: "Start", toStatusName: IN_PROGRESS_STATUS },
+        { id: "planning", name: "Planning", toStatusName: "AI 계획중" },
         { id: "revoke", name: "Revoke", toStatusName: "To Do" },
       ],
     );
@@ -229,7 +230,7 @@ describe("RouterDaemon", () => {
     daemon.workerService.heartbeat(worker, {
       sessionId,
       workerId: "worker-1",
-      availability: { capabilities: ["programming"], repositoryIds: ["repo1"], busy: false },
+      availability: { repositoryIds: ["repo1"], busy: false },
     });
     const envelope = await daemon.workerService.nextJob(worker, {
       sessionId,
@@ -245,9 +246,9 @@ describe("RouterDaemon", () => {
 
     await daemon.reportTick();
     expect(jira.comments.map((comment) => comment.body)).toEqual([
-      expect.stringContaining("GGJIRA가 이 요청의 계획을 시작했습니다"),
+      expect.stringContaining("GGJIRA가 계획 실행을 시작"),
     ]);
-    expect((await jira.getIssue("KAN-1")).statusName).toBe(REQUEST_STATUS);
+    expect((await jira.getIssue("KAN-1")).statusName).toBe("AI 계획중");
     expect(listJobReportSteps(db, envelope.jobId).every((s) => s.status === "applied")).toBe(true);
 
     // The Router's own report is not a withdrawal of approval.
@@ -301,7 +302,10 @@ describe("backup and restore", () => {
           assigneeAccountId: "user-1",
           description: issueDescription(),
         },
-        [{ id: "start", name: "Start", toStatusName: IN_PROGRESS_STATUS }],
+        [
+          { id: "start", name: "Start", toStatusName: IN_PROGRESS_STATUS },
+          { id: "planning", name: "Planning", toStatusName: "AI 계획중" },
+        ],
       );
     }
     const original = openRouterDb(config.db.path);
@@ -334,7 +338,7 @@ describe("backup and restore", () => {
     daemon.workerService.heartbeat(worker, {
       sessionId,
       workerId: "worker-1",
-      availability: { capabilities: ["programming"], repositoryIds: ["repo1"], busy: false },
+      availability: { repositoryIds: ["repo1"], busy: false },
     });
     const envelope = await daemon.workerService.nextJob(worker, {
       sessionId,
@@ -403,7 +407,9 @@ describe("backup and restore", () => {
       expect(getOpenJobForIssue(restored, "KAN-2")?.state).toBe("queued");
       // The unreported start step is still journaled and gets applied.
       await revived.reportTick();
-      expect(jira.comments.map((comment) => comment.key)).toEqual(["KAN-1"]);
+      // ...and the reconcile pass tells KAN-1's assignee its run waits for a "재시도" (ADR 0062).
+      expect(jira.comments.map((comment) => comment.key)).toEqual(["KAN-1", "KAN-1"]);
+      expect(jira.comments.at(-1)?.body).toContain('"재시도"');
       expect(getJob(restored, envelope.jobId)?.state).toBe("recovery_required");
     } finally {
       await revived.stop();

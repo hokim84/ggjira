@@ -2,7 +2,7 @@
 
 ## Context
 
-`writing-block.md`의 계획(M4)은 "Jira API 일시 오류 재시도(지수 백오프, idempotent 호출만)"를
+`docs/history/writing-block.md`의 계획(M4)은 "Jira API 일시 오류 재시도(지수 백오프, idempotent 호출만)"를
 요구한다. GGJIRA가 쓰는 Jira 호출은 두 종류로 나뉜다.
 
 - 멱등: `searchIssues`(검색), `getIssue`(조회), `getTransitions`(조회) — 몇 번을 다시 불러도

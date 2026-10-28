@@ -9,7 +9,7 @@ import type { ReviewAssessment, ReviewReason } from "./review-gate.js";
  * src/router/failure-codes.ts.
  *
  * Lines other code reads back stay the same in every language: the decision request's
- * `planVersion:`/`decisionId:` lines, the reply format `Decision: <id>`, and the signature lines
+ * `planVersion:`/`decisionId:`/`decisionOptions:` lines and the signature lines
  * (`ggjira job:`, `attempt:`, `approval:`).
  */
 
@@ -39,6 +39,8 @@ export interface CommentText {
     keptChanges: string;
     details: (logPath: string) => string;
     lostContact: string;
+    /** ADR 0062: posted once when a run is left `recovery_required`. */
+    uncertainRun: string;
     adminStopped: (admin: string) => string;
     nothingApplied: string;
   };
@@ -64,6 +66,12 @@ export interface CommentText {
     reason: (note: string) => string;
     holdNothing: string;
     reworkNext: (hint: string) => string;
+    /** ADR 0061, 0066: a confirm of a child completed with unverified checks. */
+    childConfirmed: (subject: string, completeStatus: string) => string;
+  };
+  /** ADR 0066: a child completed with acceptance criteria only a person can check. */
+  humanCheck: {
+    waiting: (checks: string[], completeStatus: string, inProgressStatus: string) => string;
   };
   result: {
     completed: string;
@@ -81,6 +89,7 @@ export interface CommentText {
     agentRisk: (area: string, description: string) => string;
     acceptanceChecks: string;
     verificationStatus: (status: string) => string;
+    verificationMethod: (method: string) => string;
     summary: string;
     noSummary: string;
     changes: string;
@@ -93,7 +102,7 @@ export interface CommentText {
     summary: string;
     createdSubtasks: string;
     nothingRunsYet: (hasTasks: boolean) => string;
-    toApprove: (planReviewStatus: string, inProgressStatus: string) => string;
+    toApprove: (requestStatus: string, inProgressStatus: string) => string;
     toChange: (requestStatus: string) => string;
     approved: (planVersion: string, inProgressStatus: string) => string;
     tasksRun: (count: number, inProgressStatus: string, keys: string) => string;
@@ -122,12 +131,14 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       keptChanges: "커밋하지 않은 변경은 워커에 보관했습니다(자세한 내용 참고).",
       details: (logPath) => `자세한 내용: Router 머신의 ${logPath}`,
       lostContact: "AI 실행이 GGJIRA Router와 연결이 끊겼습니다.",
+      uncertainRun:
+        '실행이 멈췄는지 GGJIRA가 확인할 수 없어 자동으로 다시 실행하지 않습니다(워커 종료·네트워크 단절·워커 해지). 다음: 워커가 멈춘 것을 확인한 뒤 담당자가 "재시도" 댓글을 남기면 새로 실행합니다. 이전 실행이 아직 돌고 있었다면 같은 작업이 한 번 더 실행되지만, 늦게 도착한 이전 결과는 반영하지 않습니다.',
       adminStopped: (admin) => `관리자(${admin})가 실행이 멈춘 것을 확인했습니다.`,
       nothingApplied:
         "다음: 이 실행의 결과는 이슈에 반영되지 않았습니다. 다시 실행하려면 이슈를 요청 상태로 옮기세요.",
     },
     planningStarted: (requestStatus) =>
-      `GGJIRA가 이 요청의 계획을 시작했습니다. 계획을 검토할 수 있을 때까지 이슈는 "${requestStatus}" 상태에 있습니다.`,
+      `GGJIRA가 계획 실행을 시작하여 "${requestStatus}"으로 이동합니다. 질문에 답하거나 게시된 계획의 작업을 개별 승인하세요.`,
     stopped: "AI 실행이 중지됐습니다.",
     unassigned: {
       title: "GGJIRA가 이 요청을 시작하지 않았습니다: 이슈에 담당자가 없습니다.",
@@ -172,6 +183,16 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       reason: (note) => `이유: ${note}`,
       holdNothing: "아무것도 승인하거나 옮기지 않았습니다. 결과는 계속 검토를 기다립니다.",
       reworkNext: (hint) => `GGJIRA가 스스로 다시 실행하지 않습니다. 다음: ${hint}.`,
+      childConfirmed: (subject, completeStatus) =>
+        `사람 확인 완료: ${subject}. AI가 확인하지 못한 항목을 사람이 확인했습니다. 이슈는 "${completeStatus}"에 둡니다.`,
+    },
+    humanCheck: {
+      waiting: (checks, completeStatus, inProgressStatus) =>
+        [
+          `사람 확인 필요: 구현 결과 커밋을 원격에 보존하고 "${completeStatus}"(으)로 옮겼지만, AI가 다음 완료 조건을 확인하지 못했습니다.`,
+          ...checks.map((check) => `- ${check}`),
+          `다음: 부모 PR을 병합하기 전에 직접 확인하고 Router 검토 화면에서 확인을 기록하세요. 문제가 있으면 설명을 고친 뒤 이슈를 "${inProgressStatus}"(으)로 옮겨 다시 요청하세요.`,
+        ].join("\n"),
     },
     result: {
       completed: "구현을 완료했습니다.",
@@ -194,12 +215,14 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
             return `검토할 커밋이 없습니다(${review.commit.location ?? "위치 모름"}). 결과 자체로 판단하세요`;
           case "commit_unknown":
             return "워커가 이 결과의 커밋을 보고하지 않았습니다(이전 버전 워커)";
+          case "no_trusted_validation":
+            return "워커 검증 명령이 실행되지 않았습니다. AI 자체 보고만 근거입니다";
         }
       },
       ordinaryQueue: "일반 검토 대기열에 올렸습니다.",
       nextWithPullRequest: (url, doneStatus) =>
         // The URL stands apart: a particle written onto it would become part of Jira's link.
-        `다음: PR을 검토하고 머지하세요 — ${url}${doneStatus ? ` (머지하면 Router가 이슈를 "${doneStatus}" 상태로 옮깁니다)` : ""}`,
+        `다음: PR을 검토하고 머지하세요 — ${url}${doneStatus ? ` (병합 후 통합 검증이 통과하면 "${doneStatus}"으로 이동합니다. FCI는 활성화된 경우 병합 후 별도로 분석합니다)` : ""}`,
       nextWithoutPullRequest: (doneStatus) =>
         `다음: 아래 결과를 검토하세요${doneStatus ? `. 이슈는 직접 "${doneStatus}" 상태로 옮기세요` : ""}. PR은 없습니다.`,
       reviewedCommit: (head, base) => `검토 대상 커밋: ${head}(base ${base})`,
@@ -214,6 +237,8 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       acceptanceChecks: "완료 조건 확인:",
       verificationStatus: (status) =>
         ({ pass: "통과", fail: "실패", not_verified: "미검증" })[status] ?? status,
+      verificationMethod: (method) =>
+        ({ executed: "실행", inspected: "코드 확인" })[method] ?? method,
       summary: "요약:",
       noSummary: "(요약 없음)",
       changes: "변경:",
@@ -227,10 +252,10 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       createdSubtasks: "만든 하위 작업:",
       nothingRunsYet: (hasTasks) =>
         `아직 아무것도 실행하지 않습니다${hasTasks ? ". 하위 작업도 승인을 기다립니다" : ""}.`,
-      toApprove: (planReviewStatus, inProgressStatus) =>
-        `이 계획을 승인하려면: 이슈를 "${planReviewStatus}"에서 "${inProgressStatus}" 상태로 옮기세요.`,
+      toApprove: (requestStatus, inProgressStatus) =>
+        `이 계획을 승인하려면: 이슈를 "${requestStatus}"에서 "${inProgressStatus}" 상태로 옮기세요.`,
       toChange: (requestStatus) =>
-        `바꾸려면: 요청을 고친 뒤 이슈를 "${requestStatus}" 상태로 옮겨 다시 계획하세요.`,
+        `바꾸려면: "${requestStatus}" 상태에서 제목이나 설명을 수정하세요. 자동으로 다시 계획합니다.`,
       approved: (planVersion, inProgressStatus) =>
         `계획 ${planVersion} 승인: "${inProgressStatus}" 상태로의 이동을 승인으로 기록했습니다.`,
       tasksRun: (count, inProgressStatus, keys) =>
@@ -269,7 +294,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       recommendation: "추천:",
       impact: "영향:",
       respond: (replyStatus) =>
-        `답하려면: 이 이슈에 "Decision: <선택지 id>" 댓글을 남기고 "${replyStatus}" 상태로 다시 옮기세요.`,
+        `답하려면: 담당자가 이 이슈에 선택지 번호만 댓글로 남기세요(예: 2). "${replyStatus}" 상태에서 자동으로 다시 계획합니다.`,
     },
     implementationDecision: {
       stopped: "GGJIRA가 이 구현을 커밋·push 전에 멈췄습니다: 사람의 결정이 필요합니다.",
@@ -298,12 +323,14 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       keptChanges: "Uncommitted changes were kept on the worker (see the details).",
       details: (logPath) => `Details: ${logPath} on the Router machine.`,
       lostContact: "AI execution lost contact with GGJIRA Router.",
+      uncertainRun:
+        'GGJIRA cannot tell whether the run stopped (worker stopped, network lost or worker revoked), so it does not rerun it by itself. Next: once the worker is known to be stopped, the assignee comments "재시도" to start a new run. If the old run was still going, the work runs once more, but its late result is not applied.',
       adminStopped: (admin) => `An admin (${admin}) confirmed the run is stopped.`,
       nothingApplied:
         "Next: nothing from this run was applied; to run it again, move the issue back to its request status.",
     },
     planningStarted: (requestStatus) =>
-      `GGJIRA started planning this request. The issue stays in "${requestStatus}" until the plan is ready for review.`,
+      `GGJIRA started planning and moves this issue to "${requestStatus}". Answer questions or approve individual tasks when ready.`,
     stopped: "AI execution stopped.",
     unassigned: {
       title: "GGJIRA did not start this request: the issue has no assignee.",
@@ -349,6 +376,16 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       reason: (note) => `Reason: ${note}`,
       holdNothing: "Nothing was approved or moved. The result stays waiting for review.",
       reworkNext: (hint) => `GGJIRA does not rerun it by itself. Next: ${hint}.`,
+      childConfirmed: (subject, completeStatus) =>
+        `Confirmed by a person: ${subject}. A person checked what the agent could not. The issue stays in "${completeStatus}".`,
+    },
+    humanCheck: {
+      waiting: (checks, completeStatus, inProgressStatus) =>
+        [
+          `Needs a person: the result commit is kept on the remote and the issue moved to "${completeStatus}", but the agent could not verify these acceptance criteria.`,
+          ...checks.map((check) => `- ${check}`),
+          `Next: check them yourself before merging the parent PR and record the confirmation on Router's review screen. If something is wrong, edit the description and move the issue to "${inProgressStatus}" to request it again.`,
+        ].join("\n"),
     },
     result: {
       completed: "Implementation completed.",
@@ -356,7 +393,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       reason: (reason) => reason.detail,
       ordinaryQueue: "Ready for the ordinary review queue.",
       nextWithPullRequest: (url, doneStatus) =>
-        `Next: review and merge ${url}${doneStatus ? `; Router then moves the issue to "${doneStatus}"` : ""}.`,
+        `Next: review and merge ${url}${doneStatus ? `; successful integration validation then moves the issue to "${doneStatus}"` : ""}. Optional FCI analysis runs only after merge. Done remains manual.`,
       nextWithoutPullRequest: (doneStatus) =>
         `Next: review the result below${doneStatus ? ` and move the issue to "${doneStatus}" yourself` : ""}; there is no pull request.`,
       reviewedCommit: (head, base) => `Reviewed commit: ${head} (base ${base})`,
@@ -371,6 +408,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       agentRisk: (area, description) => `- agent: ${area} — ${description}`,
       acceptanceChecks: "Acceptance checks:",
       verificationStatus: (status) => status,
+      verificationMethod: (method) => method,
       summary: "Summary:",
       noSummary: "(no summary)",
       changes: "Changes:",
@@ -384,10 +422,10 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       createdSubtasks: "Created subtasks:",
       nothingRunsYet: (hasTasks) =>
         `Nothing runs yet${hasTasks ? "; the subtasks wait for the approval too" : ""}.`,
-      toApprove: (planReviewStatus, inProgressStatus) =>
-        `To approve this plan: move the issue from "${planReviewStatus}" to "${inProgressStatus}".`,
+      toApprove: (requestStatus, inProgressStatus) =>
+        `To approve this plan: move the issue from "${requestStatus}" to "${inProgressStatus}".`,
       toChange: (requestStatus) =>
-        `To change it: edit the request and move the issue to "${requestStatus}" to plan it again.`,
+        `To change it: edit the title or description in "${requestStatus}"; planning restarts automatically.`,
       approved: (planVersion, inProgressStatus) =>
         `Plan ${planVersion} approved: GGJIRA recorded the move to "${inProgressStatus}" as its approval.`,
       tasksRun: (count, inProgressStatus, keys) =>
@@ -426,7 +464,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
       recommendation: "Recommendation:",
       impact: "Impact:",
       respond: (replyStatus) =>
-        `To respond: comment "Decision: <option id>" on this issue and move it back to "${replyStatus}".`,
+        `To respond: the assignee comments only the option number (for example, 2). Planning resumes automatically in "${replyStatus}".`,
     },
     implementationDecision: {
       stopped:

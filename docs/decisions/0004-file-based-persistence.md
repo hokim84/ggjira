@@ -3,7 +3,7 @@
 ## Context
 
 MVP는 동시 실행 1개, Job 개수도 적다. SQLite는 Node 20에서 native 모듈 빌드가 필요해
-설치 복잡도가 늘어난다. `writing-block.md` 원칙 12는 "설계 결정과 프로젝트 상태는 LLM의
+설치 복잡도가 늘어난다. `docs/history/writing-block.md` 원칙 12는 "설계 결정과 프로젝트 상태는 LLM의
 대화 기억에 의존하지 않고 저장소/Jira에 남겨야 한다"고 요구한다.
 
 ## Decision

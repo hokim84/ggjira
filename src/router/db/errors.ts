@@ -1,9 +1,12 @@
-/** True for a SQLite `UNIQUE` constraint violation from better-sqlite3 (a partial
- *  unique index in `schema.ts` rejecting an insert), false for anything else. */
+/** SQLite's extended result code for a `UNIQUE` constraint violation. */
+const SQLITE_CONSTRAINT_UNIQUE = 2067;
+
+/** True for a SQLite `UNIQUE` constraint violation from node:sqlite (a partial unique index in
+ *  `schema.ts` rejecting an insert), false for anything else. */
 export function isUniqueConstraintViolation(error: unknown): boolean {
   return (
     error instanceof Error &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE"
+    "errcode" in error &&
+    (error as { errcode?: unknown }).errcode === SQLITE_CONSTRAINT_UNIQUE
   );
 }

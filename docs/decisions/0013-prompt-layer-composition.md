@@ -47,4 +47,4 @@ CLAUDE.md의 계층 규칙(`src/pm/`은 `src/implement/`를 모르고, 반대로
   Human Instructions를 고치면 다음 실행부터 즉시 반영된다 — 재시작이 필요 없다.
 - 프롬프트 합성 로직 자체에는 자동 테스트(`test/agent-prompt.test.ts`)가 있지만, 실제
   Claude Code/Codex가 합성된 프롬프트를 어떻게 해석하는지는 수동 검증 대상이다
-  (`docs/phase3-verification.md`).
+  (`docs/history/phase3-verification.md`).

@@ -9,7 +9,6 @@ export interface IssueRequirements {
   /** Jira issue keys (or text naming them) that must be done first. */
   dependencies: string[];
   constraints: string[];
-  requiredCapabilities: string[];
   suggestedExecutionStrategy: string | null;
   /** The scope contract (ADR 0034). */
   verification: string[];

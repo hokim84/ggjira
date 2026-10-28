@@ -6,27 +6,28 @@ import { PLAN_PROPERTY_KEY, PLAN_TASK_PROPERTY_KEY } from "../src/pm/metadata.js
 import { listAudit } from "../src/router/db/audit.js";
 import { getJob, getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { listBlockedReportSteps, listJobReportSteps } from "../src/router/db/report-steps.js";
+import { RuleDecisionProvider } from "../src/router/decision.js";
 import {
   RecoveryError,
   resolveRecoveryJob,
   retryJob,
   retryReportBatch,
 } from "../src/router/recovery.js";
-import { RuleDecisionProvider } from "../src/router/decision.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import { verifyActiveJobs } from "../src/router/scheduler.js";
 import { reRequestHint } from "../src/router/workflow-mode.js";
 import {
   IN_PROGRESS_STATUS,
-  issueDescription,
   PLAN_REVIEW_STATUS,
   REQUEST_STATUS,
-  REVIEW_STATUS,
   TODO_STATUS,
-  testWorkspace,
   WORKFLOW_TRANSITIONS,
+  issueDescription,
+  testWorkspace,
 } from "./helpers/router-fixtures.js";
 import { type RegisteredWorker, RouterHarness } from "./helpers/router-harness.js";
+
+const REVIEW_STATUS = testWorkspace.workflow.implementationCompleteStatus;
 
 function lease(envelope: JobEnvelope) {
   return { attemptId: envelope.attemptId, leaseToken: envelope.leaseToken };
@@ -40,6 +41,20 @@ function result(envelope: JobEnvelope, overrides: Record<string, unknown> = {}) 
     resultId: `result-${envelope.attemptId}`,
     status: "succeeded",
     summary: "done",
+    scopeCheck: {
+      checked: false,
+      reason: "No changes required",
+      changedPaths: [],
+      outsideAllowed: [],
+    },
+    implementation: {
+      outcome: "completed",
+      summary: "Verified no change required",
+      noChangeReason: "Existing implementation already meets the request",
+      verification: [
+        { acceptance: "Works", status: "pass", evidence: "Verified the requested outcome" },
+      ],
+    },
     ...overrides,
   };
 }
@@ -47,6 +62,8 @@ function result(envelope: JobEnvelope, overrides: Record<string, unknown> = {}) 
 const twoTaskPlan = {
   needsDecision: false,
   summary: "Split into API and UI",
+  acceptanceCriteria: ["API and UI work together"],
+  verification: ["Run integration tests"],
   tasks: [
     {
       taskId: "api",
@@ -54,7 +71,6 @@ const twoTaskPlan = {
       description: "Endpoints",
       acceptance: ["returns 200"],
       verification: ["npm run test -- api"],
-      requiredCapabilities: ["programming"],
     },
     {
       taskId: "ui",
@@ -63,7 +79,6 @@ const twoTaskPlan = {
       acceptance: ["shows the list"],
       verification: ["npm run test -- ui"],
       dependencies: ["api"],
-      requiredCapabilities: ["programming"],
     },
   ],
   keepTaskKeys: [],
@@ -108,6 +123,7 @@ describe("Router Jira reporting journal", () => {
   async function reserve(requestId = "req-1"): Promise<JobEnvelope> {
     const response = await router.next(worker, requestId);
     expect(response.statusCode).toBe(200);
+
     return response.json() as JobEnvelope;
   }
 
@@ -191,7 +207,10 @@ describe("Router Jira reporting journal", () => {
     const envelope = await startPlanning("KAN-1");
     await router.jobCall(worker, envelope.jobId, "start", lease(envelope));
     const steps = listJobReportSteps(router.db, envelope.jobId);
-    expect(steps.map((step) => step.batchId)).toEqual([`start:${envelope.attemptId}`]);
+    expect(steps.map((step) => step.kind)).toEqual(["transition", "comment"]);
+    expect(new Set(steps.map((step) => step.batchId))).toEqual(
+      new Set([`start:${envelope.attemptId}`]),
+    );
   });
 
   it("keeps a failed issue in progress with a failure comment and label (ADR 0021)", async () => {
@@ -212,6 +231,56 @@ describe("Router Jira reporting journal", () => {
     expect(log).toContain("Failure Reason:\ntests red");
     expect(log).toContain("Summary:\nbroke");
     expect(log).toContain(`ggjira job: ${envelope.jobId}`);
+  });
+
+  it("logs the agent's checks and the worker's validation output, not in the comment", async () => {
+    const envelope = await startJob("KAN-1");
+    await process();
+    await submit(envelope, {
+      status: "failed",
+      summary: "broke",
+      failureReason: 'Validation command failed: "npm test" exited 1: 2 failed',
+      validation: ['"npm test" exited 1: 2 failed'],
+    });
+    await process();
+
+    const comment = commentsOn("KAN-1")[0] ?? "";
+    expect(comment).toContain("[GGJ-301]");
+    expect(comment).not.toContain("Acceptance Checks:");
+    const log = readFileSync(failureLogOf(comment), "utf-8");
+    expect(log).toContain("Acceptance Checks:\n- pass: Works — Verified the requested outcome");
+    expect(log).toContain('Validation:\n- "npm test" exited 1: 2 failed');
+  });
+
+  const methodChecks = {
+    outcome: "completed",
+    summary: "Verified no change required",
+    noChangeReason: "Existing implementation already meets the request",
+    verification: [
+      { acceptance: "Works", status: "pass", method: "executed", evidence: "npm test: 12 passed" },
+      { acceptance: "Typed", status: "pass", method: "inspected", evidence: "src/a.ts:3" },
+    ],
+  };
+
+  it("says how each check was made (ADR 0059)", async () => {
+    const envelope = await startJob("KAN-1");
+    await process();
+    await submit(envelope, { implementation: methodChecks, validation: ['"npm test" passed'] });
+    await process();
+    const comment = commentsOn("KAN-1")[0] ?? "";
+    expect(comment).toContain("- 통과(실행): Works — npm test: 12 passed");
+    expect(comment).toContain("- 통과(코드 확인): Typed — src/a.ts:3");
+    expect(comment).not.toContain("워커 검증 명령이 실행되지 않았습니다");
+  });
+
+  it("names a result that only the agent's own report backs (ADR 0059)", async () => {
+    const envelope = await startJob("KAN-1");
+    await process();
+    await submit(envelope, { implementation: methodChecks });
+    await process();
+    expect(commentsOn("KAN-1")[0]).toContain(
+      "- 워커 검증 명령이 실행되지 않았습니다. AI 자체 보고만 근거입니다",
+    );
   });
 
   it("never overrides a status a human set while the job ran", async () => {
@@ -306,7 +375,7 @@ describe("Router Jira reporting journal", () => {
       });
       const envelope = await startPlanning("KAN-9");
       await process();
-      expect(await status("KAN-9")).toBe(REQUEST_STATUS);
+      expect(await status("KAN-9")).toBe("AI 계획중");
 
       await submit(envelope, { status: "planned", summary: "Split", plan: twoTaskPlan });
       const pass = await process();
@@ -336,9 +405,9 @@ describe("Router Jira reporting journal", () => {
       expect(uiDescription.slice(uiDescription.indexOf("Dependencies"))).toContain(
         apiKey as string,
       );
-      expect((await router.jira.getIssue("KAN-50")).labels).toContain("ggjira-superseded");
+      expect((await router.jira.getIssue("KAN-50")).labels).not.toContain("ggjira-superseded");
       expect((await router.jira.getIssue("KAN-9")).description).toContain("GGJIRA:PLAN:START");
-      expect(await status("KAN-9")).toBe(PLAN_REVIEW_STATUS);
+      expect(await status("KAN-9")).toBe("AI 계획중");
       expect(commentsOn("KAN-9").at(-1)).toContain(`- ${apiKey}`);
 
       // Replaying the whole journal changes nothing.
@@ -359,7 +428,8 @@ describe("Router Jira reporting journal", () => {
       expect(router.jira.createdIssues[0]?.summary).toBe("Build the API");
 
       // A human approves the plan; Router moves its tasks to in progress and runs the first.
-      await router.jira.transitionIssueToStatus("KAN-9", IN_PROGRESS_STATUS);
+      await router.reconcile();
+      await router.jira.transitionIssueToStatus(apiKey, IN_PROGRESS_STATUS);
       await router.reconcile();
       await process();
       await router.reconcile();
@@ -393,7 +463,7 @@ describe("Router Jira reporting journal", () => {
       const pass = await process(); // cannot find it by marker → recovery_required
       expect(pass.blocked).toEqual([expect.objectContaining({ status: "recovery_required" })]);
       expect(router.jira.createdIssues).toHaveLength(0);
-      expect(await status("KAN-9")).toBe(REQUEST_STATUS);
+      expect(await status("KAN-9")).toBe("AI 계획중");
 
       retryReportBatch(router.db, {
         batchId: `result-${envelope.attemptId}`,
@@ -402,7 +472,7 @@ describe("Router Jira reporting journal", () => {
       });
       await process();
       expect(router.jira.createdIssues).toHaveLength(2);
-      expect(await status("KAN-9")).toBe(PLAN_REVIEW_STATUS);
+      expect(await status("KAN-9")).toBe("AI 계획중");
     });
 
     it("posts a decision request and parks the issue with the plans waiting for review", async () => {
@@ -430,8 +500,11 @@ describe("Router Jira reporting journal", () => {
         body.includes("[GGJIRA:DECISION-REQUEST]"),
       );
       expect(comment).toContain(`planVersion: plan-${envelope.attemptId}`);
-      expect(comment).toContain(`"${REQUEST_STATUS}" 상태로 다시 옮기세요`);
-      expect(await status("KAN-9")).toBe(PLAN_REVIEW_STATUS);
+      expect(comment).toContain("1. SQL");
+      expect(comment).toContain("2. NoSQL");
+      expect(comment).toContain("선택지 번호만 댓글로 남기세요(예: 2)");
+      expect(comment).toContain(`"${REQUEST_STATUS}" 상태에서 자동으로 다시 계획합니다`);
+      expect(await status("KAN-9")).toBe("AI 계획중");
       expect(router.jira.createdIssues).toEqual([]);
     });
 
@@ -448,7 +521,7 @@ describe("Router Jira reporting journal", () => {
       expect(router.jira.createdIssues).toEqual([]);
       expect(commentsOn("KAN-9").at(-1)).toContain("dependency cycle");
       expect((await router.jira.getIssue("KAN-9")).labels).toContain("ggjira-failed");
-      expect(await status("KAN-9")).toBe(REQUEST_STATUS);
+      expect(await status("KAN-9")).toBe("AI 계획중");
     });
 
     it("refuses a plan whose executable unit has no definition of done (ADR 0047)", async () => {
@@ -467,7 +540,7 @@ describe("Router Jira reporting journal", () => {
       expect(commentsOn("KAN-9").at(-1)).toContain(
         "task ui has no acceptance criteria and verification",
       );
-      expect(await status("KAN-9")).toBe(REQUEST_STATUS);
+      expect(await status("KAN-9")).toBe("AI 계획중");
     });
   });
 

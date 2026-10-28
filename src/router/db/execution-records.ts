@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 import type { ExecutionRecord } from "../../contracts/execution.js";
 
 /**
@@ -94,7 +94,7 @@ function toRow(row: Record<string, unknown>): ExecutionRecordRow {
 
 /** Stores the record for one result, once: a resent result (same id) inserts nothing. */
 export function recordExecution(
-  db: Database.Database,
+  db: RouterDatabase,
   input: {
     resultId: string;
     jobId: string;
@@ -170,7 +170,7 @@ export function recordExecution(
 /** Records for an issue and, with `includeChildren`, for every issue whose original requirement
  *  it is (plan tasks and subtasks), oldest first. */
 export function listExecutionRecords(
-  db: Database.Database,
+  db: RouterDatabase,
   filter: { issueKey?: string; includeChildren?: boolean } = {},
 ): ExecutionRecordRow[] {
   if (!filter.issueKey) {

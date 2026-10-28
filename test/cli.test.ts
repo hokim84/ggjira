@@ -2,16 +2,16 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { main } from "../src/cli-main.js";
 import type { CliIo } from "../src/cli-io.js";
+import { main } from "../src/cli-main.js";
+import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { decideServeMode } from "../src/router/cli.js";
-import { RouterConfigError, RouterConfigSchema } from "../src/router/config.js";
 import { routerConfigTemplate } from "../src/router/config-store.js";
+import { RouterConfigError, RouterConfigSchema } from "../src/router/config.js";
 import type { WorkspaceConfig } from "../src/router/config.js";
 import { getOpenJobForIssue } from "../src/router/db/jobs.js";
 import { recordReviewTarget } from "../src/router/db/review-targets.js";
 import { assessResult } from "../src/router/review-gate.js";
-import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { loadWorkerConfig } from "../src/worker-runtime/config.js";
 import { loadWorkerCredential } from "../src/worker-runtime/credential.js";
 import { ADMIN_TOKEN, RouterHarness } from "./helpers/router-harness.js";
@@ -54,10 +54,13 @@ describe("ggjira CLI", () => {
     expect(await main(["--help"], help)).toBe(0);
     expect(help.stdout.join("\n")).toContain("ggjira router <command>");
     expect(help.stdout.join("\n")).toContain("ggjira worker <command>");
+    expect(help.stdout.join("\n")).toContain("%LOCALAPPDATA%\\ggjira\\worker (Windows)");
 
     const version = captureIo();
     expect(await main(["--version"], version)).toBe(0);
-    expect(version.stdout).toEqual([expect.stringMatching(/^\d+\.\d+\.\d+$/)]);
+    // The release workflow publishes package.json's version; the CLI must report the same one.
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8"));
+    expect(version.stdout).toEqual([pkg.version]);
   });
 
   it("router setup writes a valid starter config, prints fresh secrets, and won't overwrite", async () => {
@@ -65,7 +68,7 @@ describe("ggjira CLI", () => {
     const io = captureIo();
     expect(await main(["router", "setup", "--config", configPath], io)).toBe(0);
     const config = RouterConfigSchema.parse(JSON.parse(readFileSync(configPath, "utf-8")));
-    expect(config.configVersion).toBe(5);
+    expect(config.configVersion).toBe(7);
     expect(io.stdout.join("\n")).toMatch(/GGJIRA_WEBHOOK_SECRET=\S{32,}/);
     expect(io.stdout.join("\n")).toMatch(/GGJIRA_ADMIN_TOKEN=\S{32,}/);
 
@@ -145,23 +148,12 @@ describe("ggjira CLI", () => {
       const credentialPath = path.join(dir, "credential.json");
       const setup = captureIo();
       const code = await main(
-        [
-          "worker",
-          "setup",
-          "--router",
-          url,
-          "--pairing-code",
-          pairingCode,
-          "--config",
-          configPath,
-          "--credential",
-          credentialPath,
-        ],
+        ["worker", "setup", "--router", url, "--pairing-code", pairingCode, "--home", dir],
         setup,
       );
       expect(code).toBe(0);
       expect(loadWorkerCredential(credentialPath).workerId).toBe("worker-1");
-      expect(loadWorkerConfig(configPath).routerUrl).toBe(url);
+      expect(loadWorkerConfig(dir).routerUrl).toBe(url);
       // The token lives only in the credential file, never in the config or the output.
       const { workerToken } = loadWorkerCredential(credentialPath);
       expect(readFileSync(configPath, "utf-8")).not.toContain(workerToken);
@@ -174,21 +166,7 @@ describe("ggjira CLI", () => {
 
       // A second pairing with the same credential path is refused unless --force.
       const again = captureIo();
-      expect(
-        await main(
-          [
-            "worker",
-            "setup",
-            "--pairing-code",
-            "x",
-            "--config",
-            configPath,
-            "--credential",
-            credentialPath,
-          ],
-          again,
-        ),
-      ).toBe(1);
+      expect(await main(["worker", "setup", "--pairing-code", "x", "--home", dir], again)).toBe(1);
       expect(again.stderr.join("\n")).toContain("already exists");
     });
 
@@ -277,13 +255,13 @@ describe("ggjira CLI", () => {
         "http://router.example.com",
         "--pairing-code",
         "abc",
-        "--config",
-        path.join(dir, "w.json"),
+        "--home",
+        path.join(dir, "w"),
       ],
       io,
     );
     expect(code).toBe(1);
     expect(io.stderr.join("\n")).toContain("https://");
-    expect(existsSync(path.join(dir, "w.json"))).toBe(false);
+    expect(existsSync(path.join(dir, "w", "worker.config.json"))).toBe(false);
   });
 });

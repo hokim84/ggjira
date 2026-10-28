@@ -6,8 +6,9 @@ import type { RouterConfig, WorkerPolicyConfig, WorkspaceConfig } from "../../sr
 
 /** The workspace workflow (ADR 0044, ADR 0047): delegated by status, always planned first. */
 export const TODO_STATUS = "할 일";
-export const REQUEST_STATUS = "AI 계획 요청";
-export const PLAN_REVIEW_STATUS = "계획 검토 대기";
+export const REQUEST_STATUS = "AI 검토";
+/** Planning and review share one Jira state. */
+export const PLAN_REVIEW_STATUS = REQUEST_STATUS;
 export const IN_PROGRESS_STATUS = "작업 중";
 export const REVIEW_STATUS = "결과 검토";
 export const DONE_STATUS = "완료";
@@ -18,9 +19,10 @@ export const testWorkspace: WorkspaceConfig = {
   projectKeys: ["KAN"],
   workflow: {
     requestStatus: REQUEST_STATUS,
-    planReviewStatus: PLAN_REVIEW_STATUS,
+    planningInProgressStatus: "AI 계획중",
+    integrationPendingStatus: "AI 통합 대기",
+    implementationCompleteStatus: "AI 구현 완료",
     inProgressStatus: IN_PROGRESS_STATUS,
-    reviewStatus: REVIEW_STATUS,
     doneStatus: DONE_STATUS,
   },
 };
@@ -29,6 +31,9 @@ export const testWorkspace: WorkspaceConfig = {
 export const WORKFLOW_TRANSITIONS = [
   TODO_STATUS,
   REQUEST_STATUS,
+  "AI 계획중",
+  "AI 통합 대기",
+  "AI 구현 완료",
   PLAN_REVIEW_STATUS,
   IN_PROGRESS_STATUS,
   REVIEW_STATUS,
@@ -49,7 +54,6 @@ export function singlePlan(overrides: Record<string, unknown> = {}): Record<stri
     summary: "One outcome; contract filled in",
     acceptanceCriteria: ["The change works"],
     verification: ["npm run test"],
-    requiredCapabilities: ["programming"],
     tasks: [],
     keepTaskKeys: [],
     ...overrides,
@@ -58,7 +62,12 @@ export function singlePlan(overrides: Record<string, unknown> = {}): Record<stri
 
 export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): RouterConfig {
   return {
-    configVersion: 5,
+    configVersion: 7,
+    prompts: {
+      planning: { additionalInstructions: "" },
+      implementation: { additionalInstructions: "" },
+      fci_analysis: { additionalInstructions: "" },
+    },
     jira: { baseUrl: "https://example.atlassian.net" },
     repositories: [{ id: "repo1" }],
     workspaces: [testWorkspace],
@@ -72,7 +81,7 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
       activeJobPollIntervalMs: 5_000,
     },
     execution: { timeoutMs: 60_000 },
-    planning: { subtaskIssueType: "Sub-task", maxTasksPerPlan: 10 },
+    planning: { subtaskIssueType: "Sub-task", followupIssueType: "Task", maxTasksPerPlan: 10 },
     reporting: { failureLabel: "ggjira-failed", language: "ko" },
     github: { pollIntervalMs: 300_000 },
     scheduling: { usage: { deprioritizeAtPercent: 90, skipExhausted: true } },
@@ -84,7 +93,6 @@ export function buildRouterConfig(overrides: Partial<RouterConfig> = {}): Router
 export function workerPolicy(overrides: Partial<WorkerPolicyConfig> = {}): WorkerPolicyConfig {
   return {
     workerId: "worker-1",
-    allowedCapabilities: ["programming"],
     allowedRepositoryIds: ["repo1"],
     enabled: true,
     providerId: "default",

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "../../src/router/db/connection.js";
 import type { FastifyInstance } from "fastify";
 import { PROTOCOL_VERSION } from "../../src/contracts/protocol.js";
 import { FakeJiraGateway } from "../../src/jira/fake.js";
@@ -33,7 +33,7 @@ export interface RegisteredWorker {
 export class RouterHarness {
   readonly dataDir: string;
   readonly dbPath: string;
-  db: Database.Database;
+  db: RouterDatabase;
   readonly jira = new FakeJiraGateway();
   readonly clock = new ManualClock();
   readonly config: RouterConfig;
@@ -148,7 +148,7 @@ export class RouterHarness {
   reapprove(key = "KAN-1"): Promise<void> {
     const workspace = this.config.workspaces[0];
     if (!workspace) throw new Error("reapprove needs a workspace");
-    return reapprove(this.jira, workspace, key);
+    return reapprove(this.jira, workspace, key, this.db);
   }
 
   /** Seeds an approved issue and runs a reconcile so it has a `queued` implementation job. */
@@ -246,7 +246,7 @@ export class RouterHarness {
       {
         sessionId,
         workerId,
-        availability: { capabilities: ["programming"], repositoryIds: ["repo1"], busy: false },
+        availability: { repositoryIds: ["repo1"], busy: false },
       },
       token,
     );

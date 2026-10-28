@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./connection.js";
 
 export interface ApprovalRow {
   issueKey: string;
@@ -29,7 +29,7 @@ function toApprovalRow(row: Record<string, unknown>): ApprovalRow {
   };
 }
 
-export function getApproval(db: Database.Database, issueKey: string): ApprovalRow | undefined {
+export function getApproval(db: RouterDatabase, issueKey: string): ApprovalRow | undefined {
   const row = db.prepare("SELECT * FROM approvals WHERE issue_key = ?").get(issueKey) as
     | Record<string, unknown>
     | undefined;
@@ -39,7 +39,7 @@ export function getApproval(db: Database.Database, issueKey: string): ApprovalRo
 /** Insert-or-replace: one row per issue (§3 "이슈별 승인 식별자·작업 입력 스냅샷"). Callers
  *  compare the returned/previous `approvalId`/`inputHash` themselves to decide whether
  *  anything actually changed — this function always writes the latest values. */
-export function upsertApproval(db: Database.Database, input: UpsertApprovalInput): ApprovalRow {
+export function upsertApproval(db: RouterDatabase, input: UpsertApprovalInput): ApprovalRow {
   const existing = getApproval(db, input.issueKey);
   const createdAt = existing?.createdAt ?? input.now;
   db.prepare(

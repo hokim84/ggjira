@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { RouterDatabase } from "./db/connection.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { RouterConfig } from "./config.js";
 import { getAttempt, transitionAttemptState } from "./db/attempts.js";
@@ -31,7 +31,7 @@ export class RecoveryError extends Error {
 
 const RETRYABLE_STATES = new Set(["failed", "timed_out", "recovery_required"]);
 
-function requireJob(db: Database.Database, jobId: string): JobRow {
+function requireJob(db: RouterDatabase, jobId: string): JobRow {
   const job = getJob(db, jobId);
   if (!job) throw new RecoveryError("unknown_job", `no job ${jobId}`);
   return job;
@@ -39,7 +39,7 @@ function requireJob(db: Database.Database, jobId: string): JobRow {
 
 /** Closes the current `recovery_required` attempt on an admin's word that its process is gone. */
 function confirmStop(
-  db: Database.Database,
+  db: RouterDatabase,
   job: JobRow,
   actor: string,
   now: string,
@@ -64,7 +64,7 @@ function confirmStop(
  * The issue stays where it is; a human re-requests it in Jira to run it again.
  */
 export function resolveRecoveryJob(
-  db: Database.Database,
+  db: RouterDatabase,
   config: RouterConfig,
   input: { jobId: string; actor: string; now: string },
 ): JobRow {
@@ -95,6 +95,32 @@ export function resolveRecoveryJob(
 }
 
 /**
+ * ADR 0062: the assignee's "재시도" comment on an issue whose run is `recovery_required` stands in
+ * for the admin's stop confirmation. The job closes without a comment of its own; the caller then
+ * creates a new run under a new approval, and a late result of the old attempt is not applied.
+ */
+export function closeRecoveryForRetry(
+  db: RouterDatabase,
+  jobId: string,
+  actor: string,
+  now: string,
+): void {
+  db.transaction(() => {
+    const job = requireJob(db, jobId);
+    if (job.state !== "recovery_required") return;
+    confirmStop(db, job, actor, now, "superseded");
+    transitionJobState(db, job.id, "cancelled", now);
+    appendAudit(db, {
+      at: now,
+      actor,
+      action: "job.resolved",
+      subject: job.id,
+      detail: { via: "retry comment" },
+    });
+  })();
+}
+
+/**
  * `ggjira router jobs retry`: runs a failed / timed-out / recovery-required job again as a new
  * attempt (§3 "수동 재시도는 새로운 attempt를 만든다"). The issue's approval is re-checked in Jira
  * first (§3 "새 실행 전 Jira 요청 상태의 승인을 다시 확인한다"): a job whose issue a human moved
@@ -102,7 +128,7 @@ export function resolveRecoveryJob(
  * reconcile. For a `recovery_required` job the retry is also the admin's stop confirmation.
  */
 export async function retryJob(
-  deps: { db: Database.Database; jira: JiraGateway; config: RouterConfig; now: () => string },
+  deps: { db: RouterDatabase; jira: JiraGateway; config: RouterConfig; now: () => string },
   input: { jobId: string; actor: string },
 ): Promise<JobRow> {
   const before = requireJob(deps.db, input.jobId);
@@ -131,7 +157,6 @@ export async function retryJob(
       approvalId: check.approval.approvalId,
       inputHash: check.approval.inputHash,
       kind: job.kind,
-      requiredCapabilities: check.approval.requirements.requiredCapabilities,
       now,
     });
     const queued = transitionJobState(deps.db, job.id, "queued", now);
@@ -161,7 +186,7 @@ export async function retryJob(
  * checking Jira: the step still looks for its marker before creating.
  */
 export function retryReportBatch(
-  db: Database.Database,
+  db: RouterDatabase,
   input: { batchId: string; actor: string; now: string },
 ): number {
   const run = db.transaction((): number => {

@@ -24,7 +24,7 @@ function unwrap(schema: z.ZodTypeAny): z.ZodTypeAny {
   for (;;) {
     if (current instanceof z.ZodOptional || current instanceof z.ZodNullable) {
       current = current.unwrap();
-    } else if (current instanceof z.ZodDefault) {
+    } else if (current instanceof z.ZodDefault || current instanceof z.ZodCatch) {
       current = current._def.innerType;
     } else if (current instanceof z.ZodEffects) {
       current = current.innerType();
