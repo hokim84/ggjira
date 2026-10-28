@@ -18,6 +18,8 @@ Jira ──웹훅──▶ Router (서버 1대 + SQLite) ──▶ Jira에 댓�
 
 configVersion 7, Router–Worker protocol 8 기준이다.
 
+Jira에서 GGJIRA를 쓰는 방법은 화면과 함께 [사용자 매뉴얼](./docs/user-guide.md)에 단계별로 있다.
+
 ## 작업 흐름
 
 | 단계 | Jira 상태 | 하는 일 |
@@ -174,9 +176,11 @@ ggjira worker worktrees prune [--older-than-days 7] [--dry-run]
 
 ## 문서와 개발
 
+- 사용법(Jira 화면 기준): [docs/user-guide.md](./docs/user-guide.md)
 - 구조: [docs/architecture.md](./docs/architecture.md)
 - 운영·장애 대응: [docs/runbook.md](./docs/runbook.md)
 - 설계 결정: [docs/decisions/](./docs/decisions/)
+- 다음에 고칠 문제: [docs/known-issues.md](./docs/known-issues.md)
 - 작업 규칙: [CLAUDE.md](./CLAUDE.md). Codex 등 다른 에이전트는 [AGENTS.md](./AGENTS.md)를 본다.
 - 기여·릴리스: [CONTRIBUTING.md](./CONTRIBUTING.md), 보안 신고: [SECURITY.md](./SECURITY.md)
 - 지난 계획과 작업 기록: [docs/history/](./docs/history/)
