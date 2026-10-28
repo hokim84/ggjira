@@ -139,7 +139,9 @@ provider의 최종 구조화 응답(`ImplementationReport`: outcome, 이탈, 결
 patch와 worktree를 남기고 `needs_decision`으로 보고한다. 보고를 읽을 수 없거나 검증 근거가 없거나 실패한
 검증이 있으면 `failed`다. 자식도 같다: `not_verified`만 있으면 커밋·push까지 진행한다(ADR 0061). 검증 항목마다 확인 방식 `method`(`executed`: 실행해 결과를 봄, `inspected`: 코드·문서를
 읽고 판단)를 받는다. provider 스키마는 이를 요구하지만 Zod는 선택 필드로 받아 과거 결과와 잘못된 값도 읽는다(ADR 0059).
-커밋 뒤 워커의 `validateCommand`는 job의 취소 신호와 `timeoutMs`로 제한해 실행하고, 출력은 `validation`에 남는다.
+커밋 뒤 워커의 `validateCommand`는 job의 취소 신호와 `validateTimeoutMs`(기본 10분)·job `timeoutMs` 중 짧은 쪽으로
+제한해 실행하고, 요약(통과면 마지막 출력 줄, 실패면 종료 코드와 출력 끝)은 `validation`에 남는다(ADR 0068). Router에
+영원히 거절된(403·404) 결과는 spool의 `rejected/`로 옮겨 다시 보내지 않는다.
 
 결과는 `git {base/head, committed}`와 에이전트의 의미상 위험(`risks`)도 담는다(ADR 0040). Router는 적용한
 결과마다 검토 대상(`review_targets`: issue·job·attempt·승인 id·입력 해시·base/head·분류와 근거)을 결과 저장과
@@ -163,6 +165,7 @@ PR 머지는 그 머지의 head가 최신 대상의 head와 같을 때만(또는
 
 결과의 사건은 같은 트랜잭션에서 `attention_items`에 기록된다(ADR 0041). 같은 미해결 사건의 반복이면 그 결과의
 댓글 단계는 저널에 넣지 않는다. 막힌 단계는 보고 처리 뒤 주의 항목이 되고, 재시도로 반영되면 해소된다.
+사람이 이슈를 Done으로 옮기면 보완 조회가 결과 관련 주의 항목을 해소한다(ADR 0067).
 
 ```
 start 허가 ──▶ [start:<attempt>]   계획: "계획 시작" 댓글 (상태는 옮기지 않는다)
