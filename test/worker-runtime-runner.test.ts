@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -114,6 +114,7 @@ describe("WorkerRunner against a live Router", () => {
           path: workDir,
           baseBranch: "main",
           validateCommand: null,
+          validateTimeoutMs: 600_000,
           createPullRequest: false,
         },
       ],
@@ -514,6 +515,31 @@ describe("WorkerRunner against a live Router", () => {
     expect(second.spool.listPending()).toEqual([]);
     expect(events.some((event) => event.state === "resent" && event.count === 1)).toBe(true);
     expect(getJob(router.db, jobId)?.state).toBe("succeeded");
+  });
+
+  it("moves a spooled result Router will never accept aside instead of resending it forever", async () => {
+    await router.seedQueuedJob();
+    const dropResults: FetchLike = async (input, init) => {
+      if (input.endsWith("/result")) throw new Error("connection reset");
+      return fetch(input, init);
+    };
+    const first = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()), {
+      fetch: dropResults,
+    });
+    await first.runner.connect();
+    await first.runner.pollOnce();
+    const [real] = first.spool.listPending();
+    if (!real) throw new Error("expected the dropped result in the spool");
+    // A leftover for an attempt this Router does not know (e.g. another worker's, or a wiped DB).
+    first.spool.save({ ...real, resultId: "r-foreign", attemptId: "foreign-attempt" });
+
+    const second = await makeRunner(new FakeWorkerProvider(fakeSuccessResult()), {
+      token: first.token,
+    });
+    await second.runner.connect();
+
+    expect(second.spool.listPending()).toEqual([]);
+    expect(existsSync(path.join(second.spool.dir, "rejected", "r-foreign.json"))).toBe(true);
   });
 
   it("reports an attempt orphaned by a worker crash instead of re-running it", async () => {

@@ -48,6 +48,7 @@ describe("Git-pinned integration validation worker", () => {
       path: path.join(dir, "worker"),
       baseBranch: "main",
       validateCommand: 'node -e "process.exit(0)"',
+      validateTimeoutMs: 600_000,
       pushRemote: "origin",
       createPullRequest: false,
     };
@@ -225,6 +226,13 @@ describe("Git-pinned integration validation worker", () => {
       status: "succeeded",
       quality: { verificationPassed: false },
     });
+  });
+  it("stops a hung validation at the repository's timeout, not the job's (ADR 0068)", async () => {
+    repository.validateCommand = 'node -e "setInterval(Date.now, 1000)"';
+    repository.validateTimeoutMs = 300;
+    const outcome = await execute();
+    expect(outcome).toMatchObject({ status: "succeeded", quality: { verificationPassed: false } });
+    expect(outcome.validation?.[0]).toContain("did not finish within 300 ms and was stopped");
   });
   it("performs the final freshness verification without another model call", async () => {
     context().expectedSha = targetSha;

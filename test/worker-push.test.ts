@@ -66,7 +66,9 @@ function envelope(): JobEnvelope {
   };
 }
 
-describe("pushing the job branch", () => {
+// Every case clones and commits real git repositories; under a full parallel run on Windows that
+// can pass vitest's default 5s (runbook §13).
+describe("pushing the job branch", { timeout: 30_000 }, () => {
   let dir: string;
   let remote: string;
   let clone: string;

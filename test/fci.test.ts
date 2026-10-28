@@ -89,7 +89,8 @@ describe("FCI score contracts", () => {
   });
 });
 
-describe("immutable repository facts and merge boundaries", () => {
+// Builds real git histories; under a full parallel run on Windows that can pass vitest's default 5s.
+describe("immutable repository facts and merge boundaries", { timeout: 30_000 }, () => {
   let dir: string;
   let repo: string;
   let remote: string;
@@ -260,6 +261,7 @@ describe("immutable repository facts and merge boundaries", () => {
         baseBranch: "main",
         createPullRequest: false,
         validateCommand: null,
+        validateTimeoutMs: 600_000,
       },
       provider: {
         run: async () => {
@@ -352,6 +354,7 @@ describe("immutable repository facts and merge boundaries", () => {
         baseBranch: "main",
         createPullRequest: false,
         validateCommand: "a command that must not run",
+        validateTimeoutMs: 600_000,
       },
       provider: {
         run: async (request) => {

@@ -391,10 +391,11 @@ export class WorkerRunner {
       this.deps.spool.ack(result.resultId);
       return true;
     } catch (error) {
-      if (error instanceof RouterApiError && (error.status === 404 || error.status === 403)) {
+      if (isPermanentRejection(error)) {
         // Router will never accept this one (unknown attempt / not ours); keep it on disk for a
         // human, but don't resend forever.
-        this.deps.logger?.error({ err: error, resultId: result.resultId }, "result rejected");
+        const file = this.deps.spool.reject(result.resultId);
+        this.deps.logger?.error({ err: error, resultId: result.resultId, file }, "result rejected");
         return false;
       }
       this.deps.logger?.warn(
@@ -414,6 +415,14 @@ export class WorkerRunner {
         this.deps.spool.ack(result.resultId);
         delivered++;
       } catch (error) {
+        if (isPermanentRejection(error)) {
+          const file = this.deps.spool.reject(result.resultId);
+          this.deps.logger?.error(
+            { err: error, resultId: result.resultId, file },
+            "spooled result rejected by Router; moved aside and not resent",
+          );
+          continue;
+        }
         this.deps.logger?.warn(
           { err: error, resultId: result.resultId },
           "spooled result resend failed",
@@ -427,4 +436,9 @@ export class WorkerRunner {
     if (!this.sessionId) throw new Error("WorkerRunner: call connect() before polling");
     return this.sessionId;
   }
+}
+
+/** 404 (unknown attempt) or 403 (another worker's attempt): resending can never succeed. */
+function isPermanentRejection(error: unknown): boolean {
+  return error instanceof RouterApiError && (error.status === 404 || error.status === 403);
 }

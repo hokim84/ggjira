@@ -15,6 +15,8 @@ import { type JobResult, JobResultSchema } from "../contracts/envelope.js";
 import type { Logger } from "../logger.js";
 
 const SUFFIX = ".json";
+/** Results Router refused for good (403/404), kept for a person to look at; never resent. */
+const REJECTED_DIR = "rejected";
 
 /** `resultId` becomes a filename, so it must never be able to point outside the spool. */
 function assertSafeId(resultId: string): void {
@@ -90,5 +92,17 @@ export class ResultSpool {
   ack(resultId: string): void {
     assertSafeId(resultId);
     rmSync(path.join(this.dir, `${resultId}${SUFFIX}`), { force: true });
+  }
+
+  /** Router will never accept it (an attempt it does not know, or another worker's): keep the
+   *  file for a person under `rejected/`, out of the resend list. Returns where it went. */
+  reject(resultId: string): string {
+    assertSafeId(resultId);
+    const rejectedDir = path.join(this.dir, REJECTED_DIR);
+    mkdirSync(rejectedDir, { recursive: true });
+    const target = path.join(rejectedDir, `${resultId}${SUFFIX}`);
+    const source = path.join(this.dir, `${resultId}${SUFFIX}`);
+    if (existsSync(source)) renameSync(source, target);
+    return target;
   }
 }

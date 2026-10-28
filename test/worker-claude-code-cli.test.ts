@@ -26,7 +26,9 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-describe("ClaudeCodeCliProvider", () => {
+// The fake CLIs are POSIX shell scripts (test/fixtures/*.sh), which Windows cannot spawn
+// (`spawn EFTYPE`). CI and `docker-compose.test.yml` run them on Linux (runbook §13).
+describe.skipIf(process.platform === "win32")("ClaudeCodeCliProvider", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {

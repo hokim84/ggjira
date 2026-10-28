@@ -40,6 +40,7 @@ describe("loadWorkerConfig", () => {
       path: path.resolve(dataDir, "/repos/repo-1"),
       baseBranch: "main",
       validateCommand: null,
+      validateTimeoutMs: 600_000,
       createPullRequest: false,
     });
     expect(config.home).toBe(path.resolve(dataDir));
