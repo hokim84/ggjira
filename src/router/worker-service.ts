@@ -28,6 +28,7 @@ import type { JobState } from "../contracts/job-state.js";
 import { inputHashMatches } from "./approval.js";
 import { resultAttention } from "./attention.js";
 import { buildWorkerAvailability, isWorkerDispatchable } from "./availability.js";
+import { COMMENT_TEXT } from "./comment-text.js";
 import type { RouterConfig } from "./config.js";
 import { getApproval } from "./db/approvals.js";
 import {
@@ -797,7 +798,11 @@ export class WorkerService {
             ),
             job.kind === "quality_review"
               ? "평가는 권고입니다. Done, AI 구현(수정), AI 계획(재계획) 중 다음 행동을 선택하세요."
-              : "",
+              : passed
+                ? ""
+                : COMMENT_TEXT[this.config.reporting.language].integrationFailedNext(
+                    workspace.workflow.requestStatus,
+                  ),
           ].join("\n")
         : `평가·검증 미완료: ${result.failureReason ?? result.summary}\n원인 확인 후 ‘재시도’ 댓글을 남기세요.`;
       insertReportBatch(this.db, {

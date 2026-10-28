@@ -205,3 +205,10 @@ describe("role additional instructions", () => {
     );
   });
 });
+
+it("keeps GGJIRA's own bookkeeping out of the plan people read on Jira", () => {
+  // A plan once carried "keepTaskKeys가 빈 배열인 것은…" and lifecycle jargon into its Constraints.
+  const prompt = buildPmSystemPrompt();
+  expect(prompt).toContain("published on the Jira issue");
+  expect(prompt).toContain("Do not mention schema fields such as keepTaskKeys");
+});

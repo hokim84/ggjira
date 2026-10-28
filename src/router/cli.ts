@@ -336,7 +336,15 @@ function printJson(io: CliIo, value: unknown): void {
 function printWorkers(io: CliIo, workers: AdminWorkerView[]): void {
   const rows = workers.map((w) => [
     w.workerId,
-    w.revokedAt ? "revoked" : !w.paired ? "unpaired" : w.online ? "online" : "offline",
+    w.revokedAt
+      ? "revoked"
+      : !w.paired
+        ? "unpaired"
+        : w.busy
+          ? "busy"
+          : w.online
+            ? "online"
+            : "offline",
     w.declared ? (w.policyEnabled ? "yes" : "no (config)") : "no (undeclared)",
     w.enabled ? "yes" : "no",
     w.lastHeartbeatAt ?? "-",
@@ -389,7 +397,7 @@ function printStatus(io: CliIo, status: RouterStatus): void {
     `queue wait:        ${status.queue.waitMs === null ? "-" : `${Math.round(status.queue.waitMs / 1000)}s`}`,
   );
   io.out(
-    `workers:           ${status.workers.online} online / ${status.workers.paired} paired / ${status.workers.declared} declared`,
+    `workers:           ${status.workers.connected} connected (${status.workers.busy} busy) / ${status.workers.paired} paired / ${status.workers.declared} declared`,
   );
   io.out(`recovery required: ${status.recoveryRequired}`);
   io.out(

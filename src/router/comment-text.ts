@@ -45,6 +45,9 @@ export interface CommentText {
     nothingApplied: string;
   };
   planningStarted: (requestStatus: string) => string;
+  /** The next step under a failed integration check (ADR 0068): a retry reruns the same merged
+   *  code, so a cause in that code needs a new plan instead. */
+  integrationFailedNext: (requestStatus: string) => string;
   stopped: string;
   unassigned: { title: string; impact: string; next: (statusName: string) => string };
   pullRequest: {
@@ -139,6 +142,8 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
     },
     planningStarted: (requestStatus) =>
       `GGJIRA가 계획 실행을 시작하여 "${requestStatus}"으로 이동합니다. 질문에 답하거나 게시된 계획의 작업을 개별 승인하세요.`,
+    integrationFailedNext: (requestStatus) =>
+      `다음: 원인이 실행 환경이면 해결한 뒤 담당자가 "재시도" 댓글을 남기세요. 병합된 코드가 원인이면 "재시도"로는 같은 결과가 나옵니다. 설명에 원인을 적고 이슈를 "${requestStatus}"(으)로 옮겨 고칠 작업을 요청하세요.`,
     stopped: "AI 실행이 중지됐습니다.",
     unassigned: {
       title: "GGJIRA가 이 요청을 시작하지 않았습니다: 이슈에 담당자가 없습니다.",
@@ -191,7 +196,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
         [
           `사람 확인 필요: 구현 결과 커밋을 원격에 보존하고 "${completeStatus}"(으)로 옮겼지만, AI가 다음 완료 조건을 확인하지 못했습니다.`,
           ...checks.map((check) => `- ${check}`),
-          `다음: 부모 PR을 병합하기 전에 직접 확인하고 Router 검토 화면에서 확인을 기록하세요. 문제가 있으면 설명을 고친 뒤 이슈를 "${inProgressStatus}"(으)로 옮겨 다시 요청하세요.`,
+          `다음: 부모 PR을 병합하기 전에 직접 확인하고 Router 웹 UI의 작업 상세에서 "결과 확인 기록"을 남기세요. 문제가 있으면 설명을 고친 뒤 이슈를 "${inProgressStatus}"(으)로 옮겨 다시 요청하세요.`,
         ].join("\n"),
     },
     result: {
@@ -331,6 +336,8 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
     },
     planningStarted: (requestStatus) =>
       `GGJIRA started planning and moves this issue to "${requestStatus}". Answer questions or approve individual tasks when ready.`,
+    integrationFailedNext: (requestStatus) =>
+      `Next: if the cause is the environment, fix it and have the assignee comment "재시도". If the merged code is the cause, "재시도" gives the same result: write the cause in the description and move the issue to "${requestStatus}" to request a fix.`,
     stopped: "AI execution stopped.",
     unassigned: {
       title: "GGJIRA did not start this request: the issue has no assignee.",
@@ -384,7 +391,7 @@ export const COMMENT_TEXT: Record<MessageLanguage, CommentText> = {
         [
           `Needs a person: the result commit is kept on the remote and the issue moved to "${completeStatus}", but the agent could not verify these acceptance criteria.`,
           ...checks.map((check) => `- ${check}`),
-          `Next: check them yourself before merging the parent PR and record the confirmation on Router's review screen. If something is wrong, edit the description and move the issue to "${inProgressStatus}" to request it again.`,
+          `Next: check them yourself before merging the parent PR and record the confirmation with "결과 확인 기록" in the task detail of Router's web UI. If something is wrong, edit the description and move the issue to "${inProgressStatus}" to request it again.`,
         ].join("\n"),
     },
     result: {

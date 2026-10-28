@@ -87,9 +87,9 @@ export async function renderDashboard(root) {
       "div",
       { class: "cards" },
       card(
-        "온라인 워커",
-        `${workers.online} / ${workers.declared}`,
-        workers.online ? "ok" : "warn",
+        "연결된 워커",
+        `${workers.connected} / ${workers.declared}${workers.busy ? ` (작업 중 ${workers.busy})` : ""}`,
+        workers.connected ? "ok" : "warn",
       ),
       card("페어링된 워커", workers.paired),
       card(
@@ -249,7 +249,8 @@ function workerBadge(worker) {
   if (!worker.declared) return ["설정에 없음", "warn"];
   if (!worker.paired) return ["페어링 대기", "muted"];
   if (!worker.enabled || !worker.policyEnabled) return ["비활성", "warn"];
-  if (worker.online) return ["온라인", "ok"];
+  if (worker.busy) return ["작업 중", "ok"];
+  if (worker.online) return ["대기 중", "ok"];
   return ["오프라인", "bad"];
 }
 

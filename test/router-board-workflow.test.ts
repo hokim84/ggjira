@@ -583,6 +583,11 @@ describe("board workflow", () => {
     const check = await start();
     await finish(check, quality(false));
     expect(await status()).toBe(w.integrationPendingStatus);
+    // ADR 0068: a retry reruns the same merged code, so the comment also names the replan path.
+    const failed = router.jira.comments.filter((c) => c.key === "KAN-1").at(-1)?.body;
+    expect(failed).toContain("검증: 미통과");
+    expect(failed).toContain(`"재시도"`);
+    expect(failed).toContain(`이슈를 "${w.requestStatus}"(으)로 옮겨 고칠 작업을 요청하세요`);
     expect((await router.reconcile()).jobsCreated).toEqual([]);
     router.clock.advance(1000);
     router.jira.seedComment("KAN-1", {

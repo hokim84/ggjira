@@ -7,6 +7,7 @@ import { retryJob, retryReportBatch } from "../src/router/recovery.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import { reRequestHint } from "../src/router/workflow-mode.js";
 import {
+  DONE_STATUS,
   IN_PROGRESS_STATUS,
   REQUEST_STATUS,
   WORKFLOW_TRANSITIONS,
@@ -219,5 +220,46 @@ describe("attention items", () => {
     expect(
       (await router.adminCall("GET", "/attention?status=resolved&issue=kan-1")).json(),
     ).toMatchObject({ items: [{ kind: "report_blocked", resolution: expect.any(String) }] });
+  });
+
+  it("settles what a run left for a human once a person moves the issue to Done (ADR 0067)", async () => {
+    const at = router.clock.now();
+    for (const key of ["KAN-7", "KAN-8"]) {
+      router.jira.seedIssue({ key, statusName: key === "KAN-7" ? DONE_STATUS : "To Do" });
+      recordAttention(router.db, {
+        issueKey: key,
+        approvalId: null,
+        kind: "review_required",
+        cause: `result:${key}`,
+        severity: "standard",
+        reason: "1 acceptance criterion not verified",
+        now: at,
+      });
+    }
+    recordAttention(router.db, {
+      issueKey: "KAN-7",
+      approvalId: null,
+      kind: "report_blocked",
+      cause: "batch:1",
+      severity: "immediate",
+      reason: "Jira refused the transition",
+      now: at,
+    });
+
+    await router.reconcile();
+
+    const open = listAttentionItems(router.db, { status: "open" }).map((i) => [i.issueKey, i.kind]);
+    expect(open).toEqual(
+      expect.arrayContaining([
+        ["KAN-8", "review_required"],
+        ["KAN-7", "report_blocked"],
+      ]),
+    );
+    expect(open).toHaveLength(2);
+    const [settled] = listAttentionItems(router.db, { issueKey: "KAN-7", kind: "review_required" });
+    expect(settled).toMatchObject({
+      status: "resolved",
+      resolution: `moved to "${DONE_STATUS}" in Jira`,
+    });
   });
 });

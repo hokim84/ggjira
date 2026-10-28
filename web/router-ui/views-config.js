@@ -555,7 +555,7 @@ export async function renderConfig(root, ctx) {
       h(
         "p",
         { class: "muted" },
-        "계획과 구현 승인은 사람이 결정합니다. 통합 검증 후 구현 완료로 자동 이동하며, AI 리뷰는 선택 사항입니다.",
+        "계획과 구현 승인은 사람이 결정합니다. 통합 검증 후 구현 완료로 자동 이동하며, Done은 사람이 옮깁니다.",
       ),
       h(
         "div",

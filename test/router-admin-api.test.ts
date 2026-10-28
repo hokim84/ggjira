@@ -68,6 +68,25 @@ describe("admin API", () => {
     ]);
   });
 
+  it("shows a worker running a job as connected and busy, though not free for work", async () => {
+    await runningJob();
+    // Past heartbeat freshness: only the job's own heartbeat (its lease) is being renewed.
+    router.clock.advance(20_000);
+    const { workers } = (await router.adminCall("GET", "/workers")).json() as {
+      workers: Array<{ workerId: string; online: boolean; busy: boolean; connected: boolean }>;
+    };
+    expect(workers[0]).toMatchObject({
+      workerId: "worker-1",
+      online: false,
+      busy: true,
+      connected: true,
+    });
+    const status = (await router.adminCall("GET", "/status")).json() as {
+      workers: Record<string, number>;
+    };
+    expect(status.workers).toMatchObject({ online: 0, busy: 1, connected: 1 });
+  });
+
   it("disable blocks new assignments, enable restores them, and both are audited", async () => {
     await router.seedQueuedJob("KAN-1");
     const worker = await router.connectWorker("worker-1");
@@ -275,14 +294,14 @@ describe("admin API", () => {
     const status = (await router.adminCall("GET", "/status")).json() as {
       jobs: Record<string, number>;
       queue: { waitMs: number };
-      workers: { online: number; paired: number; declared: number };
+      workers: Record<string, number>;
       recoveryRequired: number;
       reports: { blocked: number };
     };
     // The issue's plan ran before its implementation was queued.
     expect(status.jobs).toEqual({ queued: 1, succeeded: 1 });
     expect(status.queue.waitMs).toBeGreaterThanOrEqual(4_000);
-    expect(status.workers).toEqual({ declared: 2, paired: 1, online: 1 });
+    expect(status.workers).toEqual({ declared: 2, paired: 1, online: 1, busy: 0, connected: 1 });
     expect(status.recoveryRequired).toBe(0);
     expect(status.reports.blocked).toBe(0);
   });
