@@ -685,7 +685,7 @@ async function reviews(parsed: ParsedArgs, io: CliIo): Promise<number> {
   else if (parsed.values.standard) query.set("class", "standard");
   if (parsed.values.held) query.set("state", "held");
   else if (parsed.values.all)
-    query.set("state", "pending,held,confirmed,rework_requested,merged,outdated");
+    query.set("state", "pending,held,confirmed,rework_requested,merged,closed,outdated");
   const assignee = stringOption(parsed, "assignee");
   if (assignee) query.set("assignee", assignee);
   const parent = stringOption(parsed, "parent");

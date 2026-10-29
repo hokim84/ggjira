@@ -18,6 +18,7 @@ const STATE_LABELS = {
   confirmed: ["확인", "badge-ok"],
   rework_requested: ["재작업 요청", "badge-warn"],
   merged: ["머지됨", "badge-ok"],
+  closed: ["Jira에서 닫힘", "badge-muted"],
   outdated: ["새 승인 있음", "badge-muted"],
 };
 
@@ -54,7 +55,7 @@ export function renderIssueReview(root, ctx, issueKey) {
   function query() {
     const params = new URLSearchParams();
     params.set("issue", issueKey);
-    params.set("state", "pending,held,confirmed,rework_requested,merged");
+    params.set("state", "pending,held,confirmed,rework_requested,merged,closed");
     const text = params.toString();
     return text ? `?${text}` : "";
   }

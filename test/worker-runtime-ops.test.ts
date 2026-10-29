@@ -18,7 +18,8 @@ function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
 }
 
-describe("worker operations", () => {
+// Real git repositories and worktrees: slow when the whole suite runs in parallel on Windows (runbook §13).
+describe("worker operations", { timeout: 30_000 }, () => {
   let dir: string;
   let repo: string;
   let config: WorkerConfig;

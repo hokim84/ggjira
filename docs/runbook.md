@@ -25,8 +25,8 @@ GGJIRA v5(Router + Worker) 운영·진단 절차다. §1~§12(v4 폴링 에이�
 Windows에서는 `.sh` fixture로 가짜 CLI를 쓰는 테스트(`worker-claude-code-cli`, `worker-codex-cli`,
 `worker-usage`의 provider 묶음)를 `describe.skipIf(process.platform === "win32")`로 건너뛴다. Windows가 `.sh`를
 직접 spawn하지 못해서다(`spawn EFTYPE`). 이 테스트는 Linux 컨테이너에서 확인한다. git을 많이 실행하는
-`fci-static`은 테스트마다 60초 제한과 임시 폴더 정리 재시도를, git 저장소를 만드는 `worker-push`·`worker-scope`·`fci`는
-30초 제한을 둬 전체 병렬 실행에서도 통과한다(docs/known-issues.md #12). CI(`ubuntu-latest`, `.github/workflows/ci.yml`)와 Linux 컨테이너(§16의 `docker-compose.test.yml`)에서는 재현되지 않으므로
+`fci-static`은 테스트마다 60초 제한과 임시 폴더 정리 재시도를, git 저장소를 만드는 `worker-push`·`worker-scope`·`fci`·`worker-quality-review`·
+`worker-runtime-ops`는 30초 제한을 둬 전체 병렬 실행에서도 통과한다(docs/known-issues.md #12). CI(`ubuntu-latest`, `.github/workflows/ci.yml`)와 Linux 컨테이너(§16의 `docker-compose.test.yml`)에서는 재현되지 않으므로
 `vitest.config.ts`는 건드리지 않는다.
 
 이 증상을 보이면 로컬에서만 다음처럼 실행한다:
@@ -611,6 +611,8 @@ Router는 서명이 맞는 웹훅의 이벤트 종류·이슈 키·프로젝트�
 - 사람이 이슈를 Done으로 옮기면 다음 보완 조회에서 `failed`·`decision_needed`·`scope_deviation`·`review_required`·
   `plan_approval_refused`·`unassigned`가 `moved to "<Done>" in Jira`로 해소된다(ADR 0067). `report_blocked`와
   `pull_request_unchecked`는 Router 쪽 문제라 Done으로 해소되지 않는다.
+- Jira에서 지운 이슈(조회가 404)도 같은 항목이 `deleted in Jira`로 해소된다(ADR 0069). 권한·네트워크 오류는
+  해소하지 않고 다음 보완 조회에서 다시 본다. 주의: Router 계정이 이슈를 볼 권한을 잃어도 Jira는 404로 답한다.
 - 해소는 기록일 뿐이다. 해소됐다고 실행이 시작되지 않는다. 실행은 Jira의 새 요청(승인)만 시작한다.
 - `--all`이나 `--resolved`로 해소 이력을 본다. "recurred after"는 해소된 같은 사건의 재발이다.
 - 같은 이유의 반복 실패는 Jira 댓글을 다시 달지 않는다. 이유가 바뀌면 새 댓글이 달린다.
@@ -668,8 +670,10 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
   자기 신고다.
 - 409 `stale_review_target`: 그 사이 같은 이슈의 새 결과가 나왔거나(`currentTargetId`가 새 대상), 이슈가 다시
   승인됐다. 목록을 다시 보고 새 대상에 판단한다. 거절도 감사 기록(`review.judgment.refused`)에 남는다.
+- 이슈를 Done으로 옮기거나 Jira에서 지우면 다음 보완 조회가 그 결과를 `closed`("Jira에서 닫힘")로 대기열에서
+  뺀다(ADR 0069). 판단 기록이 아니라 `issue.closed` 기록(인증 `jira`)이며, 그 뒤에도 판단을 남길 수 있다.
 - 지난 판단은 `ggjira router issue reviews KEY`와 이슈 화면의 검토 대상에서 본다. `router reviews --all`은
-  확인·재작업 요청·머지·새 승인으로 빠진 대상까지 보여 준다.
+  확인·재작업 요청·머지·Jira에서 닫힘·새 승인으로 빠진 대상까지 보여 준다.
 
 ## 33. Docker·VM 없이 이 PC에서 띄우기 (Windows 배치 파일)
 

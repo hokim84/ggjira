@@ -219,6 +219,7 @@ export function judgmentRecordAction(action: JudgmentAction): string {
  * - `confirmed` / `rework_requested`: judged; it leaves the queue (a rework comes back as a new
  *   target once the next result arrives).
  * - `merged`: its pull request was merged with the reviewed head (or one that could not be compared).
+ * - `closed`: a person moved the issue to Done or deleted it in Jira (ADR 0069); it leaves the queue.
  * - `outdated`: the issue's approval changed since the run; judging it is refused.
  */
 export const REVIEW_QUEUE_STATES = [
@@ -227,6 +228,7 @@ export const REVIEW_QUEUE_STATES = [
   "confirmed",
   "rework_requested",
   "merged",
+  "closed",
   "outdated",
 ] as const;
 export type ReviewQueueState = (typeof REVIEW_QUEUE_STATES)[number];
@@ -266,6 +268,17 @@ export function latestJudgment(db: RouterDatabase, targetId: string): ReviewReco
     )
     .get(targetId) as Record<string, unknown> | undefined;
   return row ? toRecord(row) : undefined;
+}
+
+/** The record Router leaves when Jira shows the issue Done or deleted (ADR 0069). Not a judgment. */
+export const ISSUE_CLOSED_ACTION = "issue.closed";
+
+function closedInJira(db: RouterDatabase, targetId: string): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM review_records WHERE target_id = ? AND action = ? LIMIT 1")
+      .get(targetId, ISSUE_CLOSED_ACTION) !== undefined
+  );
 }
 
 function mergedWithTarget(db: RouterDatabase, targetId: string): boolean {
@@ -366,9 +379,39 @@ function queueState(
   if (mergedWithTarget(db, target.id)) return "merged";
   if (judgment?.action === judgmentRecordAction("confirm")) return "confirmed";
   if (judgment?.action === judgmentRecordAction("rework")) return "rework_requested";
+  if (closedInJira(db, target.id)) return "closed";
   if (currentApprovalId !== null && currentApprovalId !== target.approvalId) return "outdated";
   if (judgment?.action === judgmentRecordAction("hold")) return "held";
   return "pending";
+}
+
+/** Issues whose current target still waits on a human. */
+export function listWaitingReviewIssueKeys(db: RouterDatabase): string[] {
+  return [...new Set(listReviewQueue(db).map((item) => item.target.issueKey))];
+}
+
+/**
+ * Takes an issue's waiting targets out of the queue because Jira shows it Done or deleted
+ * (ADR 0069). The record is Jira's status, not a person's judgment: no head is compared, so its
+ * outcome is `unverified`.
+ */
+export function closeWaitingReviews(
+  db: RouterDatabase,
+  input: { issueKey: string; reason: "done" | "deleted"; status?: string; now: string },
+): void {
+  for (const item of listReviewQueue(db, { issueKey: input.issueKey })) {
+    appendReviewRecord(db, {
+      targetId: item.target.id,
+      issueKey: input.issueKey,
+      action: ISSUE_CLOSED_ACTION,
+      actor: null,
+      authentication: "jira",
+      headSha: null,
+      outcome: "unverified",
+      detail: { reason: input.reason, ...(input.status ? { status: input.status } : {}) },
+      at: input.now,
+    });
+  }
 }
 
 /** How many current targets still wait on a human (`pending` or `held`). */

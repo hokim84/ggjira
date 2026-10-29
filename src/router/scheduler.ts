@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { RouterDatabase } from "./db/connection.js";
 import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
+import { JiraApiError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PlanMetadataError } from "../pm/metadata.js";
@@ -31,7 +32,11 @@ import {
 } from "./db/jobs.js";
 import { getActivePlanDeployment, getPlanReview } from "./db/plan-delegation.js";
 import { listProviderUsage } from "./db/provider-usage.js";
-import { isLatestReviewConfirmed } from "./db/review-targets.js";
+import {
+  closeWaitingReviews,
+  isLatestReviewConfirmed,
+  listWaitingReviewIssueKeys,
+} from "./db/review-targets.js";
 import { markWorkerAssigned } from "./db/workers.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 import { reconcileDelegatedPlans } from "./delegation.js";
@@ -709,37 +714,48 @@ async function reverifyUnseenOpenJobs(
 }
 
 /**
- * ADR 0067: a person moving an issue to Done accepts its result, so the items its runs left for a
- * human are settled. Done issues are not candidates, so only issues that still have open items are
- * looked up — once each, since settling closes what brought them here.
+ * ADR 0067, 0069: a person moving an issue to Done accepts its result, and deleting it ends it, so
+ * the items its runs left for a human are settled and its waiting results leave the review queue.
+ * Done issues are not candidates, so only issues that still have open items or waiting results are
+ * looked up — once each, since settling closes what brought them here. Only Jira's 404 counts as
+ * deleted; any other error is looked at again on the next pass.
  */
-async function settleDoneIssues(
+async function settleClosedIssues(
   deps: SchedulerDeps,
   processedIssueKeys: ReadonlySet<string>,
 ): Promise<void> {
   const keys = new Set(
-    listAttentionItems(deps.db, { status: "open" })
-      .filter((item) => SETTLED_BY_DONE.includes(item.kind))
-      .map((item) => item.issueKey)
-      .filter((key) => !processedIssueKeys.has(key)),
+    [
+      ...listAttentionItems(deps.db, { status: "open" })
+        .filter((item) => SETTLED_BY_DONE.includes(item.kind))
+        .map((item) => item.issueKey),
+      ...listWaitingReviewIssueKeys(deps.db),
+    ].filter((key) => !processedIssueKeys.has(key)),
   );
   for (const key of keys) {
     const workspace = deps.config.workspaces.find((w) =>
       w.projectKeys.includes(key.slice(0, key.lastIndexOf("-"))),
     );
     if (!workspace) continue;
-    let statusName: string;
+    let statusName: string | null;
     try {
       statusName = (await deps.jira.getIssue(key)).statusName;
-    } catch {
-      continue; // deleted or unreachable: the next pass looks again
+    } catch (error) {
+      if (!(error instanceof JiraApiError && error.status === 404)) continue;
+      statusName = null;
     }
-    if (statusName !== workspace.workflow.doneStatus) continue;
+    if (statusName !== null && statusName !== workspace.workflow.doneStatus) continue;
+    const now = deps.now();
     resolveAttention(deps.db, {
       issueKey: key,
       kinds: SETTLED_BY_DONE,
-      resolution: `moved to "${statusName}" in Jira`,
-      now: deps.now(),
+      resolution: statusName === null ? "deleted in Jira" : `moved to "${statusName}" in Jira`,
+      now,
+    });
+    closeWaitingReviews(deps.db, {
+      issueKey: key,
+      ...(statusName === null ? { reason: "deleted" } : { reason: "done", status: statusName }),
+      now,
     });
   }
 }
@@ -796,7 +812,7 @@ export async function reconcileCandidates(
   }
 
   await reverifyUnseenOpenJobs(deps, processedIssueKeys, report);
-  await settleDoneIssues(deps, processedIssueKeys);
+  await settleClosedIssues(deps, processedIssueKeys);
   noteUncertainRuns(deps);
   assignQueuedJobs(deps, availableWorkers, report);
   return report;

@@ -12,7 +12,8 @@ import { executeQualityEnvelope } from "../src/worker-runtime/quality.js";
 import { fakeSuccessResult } from "../src/worker/fake.js";
 import type { WorkerProvider } from "../src/worker/provider.js";
 
-describe("Git-pinned integration validation worker", () => {
+// Several real git clones per test: slow when the whole suite runs in parallel on Windows (runbook §13).
+describe("Git-pinned integration validation worker", { timeout: 30_000 }, () => {
   let dir: string;
   let source: string;
   let repository: WorkerRepositoryConfig;
@@ -89,7 +90,7 @@ describe("Git-pinned integration validation worker", () => {
         previousFindings: [],
       },
     };
-  });
+  }, 30_000);
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   });
