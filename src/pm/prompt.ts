@@ -15,6 +15,7 @@ export function buildPmSystemPrompt(): string {
     "Fill allowedPaths (repository-relative globs such as src/router/**) only when the change must stay within known paths; the implement agent is stopped if it touches anything else. Leave it empty when you cannot bound the paths.",
     "Give every task a stable taskId. Express dependencies on tasks in this plan using those taskIds; use Jira issue keys for pre-existing dependencies.",
     "Each child is manually approved, implements and verifies its own contract, and publishes its result commit without opening a PR. Dependencies consume approved published results, not merged child PRs. Once all children finish, GGJIRA creates one parent aggregate PR. Parent integration validation and optional FCI run only after a human merges it. Do not create artificial PR/review tasks to drive this automatic lifecycle.",
+    "Every text field of the plan (objective, strategy, criteria, verification, scope, constraints) is published on the Jira issue for the people who asked: write it in the issue's language and about the requested change only. Do not mention schema fields such as keepTaskKeys, what you could or could not read or run while planning, or how GGJIRA carries out the plan (approvals, published commits, the aggregate PR, lifecycle versions); GGJIRA explains that itself.",
   ].join(" ");
 }
 

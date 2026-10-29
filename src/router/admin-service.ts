@@ -127,8 +127,13 @@ export interface AdminWorkerView {
   paired: boolean;
   revokedAt: string | null;
   lastHeartbeatAt: string | null;
-  /** Could be handed a job right now (session, fresh heartbeat, enabled, not revoked). */
+  /** Could be handed a job right now (session, fresh heartbeat, enabled, not revoked). A worker
+   *  running a job only heartbeats that job, so it is not `online` meanwhile; see `busy`. */
   online: boolean;
+  /** Running a job whose lease is still being renewed. */
+  busy: boolean;
+  /** Reachable: waiting for work (`online`) or running a job (`busy`). */
+  connected: boolean;
   reportedRepositoryIds: string[];
   /** repositoryId → local path on the worker machine (display only). */
   repositoryPaths: Record<string, string>;
@@ -157,7 +162,7 @@ export interface AdminBlockedBatch {
 export interface RouterStatus {
   jobs: Partial<Record<JobState, number>>;
   queue: { oldestQueuedSince: string | null; waitMs: number | null };
-  workers: { declared: number; paired: number; online: number };
+  workers: { declared: number; paired: number; online: number; busy: number; connected: number };
   recoveryRequired: number;
   webhooks: { oldestUnprocessedAt: string | null; delayMs: number | null };
   reports: { blocked: number };
@@ -323,6 +328,8 @@ export class AdminService {
       const row = rows.get(workerId);
       const policy = this.config.workers.find((w) => w.workerId === workerId);
       const active = row ? getActiveAttemptForWorker(this.db, workerId) : undefined;
+      const online = row ? isWorkerDispatchable(row, this.config, now) : false;
+      const busy = Boolean(active && Date.parse(active.leaseExpiresAt) > Date.parse(now));
       return {
         workerId,
         name: row?.name ?? null,
@@ -332,7 +339,9 @@ export class AdminService {
         paired: Boolean(row),
         revokedAt: row?.revokedAt ?? null,
         lastHeartbeatAt: row?.lastHeartbeatAt ?? null,
-        online: row ? isWorkerDispatchable(row, this.config, now) : false,
+        online,
+        busy,
+        connected: online || busy,
         reportedRepositoryIds: row?.reportedRepositoryIds ?? [],
         repositoryPaths: row?.reportedRepositoryPaths ?? {},
         activeAttempt: active
@@ -962,6 +971,8 @@ export class AdminService {
         declared: workers.filter((w) => w.declared).length,
         paired: workers.filter((w) => w.paired && !w.revokedAt).length,
         online: workers.filter((w) => w.online).length,
+        busy: workers.filter((w) => w.busy).length,
+        connected: workers.filter((w) => w.connected).length,
       },
       recoveryRequired: jobs.recovery_required ?? 0,
       webhooks: { oldestUnprocessedAt, delayMs: elapsedMs(oldestUnprocessedAt, now) },

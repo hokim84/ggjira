@@ -832,7 +832,7 @@ function planSteps(input: ResultJournalInput, plan: Plan): ReportStepSpec[] {
         signature: signature(job, input.attemptId),
         next: [
           `계획은 "${workspace.workflow.planningInProgressStatus}"에 유지합니다. 실행할 자식(자식이 없으면 이 이슈)을 "${workspace.workflow.inProgressStatus}"으로 옮기세요.`,
-          `구현과 통합 검증 후 "${workspace.workflow.implementationCompleteStatus}"으로 자동 이동합니다. AI 리뷰는 선택 사항입니다.`,
+          `구현과 통합 검증 후 "${workspace.workflow.implementationCompleteStatus}"으로 자동 이동합니다.`,
         ],
         language: config.reporting.language,
       },

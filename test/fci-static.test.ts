@@ -16,7 +16,8 @@ const git = (cwd: string, ...args: string[]) =>
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
-describe("static FCI end to end", () => {
+// Each case builds and analyzes real git history; on Windows that alone can exceed vitest's 5s.
+describe("static FCI end to end", { timeout: 60_000 }, () => {
   let dir: string;
   let repo: string;
   let base: string;
@@ -53,7 +54,8 @@ describe("static FCI end to end", () => {
   });
   afterEach(async () => {
     await router.close();
-    rmSync(dir, { recursive: true, force: true });
+    // Windows can still hold a file of the just-closed database or git process for a moment.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
   const next = () => router.service.fci.next("worker-1", "session", `request-${++seq}`, []);
   async function execute() {
@@ -63,6 +65,7 @@ describe("static FCI end to end", () => {
       repository: {
         baseBranch: "main",
         validateCommand: null,
+        validateTimeoutMs: 600_000,
         createPullRequest: false,
         id: "repo1",
         path: repo,
@@ -267,6 +270,7 @@ describe("static FCI end to end", () => {
             path: repo,
             baseBranch: "main",
             validateCommand: null,
+            validateTimeoutMs: 600_000,
             createPullRequest: false,
           },
           worktreesRoot: path.join(dir, "worktrees"),
@@ -333,6 +337,7 @@ describe("static FCI end to end", () => {
       repository: {
         baseBranch: "main",
         validateCommand: null,
+        validateTimeoutMs: 600_000,
         createPullRequest: false,
         id: "repo1",
         path: repo,

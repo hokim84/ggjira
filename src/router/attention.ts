@@ -71,6 +71,18 @@ export function resultAttention(
   };
 }
 
+/** Kinds a person settles by moving the issue to Done (ADR 0067): the result is accepted, so what
+ *  the runs left for a human is decided. Router-side problems (a blocked Jira report, an unchecked
+ *  pull request) stay open: Done does not fix them. */
+export const SETTLED_BY_DONE: readonly AttentionKind[] = [
+  "failed",
+  "decision_needed",
+  "scope_deviation",
+  "review_required",
+  "plan_approval_refused",
+  "unassigned",
+];
+
 /** Kinds a fresh approval of the issue settles: whatever the earlier run left behind. */
 export const SETTLED_BY_NEW_APPROVAL: readonly AttentionKind[] = [
   "failed",

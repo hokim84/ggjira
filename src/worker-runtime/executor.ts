@@ -421,10 +421,11 @@ async function executeWithProvider(
       });
     }
     deps.onProgress?.("validating");
-    // Bounded like the integration check (quality.ts): a hung command must not outlive the lease.
+    // Bounded like the integration check (quality.ts): a hung command must not hold the worker
+    // for the whole job timeout (ADR 0068).
     const validated = await runValidateCommand(repository.validateCommand, cwd, {
       signal: deps.signal,
-      timeoutMs: envelope.timeoutMs,
+      timeoutMs: Math.min(repository.validateTimeoutMs, envelope.timeoutMs),
     });
     validation.push(validated.summary);
     if (validated.stopped === "cancelled") {

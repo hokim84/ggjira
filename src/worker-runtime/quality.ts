@@ -67,7 +67,7 @@ export async function executeQualityEnvelope(
     const validation = deps.repository.validateCommand
       ? await runValidateCommand(deps.repository.validateCommand, cwd, {
           signal: deps.signal,
-          timeoutMs: envelope.timeoutMs,
+          timeoutMs: Math.min(deps.repository.validateTimeoutMs, envelope.timeoutMs),
         })
       : { ok: false, summary: "검증 명령이 설정되지 않았습니다. 리뷰 의견만 제공합니다." };
     const baselineSha = context.integration.mergeCommits[0]

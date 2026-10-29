@@ -103,7 +103,9 @@ const decision = {
   impact: "Needs a migration",
 };
 
-describe("implementation scope checks (ADR 0036)", () => {
+// Every case clones and commits real git repositories; under a full parallel run on Windows that
+// can pass vitest's default 5s (runbook §13).
+describe("implementation scope checks (ADR 0036)", { timeout: 30_000 }, () => {
   let dir: string;
   let remote: string;
   let clone: string;
@@ -134,7 +136,11 @@ describe("implementation scope checks (ADR 0036)", () => {
   async function run(
     provider: WorkerProvider,
     job: JobEnvelope = envelope(),
-    options: { validateCommand?: string; abortDuringValidation?: boolean } = {},
+    options: {
+      validateCommand?: string;
+      validateTimeoutMs?: number;
+      abortDuringValidation?: boolean;
+    } = {},
   ): Promise<{ outcome: ExecutionOutcome; stages: string[] }> {
     const stages: string[] = [];
     const abort = new AbortController();
@@ -149,6 +155,7 @@ describe("implementation scope checks (ADR 0036)", () => {
             pushRemote: "origin",
             createPullRequest: false,
             ...(options.validateCommand ? { validateCommand: options.validateCommand } : {}),
+            ...(options.validateTimeoutMs ? { validateTimeoutMs: options.validateTimeoutMs } : {}),
           },
         ],
         providers: [{ id: "default", type: "claude-code" }],
@@ -443,7 +450,7 @@ describe("implementation scope checks (ADR 0036)", () => {
 
       expect(outcome.status).toBe("cancelled");
       expect(outcome.summary).toContain("Stopped during validation");
-      expect(outcome.validation).toEqual(["validation cancelled or timed out"]);
+      expect(outcome.validation).toEqual(["validation cancelled"]);
       expect(stages).toEqual(["commit", "validate"]);
       expect(remoteBranches()).not.toContain("ggjira/");
     });
@@ -457,10 +464,28 @@ describe("implementation scope checks (ADR 0036)", () => {
 
       expect(outcome.status).toBe("failed");
       expect(outcome.timedOut).toBe(true);
-      expect(outcome.failureReason).toBe(
-        "Validation command failed: validation cancelled or timed out",
+      expect(outcome.failureReason).toMatch(
+        /^Validation command failed: ".*" did not finish within 500 ms and was stopped/,
       );
       expect(remoteBranches()).not.toContain("ggjira/");
+    });
+
+    it("stops a hung command at the repository's shorter validation timeout (ADR 0068)", async () => {
+      const { outcome } = await run(editing(), envelope(), {
+        validateCommand: hang,
+        validateTimeoutMs: 500,
+      });
+
+      expect(outcome.status).toBe("failed");
+      expect(outcome.timedOut).toBe(true);
+      expect(outcome.failureReason).toMatch(/did not finish within 500 ms and was stopped/);
+    });
+
+    it("keeps the last output line of a passed command, so skipped tests show (ADR 0068)", async () => {
+      const command = `node -e "console.log('Ran 3 tests'); console.error('OK (skipped=1)')"`;
+      const { outcome } = await run(editing(), envelope(), { validateCommand: command });
+
+      expect(outcome.validation).toEqual([`"${command}" passed — OK (skipped=1)`]);
     });
   });
 

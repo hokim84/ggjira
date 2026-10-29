@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { RouterDatabase } from "./db/connection.js";
 import { canTransitionAttemptState } from "../contracts/attempt-state.js";
 import { isRouteDispatch } from "../contracts/route.js";
+import { JiraApiError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraIssue } from "../jira/types.js";
 import { PlanMetadataError } from "../pm/metadata.js";
 import { inputHashMatches } from "./approval.js";
-import { SETTLED_BY_NEW_APPROVAL } from "./attention.js";
+import { SETTLED_BY_DONE, SETTLED_BY_NEW_APPROVAL } from "./attention.js";
 import { findWorkspaceCandidates } from "./candidates.js";
 import { COMMENT_TEXT } from "./comment-text.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
@@ -31,7 +32,11 @@ import {
 } from "./db/jobs.js";
 import { getActivePlanDeployment, getPlanReview } from "./db/plan-delegation.js";
 import { listProviderUsage } from "./db/provider-usage.js";
-import { isLatestReviewConfirmed } from "./db/review-targets.js";
+import {
+  closeWaitingReviews,
+  isLatestReviewConfirmed,
+  listWaitingReviewIssueKeys,
+} from "./db/review-targets.js";
 import { markWorkerAssigned } from "./db/workers.js";
 import type { DecisionProvider, RouteContext } from "./decision.js";
 import { reconcileDelegatedPlans } from "./delegation.js";
@@ -709,6 +714,53 @@ async function reverifyUnseenOpenJobs(
 }
 
 /**
+ * ADR 0067, 0069: a person moving an issue to Done accepts its result, and deleting it ends it, so
+ * the items its runs left for a human are settled and its waiting results leave the review queue.
+ * Done issues are not candidates, so only issues that still have open items or waiting results are
+ * looked up — once each, since settling closes what brought them here. Only Jira's 404 counts as
+ * deleted; any other error is looked at again on the next pass.
+ */
+async function settleClosedIssues(
+  deps: SchedulerDeps,
+  processedIssueKeys: ReadonlySet<string>,
+): Promise<void> {
+  const keys = new Set(
+    [
+      ...listAttentionItems(deps.db, { status: "open" })
+        .filter((item) => SETTLED_BY_DONE.includes(item.kind))
+        .map((item) => item.issueKey),
+      ...listWaitingReviewIssueKeys(deps.db),
+    ].filter((key) => !processedIssueKeys.has(key)),
+  );
+  for (const key of keys) {
+    const workspace = deps.config.workspaces.find((w) =>
+      w.projectKeys.includes(key.slice(0, key.lastIndexOf("-"))),
+    );
+    if (!workspace) continue;
+    let statusName: string | null;
+    try {
+      statusName = (await deps.jira.getIssue(key)).statusName;
+    } catch (error) {
+      if (!(error instanceof JiraApiError && error.status === 404)) continue;
+      statusName = null;
+    }
+    if (statusName !== null && statusName !== workspace.workflow.doneStatus) continue;
+    const now = deps.now();
+    resolveAttention(deps.db, {
+      issueKey: key,
+      kinds: SETTLED_BY_DONE,
+      resolution: statusName === null ? "deleted in Jira" : `moved to "${statusName}" in Jira`,
+      now,
+    });
+    closeWaitingReviews(deps.db, {
+      issueKey: key,
+      ...(statusName === null ? { reason: "deleted" } : { reason: "done", status: statusName }),
+      now,
+    });
+  }
+}
+
+/**
  * The fast path for jobs that may be running right now (§2 "활성 작업의 승인은 최대 5초 간격으로
  * 중앙에서 확인한다"): re-checks every leased/running job against Jira. A revoked running job is
  * moved to `cancel_requested`, which the worker hears on its next job heartbeat.
@@ -760,6 +812,7 @@ export async function reconcileCandidates(
   }
 
   await reverifyUnseenOpenJobs(deps, processedIssueKeys, report);
+  await settleClosedIssues(deps, processedIssueKeys);
   noteUncertainRuns(deps);
   assignQueuedJobs(deps, availableWorkers, report);
   return report;

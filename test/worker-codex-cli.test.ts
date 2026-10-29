@@ -17,7 +17,9 @@ function baseRequest(overrides: Partial<WorkerRequest> = {}): WorkerRequest {
   };
 }
 
-describe("CodexCliProvider", () => {
+// The fake CLIs are POSIX shell scripts (test/fixtures/*.sh), which Windows cannot spawn
+// (`spawn EFTYPE`). CI and `docker-compose.test.yml` run them on Linux (runbook §13).
+describe.skipIf(process.platform === "win32")("CodexCliProvider", () => {
   it("reads the last-message file as the summary on success", async () => {
     const provider = new CodexCliProvider(undefined, {
       command: path.join(FIXTURES_DIR, "codex-succeeds.sh"),

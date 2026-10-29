@@ -68,7 +68,9 @@ describe("plan usage parsing (ADR 0028)", () => {
   });
 });
 
-describe("ClaudeCodeCliProvider usage", () => {
+// The fake CLIs are POSIX shell scripts (test/fixtures/*.sh), which Windows cannot spawn
+// (`spawn EFTYPE`). CI and `docker-compose.test.yml` run them on Linux (runbook §13).
+describe.skipIf(process.platform === "win32")("ClaudeCodeCliProvider usage", () => {
   const provider = new ClaudeCodeCliProvider(undefined, {
     command: path.join(FIXTURES_DIR, "claude-usage.sh"),
   });
@@ -109,7 +111,7 @@ describe("ClaudeCodeCliProvider usage", () => {
   });
 });
 
-describe("CodexCliProvider usage", () => {
+describe.skipIf(process.platform === "win32")("CodexCliProvider usage", () => {
   const provider = new CodexCliProvider(undefined, {
     command: path.join(FIXTURES_DIR, "codex-app-server.sh"),
   });

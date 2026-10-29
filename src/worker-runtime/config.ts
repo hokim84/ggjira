@@ -21,6 +21,13 @@ const WorkerRepositorySchema = z.object({
   path: z.string().min(1).optional(),
   baseBranch: z.string().min(1).default("main"),
   validateCommand: z.string().min(1).nullable().default(null),
+  /** How long `validateCommand` may run before it is stopped and the run fails (ADR 0068). The
+   *  job's own timeout still applies when it is shorter. */
+  validateTimeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .default(10 * 60 * 1000),
   /** Where `worker start` clones `path` from when it does not exist yet (from Router's profile). */
   cloneUrl: CloneUrlSchema.optional(),
   /** Git remote a finished job branch is pushed to, so people review it there (ADR 0026).

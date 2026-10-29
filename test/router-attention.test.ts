@@ -1,12 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobEnvelope } from "../src/contracts/envelope.js";
 import { PROTOCOL_VERSION } from "../src/contracts/protocol.js";
 import { listAttentionItems, recordAttention } from "../src/router/db/attention.js";
 import { getOpenJobForIssue } from "../src/router/db/jobs.js";
+import { listReviewQueue, listReviewRecords } from "../src/router/db/review-targets.js";
+import { JiraApiError } from "../src/jira/client.js";
 import { retryJob, retryReportBatch } from "../src/router/recovery.js";
 import { processReportJournal } from "../src/router/report-processor.js";
 import { reRequestHint } from "../src/router/workflow-mode.js";
 import {
+  DONE_STATUS,
   IN_PROGRESS_STATUS,
   REQUEST_STATUS,
   WORKFLOW_TRANSITIONS,
@@ -219,5 +222,113 @@ describe("attention items", () => {
     expect(
       (await router.adminCall("GET", "/attention?status=resolved&issue=kan-1")).json(),
     ).toMatchObject({ items: [{ kind: "report_blocked", resolution: expect.any(String) }] });
+  });
+
+  it("settles what a run left for a human once a person moves the issue to Done (ADR 0067)", async () => {
+    const at = router.clock.now();
+    for (const key of ["KAN-7", "KAN-8"]) {
+      router.jira.seedIssue({ key, statusName: key === "KAN-7" ? DONE_STATUS : "To Do" });
+      recordAttention(router.db, {
+        issueKey: key,
+        approvalId: null,
+        kind: "review_required",
+        cause: `result:${key}`,
+        severity: "standard",
+        reason: "1 acceptance criterion not verified",
+        now: at,
+      });
+    }
+    recordAttention(router.db, {
+      issueKey: "KAN-7",
+      approvalId: null,
+      kind: "report_blocked",
+      cause: "batch:1",
+      severity: "immediate",
+      reason: "Jira refused the transition",
+      now: at,
+    });
+
+    await router.reconcile();
+
+    const open = listAttentionItems(router.db, { status: "open" }).map((i) => [i.issueKey, i.kind]);
+    expect(open).toEqual(
+      expect.arrayContaining([
+        ["KAN-8", "review_required"],
+        ["KAN-7", "report_blocked"],
+      ]),
+    );
+    expect(open).toHaveLength(2);
+    const [settled] = listAttentionItems(router.db, { issueKey: "KAN-7", kind: "review_required" });
+    expect(settled).toMatchObject({
+      status: "resolved",
+      resolution: `moved to "${DONE_STATUS}" in Jira`,
+    });
+  });
+
+  it("settles a deleted issue's items, but not one Jira only failed to answer for (ADR 0069)", async () => {
+    const at = router.clock.now();
+    for (const key of ["KAN-9", "KAN-10"]) {
+      recordAttention(router.db, {
+        issueKey: key,
+        approvalId: null,
+        kind: "review_required",
+        cause: `result:${key}`,
+        severity: "standard",
+        reason: "1 acceptance criterion not verified",
+        now: at,
+      });
+    }
+    // KAN-9 was deleted (Jira answers 404); KAN-10 exists but Jira is unavailable this pass.
+    router.jira.seedIssue({ key: "KAN-10", statusName: DONE_STATUS });
+    const getIssue = router.jira.getIssue.bind(router.jira);
+    const spy = vi.spyOn(router.jira, "getIssue").mockImplementation(async (key) => {
+      if (key === "KAN-10") throw new JiraApiError("unavailable", 503, `/issue/${key}`);
+      return getIssue(key);
+    });
+
+    await router.reconcile();
+
+    expect(listAttentionItems(router.db, { issueKey: "KAN-9" })).toMatchObject([
+      { status: "resolved", resolution: "deleted in Jira" },
+    ]);
+    expect(listAttentionItems(router.db, { issueKey: "KAN-10" })).toMatchObject([
+      { status: "open" },
+    ]);
+
+    spy.mockRestore();
+    await router.reconcile();
+    expect(listAttentionItems(router.db, { issueKey: "KAN-10" })).toMatchObject([
+      { status: "resolved", resolution: `moved to "${DONE_STATUS}" in Jira` },
+    ]);
+  });
+
+  it("takes a Done issue's result out of the review queue without judging it (ADR 0069)", async () => {
+    await router.seedQueuedJob("KAN-1");
+    await runOnce({});
+    expect(listReviewQueue(router.db, { issueKey: "KAN-1" })).toMatchObject([{ state: "pending" }]);
+    expect((await router.adminCall("GET", "/status")).json()).toMatchObject({
+      reviews: { waiting: 1 },
+    });
+
+    router.jira.seedIssue({ key: "KAN-1", statusName: DONE_STATUS });
+    await router.reconcile();
+    await router.reconcile(); // nothing waits any more, so the second pass records nothing
+
+    expect(listReviewQueue(router.db, { issueKey: "KAN-1" })).toEqual([]);
+    expect(listReviewQueue(router.db, { issueKey: "KAN-1", states: ["closed"] })).toHaveLength(1);
+    const closed = listReviewRecords(router.db, "KAN-1").filter(
+      (record) => record.action === "issue.closed",
+    );
+    expect(closed).toMatchObject([
+      {
+        authentication: "jira",
+        actor: null,
+        outcome: "unverified",
+        detail: { reason: "done", status: DONE_STATUS },
+      },
+    ]);
+    expect((await router.adminCall("GET", "/status")).json()).toMatchObject({
+      reviews: { waiting: 0 },
+    });
   });
 });

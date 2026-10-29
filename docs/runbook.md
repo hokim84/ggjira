@@ -22,9 +22,11 @@ GGJIRA v5(Router + Worker) 운영·진단 절차다. §1~§12(v4 폴링 에이�
 진행하지도 않는다). ADR 0063으로 네이티브 애드온이 없어진 뒤 2026-10-27에는 같은 머신에서 전체 실행이
 멈추지 않고 75초 만에 끝났다. 다시 멈추면 아래 방법을 쓴다.
 
-멈추지 않아도 Windows에서만 실패하는 테스트가 있다. `.sh` fixture를 쓰는 `worker-claude-code-cli`·
-`worker-codex-cli`(아래 `spawn EFTYPE`)와, git을 많이 실행해 5초 제한 근처에서 끝나는 `fci-static`의
-일부 테스트(변경 전 HEAD에서도 같다)다. 이런 테스트는 Linux 컨테이너에서 확인한다. CI(`ubuntu-latest`, `.github/workflows/ci.yml`)와 Linux 컨테이너(§16의 `docker-compose.test.yml`)에서는 재현되지 않으므로
+Windows에서는 `.sh` fixture로 가짜 CLI를 쓰는 테스트(`worker-claude-code-cli`, `worker-codex-cli`,
+`worker-usage`의 provider 묶음)를 `describe.skipIf(process.platform === "win32")`로 건너뛴다. Windows가 `.sh`를
+직접 spawn하지 못해서다(`spawn EFTYPE`). 이 테스트는 Linux 컨테이너에서 확인한다. git을 많이 실행하는
+`fci-static`은 테스트마다 60초 제한과 임시 폴더 정리 재시도를, git 저장소를 만드는 `worker-push`·`worker-scope`·`fci`·`worker-quality-review`·
+`worker-runtime-ops`는 30초 제한을 둬 전체 병렬 실행에서도 통과한다(docs/known-issues.md #12). CI(`ubuntu-latest`, `.github/workflows/ci.yml`)와 Linux 컨테이너(§16의 `docker-compose.test.yml`)에서는 재현되지 않으므로
 `vitest.config.ts`는 건드리지 않는다.
 
 이 증상을 보이면 로컬에서만 다음처럼 실행한다:
@@ -34,9 +36,7 @@ npx vitest run --pool=forks --poolOptions.forks.singleFork
 ```
 
 병렬성이 없어 전체 스위트가 조금 느려지지만(로컬 기준 약 20-30초), 안정적으로 끝까지
-실행된다. `test/worker-claude-code-cli.test.ts`, `test/worker-codex-cli.test.ts`의
-`spawn EFTYPE` 실패 8건은 이 워크어라운드와 무관한, 이 환경에서 `.sh` fixture를 직접
-spawn하지 못하는 별개의 기존 문제다(아직 원인 조사 전이다). Linux에서는 이 fixture가 그대로 실행된다.
+실행된다.
 
 `singleFork`로도 멈추는 경우가 있다(2026-09-23, 변경 전 HEAD에서도 재현). 그때는 파일마다 별도
 프로세스로 실행하고, 제한 시간에 걸린 파일만 다시 돌린다. 한 파일씩은 안정적으로 끝난다.
@@ -304,6 +304,8 @@ ggjira worker run [--home <폴더>]     # Ctrl+C 1회: 현재 작업 후 종료,
 - `worker setup`은 token을 `<워커 홈>/credential.json`에만 쓴다. 설정 파일·출력에는 남기지 않는다. 이미 있으면
   `--force`가 필요하다. 홈에 설정이 없으면 시작용 `worker.config.json`도 쓴다.
 - Router URL은 `https://`만 쓴다. `http://`는 `localhost`/`127.0.0.1` 개발용에만 허용한다.
+- **`spool/rejected/`에 파일이 있음**: Router가 404(모르는 attempt)나 403(다른 워커의 attempt)으로 영원히 받지
+  않는 결과다. 워커가 다시 보내지 않도록 옮겨 두었다. 내용을 확인한 뒤 지워도 된다.
 - **spool에 결과가 남음**(`worker check`가 경고): `worker run`을 멈춘 상태에서
   `ggjira worker results retry`로 보낸다. 세션을 새로 열기 때문에 실행 중인 `worker run`의 세션을
   빼앗는다.
@@ -606,6 +608,11 @@ Router는 서명이 맞는 웹훅의 이벤트 종류·이슈 키·프로젝트�
 | `unassigned` | 담당자 없는 이슈를 위임해 시작 안 함(댓글 1회) | 이슈에 담당자를 지정 | 다음 패스에서 job이 생김 |
 | `pull_request_unchecked` | Router가 GitHub에서 PR을 확인하지 못함. 머지해도 Jira에 반영되지 않음 | 증거의 오류대로 `GITHUB_TOKEN`을 넣거나 권한을 고침(§21 진단) | 다음 확인 성공, 또는 PR 종료 |
 
+- 사람이 이슈를 Done으로 옮기면 다음 보완 조회에서 `failed`·`decision_needed`·`scope_deviation`·`review_required`·
+  `plan_approval_refused`·`unassigned`가 `moved to "<Done>" in Jira`로 해소된다(ADR 0067). `report_blocked`와
+  `pull_request_unchecked`는 Router 쪽 문제라 Done으로 해소되지 않는다.
+- Jira에서 지운 이슈(조회가 404)도 같은 항목이 `deleted in Jira`로 해소된다(ADR 0069). 권한·네트워크 오류는
+  해소하지 않고 다음 보완 조회에서 다시 본다. 주의: Router 계정이 이슈를 볼 권한을 잃어도 Jira는 404로 답한다.
 - 해소는 기록일 뿐이다. 해소됐다고 실행이 시작되지 않는다. 실행은 Jira의 새 요청(승인)만 시작한다.
 - `--all`이나 `--resolved`로 해소 이력을 본다. "recurred after"는 해소된 같은 사건의 재발이다.
 - 같은 이유의 반복 실패는 Jira 댓글을 다시 달지 않는다. 이유가 바뀌면 새 댓글이 달린다.
@@ -663,8 +670,10 @@ M4는 DB migration 11~13(`review_targets`·`review_records`, `attention_items`, 
   자기 신고다.
 - 409 `stale_review_target`: 그 사이 같은 이슈의 새 결과가 나왔거나(`currentTargetId`가 새 대상), 이슈가 다시
   승인됐다. 목록을 다시 보고 새 대상에 판단한다. 거절도 감사 기록(`review.judgment.refused`)에 남는다.
+- 이슈를 Done으로 옮기거나 Jira에서 지우면 다음 보완 조회가 그 결과를 `closed`("Jira에서 닫힘")로 대기열에서
+  뺀다(ADR 0069). 판단 기록이 아니라 `issue.closed` 기록(인증 `jira`)이며, 그 뒤에도 판단을 남길 수 있다.
 - 지난 판단은 `ggjira router issue reviews KEY`와 이슈 화면의 검토 대상에서 본다. `router reviews --all`은
-  확인·재작업 요청·머지·새 승인으로 빠진 대상까지 보여 준다.
+  확인·재작업 요청·머지·Jira에서 닫힘·새 승인으로 빠진 대상까지 보여 준다.
 
 ## 33. Docker·VM 없이 이 PC에서 띄우기 (Windows 배치 파일)
 
@@ -1020,9 +1029,16 @@ Jira 댓글로 전달된다. 실행·커밋·과거 판단 기록과 PR 병합 S
   `worker.config.json`에서 `repositories[].validateCommand`에 저장소의 검사 명령(예: `npm run check`,
   `dotnet test`)을 넣고 `npm run dev -- worker check`로 경고가 사라졌는지 본 뒤 워커를 재시작한다. 이 사유는
   자동 완료·부모 PR 조립을 막지 않는다.
-- **검증 명령이 오래 걸림**: 명령은 job의 취소 신호와 별도의 `timeoutMs` 한도로 실행된다(AI 실행 시간과
-  따로 센다). 한도를 넘기면 `GGJ-105` 시간 초과, Router가 취소하거나 임대를 잃으면 `cancelled`로 끝나고 push하지
-  않는다. 커밋은 워커의 job 브랜치에 남는다.
+- **검증 명령이 오래 걸리거나 멈춤**(ADR 0068): 명령은 `repositories[].validateTimeoutMs`(기본 10분)와 job
+  `timeoutMs` 중 짧은 쪽을 한도로 실행된다(AI 실행 시간과 따로 센다). 한도를 넘기면 프로세스 트리를 멈추고
+  `"<명령>" did not finish within <시간> and was stopped`와 출력 끝부분으로 실패한다(`GGJ-105` 시간 초과).
+  Router가 취소하거나 임대를 잃으면 `cancelled`로 끝나고 push하지 않는다. 커밋은 워커의 job 브랜치에 남는다.
+  검사가 원래 10분보다 오래 걸리는 저장소는 `validateTimeoutMs`를 늘린다. GUI 테스트가 실제 창이나 대화상자를
+  띄우면 워커 데스크톱에서 멈출 수 있으니, 테스트가 대화상자를 대체하도록 만든다.
+- **검증 요약 읽기**: 통과하면 `"<명령>" passed — <마지막 출력 줄>`(예: `OK (skipped=3)`)로 무엇이 실행되고 건너뛰어졌는지
+  보인다. 실패하면 종료 코드(부호 있는 값)와 출력 끝 2000자를 줄 단위로 보인다.
+- **통합 검증 실패 댓글의 다음 안내**: 원인이 환경이면 해결 뒤 `재시도` 댓글, 병합된 코드가 원인이면 `재시도`로는 같은
+  결과가 나오므로 설명에 원인을 적고 이슈를 요청 상태로 옮겨 고칠 작업을 받는다(재계획은 끝난 자식을 보존한다).
 - **완료 조건 줄의 `(실행)`·`(코드 확인)`**: AI가 보고한 확인 방식이다. `실행`은 명령·테스트를 돌려 결과를 봤다는
   뜻이고, `코드 확인`은 코드·문서를 읽고 판단했다는 뜻이다. 명령을 실행할 수 없는 에이전트(예: 기본 도구의 Claude
   Code)는 `코드 확인`을 써야 한다. 표시가 없으면 업그레이드 전 결과이거나 AI가 알 수 없는 값을 보냈다. 방식은
@@ -1031,7 +1047,7 @@ Jira 댓글로 전달된다. 실행·커밋·과거 판단 기록과 PR 병합 S
 - **하위 작업에 "사람 확인 필요" 댓글**(ADR 0061·0066): AI가 실패한 검증은 없지만 일부 완료 조건을 확인하지
   못했다고 보고했다(예: 화면을 띄울 수 없는 워커의 GUI 조건). 결과 커밋은 원격 브랜치에 보존됐고, Router가 검증된
   하위 작업처럼 이슈를 구현 완료로 옮겼다. 이 하위 작업에 의존하는 작업과 부모 PR은 기다리지 않고 진행된다.
-  댓글에 적힌 조건은 **부모 PR을 병합하기 전에 직접 확인**하고 웹 UI 검토 화면의 "결과 확인 기록"(또는
+  댓글에 적힌 조건은 **부모 PR을 병합하기 전에 직접 확인**하고 웹 UI 작업 상세의 "결과 확인 기록"(또는
   `router reviews judge <targetId> confirm`)으로 남긴다. 그 전까지 `review_required` 주의 항목과 이슈 화면의 미확인
   목록이 남는다. 문제가 있으면 설명을 고친 뒤 이슈를 작업 중으로 옮겨 다시 요청한다(이미 만든 부모 PR은 철회된다).
   실패한 결과나 승인 뒤 내용이 바뀐 결과는 손으로 구현 완료로 옮겨도 완료로 치지 않는다.
