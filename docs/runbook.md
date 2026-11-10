@@ -1078,6 +1078,7 @@ GGJIRA 코드를 바꾼 사람·AI 에이전트(Claude Code, Codex 등)가 완�
 | 자식 완료·검토 판단·복구 | `router-board-workflow`, `router-review-queue`, `router-admin-api` | 미확인 자식 자동 완료 → 의존 작업·부모 PR → 검토 화면 확인, `recovery_required` → "재시도" |
 | 워커 계층 경계 | `worker-runtime-no-jira` | `src/worker-runtime`이 Jira·Router DB를 import하지 않음 |
 | Router + Worker 전체 | `router-integration`, `router-daemon` | loopback HTTP로 계획→승인→구현→보고가 한 번씩 |
+| Slack 대화·자동 승인 | `router-slack`, `router-db`, `router-admin-config`, `router-reporting`, `router-board-workflow`, `router-daemon` | 담당자 DM·Jira 기록, 답변 재계획·자동 구현, 중복·장애·재시작 |
 
 2단계 — `npm run check`. Windows에서 멈추거나 `spawn EFTYPE`(§13)만 실패하면
 `docker compose -f docker-compose.test.yml run --rm --build check`로 Linux에서 전체를 확인한다.
@@ -1115,3 +1116,54 @@ git worktree list        # 모든 worktree가 새 위치로 나오면 된다
 
 Router와 Worker를 함께 새 빌드로 재시작해야 ADR 0059·0061 동작(실패 로그의 Acceptance Checks 절, 사람 확인 대기)이
 적용된다. 이미 발급된 attempt는 이전 지침과 규칙으로 끝난다.
+
+## 48. Slack DM 질문·답변과 자동 구현 (ADR 0070)
+
+Slack 연동은 기본적으로 꺼져 있다. 활성화한 GGJIRA workspace에서 연결된 담당자의 **새 계획 요청**은
+추가 질문이 없으면 별도 Jira 승인 없이 구현을 시작한다. 하위 작업도 포함하며 기존 의존성 순서로 실행한다.
+Done으로 최종 완료하는 것은 여전히 사람의 결정이다.
+
+1. `deploy/slack-app-manifest.json`으로 Slack 앱을 만든다. 두 `request_url`을 Router의 실제 HTTPS
+   주소 `/webhooks/slack`으로 바꾼다. Router는 Slack에서 접근 가능해야 한다(기존 Caddy/Cloudflare 배포 사용).
+2. 앱을 workspace에 설치하고 Bot Token을 발급받는다. Basic Information의 Signing Secret도 복사한다.
+   Event Subscriptions에 `message.im`, Interactivity를 켠다. 권한은 `chat:write`, `im:write`, `im:history`다.
+3. 웹 UI > 설정 > Slack 작업 대화에 Bot Token과 Signing Secret을 저장한다. 환경변수를 쓰려면
+   `GGJIRA_SLACK_BOT_TOKEN`, `GGJIRA_SLACK_SIGNING_SECRET`을 사용한다. 환경변수 값은 UI에서 바꿀 수 없다.
+   서명 키를 먼저 넣으면 Slack URL 검증에 응답할 수 있다. 아직 앱을 설치하지 못했으면 URL은 앱 생성 후 등록한다.
+4. Slack 팀 ID(`T…`), 적용할 GGJIRA workspace ID와 Jira 담당자 계정 ID ↔ Slack 사용자 ID(`U…`)
+   연결을 입력하고 활성화하여 저장한다. 한 Router는 Slack workspace 하나만 지원한다.
+   - 팀 ID는 워크스페이스 주소(`xxx.slack.com`)가 아니다. 브라우저 Slack 주소 `app.slack.com/client/T…/`의
+     `T…` 부분이나 Bot Token의 `auth.test` 응답 `team_id`를 쓴다.
+   - Jira 담당자 계정 ID는 이메일이 아니라 accountId(`557058:…`)다. 이메일·이름을 입력하고 **찾기**를 누르면
+     Router가 Jira 사용자 검색(`POST /api/v1/admin/jira/users`)으로 accountId를 채운다. 이메일이 비공개인
+     사용자는 이름으로 찾는다. `@`나 공백이 든 값은 설정 검증에서 거부한다.
+   - 연결 후 DM이 안 가면 앱 권한을 확인한다. `conversations.open`이 `missing_scope`면 `im:write`가 빠진
+     것이므로 권한을 추가하고 앱을 다시 설치한다.
+
+설정 JSON 예:
+
+```json
+"slack": {
+  "enabled": true,
+  "teamId": "T0123456789",
+  "workspaceIds": ["main"],
+  "users": [{ "jiraAccountId": "jira-account-id", "slackUserId": "U0123456789" }]
+}
+```
+
+질문에는 버튼·번호·자유 댓글로 답한다. 일반 텍스트는 수정 의견으로 계획에 전달한다. 답변을 접수한 질문은
+다시 선택할 수 없으며, 후속 질문을 기다려야 한다. 메시지 수정·삭제와 봇 메시지는 새 답변이 아니다.
+질문과 답변은 Jira 댓글에도 남고, Slack 답변자와 플랜 버전을 기록한다. 일반 DM이 아니라 작업 스레드에 답해야 한다.
+구현 중 질문은 답변 후 재계획으로 연결된다. 재계획이 확정되기 전에는 기존 구현을 다시 실행하지 않는다.
+같은 스레드에서 여러 하위 작업의 질문이 동시에 대기하면 버튼으로 고르거나 `KAN-123: 답변`처럼 이슈키를 붙인다.
+
+설정 화면의 전송 대기·오류·사용자 연결 누락을 확인한다(`GET /api/v1/admin/slack`, 관리자 인증 필요).
+발신 실패는 30초 후 재시도하며, Jira 답변 기록 실패도 자동 재시도한다. 프로세스를 재시작해도 질문·답변·전송 상태와
+승인은 SQLite에 남는다. 최종 플랜의 Jira 게시 또는 Slack 전달이 끝나지 않으면 자동 구현을 보류한다.
+연동을 끄면 Slack 자동 처리를 멈추고 기존 Jira 수동 승인을 사용할 수 있다. 진행 중인 구현은 알림 실패로 취소하지 않는다.
+담당자 변경 후에는 이전 담당자의 답변을 거부한다. 새 담당자의 Slack 연결이 없으면 수동 Jira 흐름을 사용한다.
+
+자동 검증: `npx vitest run test/router-slack.test.ts`, 이어서 §46의 보고·DB·관리 API·데몬·통합·워크플로 테스트와
+`npm run check`를 실행한다. 테스트는 Fake Slack fetch와 Fake Jira만 사용한다.
+실제 연동은 허용된 테스트 이슈에서 질문 두 차례 → 버튼/텍스트 답변 → Jira 댓글 대조 → 최종 플랜 → 자동 구현과
+주요 상태 알림을 확인한다. 설정 화면은 사용자 추가·삭제, 비밀정보 입력, 저장 후 재진입을 확인한다.

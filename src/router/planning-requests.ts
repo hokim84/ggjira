@@ -116,7 +116,28 @@ export async function syncPlanningRequest(
   }
   let source: JiraComment | undefined;
   let decision: HumanDecision | undefined;
-  if (previous && previous.entry_id === entry && previous.input_hash === hash) {
+  const stoppedAnswer = db
+    .prepare(`SELECT a.*,q.plan_version FROM slack_answers a
+    JOIN slack_questions q ON q.id=a.question_id JOIN slack_threads t ON t.id=q.thread_id
+    WHERE q.issue_key=? AND q.input_hash=? AND q.kind='implementation' AND a.mirrored=1 AND a.consumed=0 AND t.owner=? ORDER BY a.rowid LIMIT 1`)
+    .get(issue.key, hash, issue.assigneeAccountId ?? "") as
+    | { id: string; body: string; option_id: string | null; plan_version: string }
+    | undefined;
+  if (stoppedAnswer && previous?.entry_id !== entry) {
+    source = {
+      id: `slack:${stoppedAnswer.id}`,
+      body: stoppedAnswer.body,
+      authorAccountId: issue.assigneeAccountId ?? "",
+      authorDisplayName: "Slack",
+      created: now,
+    };
+    decision = {
+      raw: stoppedAnswer.body,
+      planVersion: stoppedAnswer.plan_version,
+      ...(stoppedAnswer.option_id ? { optionId: stoppedAnswer.option_id } : {}),
+    };
+  }
+  if (!source && previous && previous.entry_id === entry && previous.input_hash === hash) {
     const review = getLatestPlanReview(db, issue.key);
     const job = getOpenJobForIssue(db, issue.key);
     const comments = await jira.getComments(issue.key);
@@ -128,12 +149,40 @@ export async function syncPlanningRequest(
           .get(issue.key, comment.id),
     );
     if (review?.requestApprovalId === previous.id && review.outcome === "needs_decision") {
+      const answer = db
+        .prepare(`SELECT a.*,q.plan_version,q.id AS question_id FROM slack_answers a
+        JOIN slack_questions q ON q.id=a.question_id JOIN slack_threads t ON t.id=q.thread_id
+        WHERE q.request_id=? AND a.mirrored=1 AND a.consumed=0 AND t.owner=? ORDER BY a.rowid LIMIT 1`)
+        .get(previous.id, issue.assigneeAccountId ?? "") as
+        | {
+            id: string;
+            body: string;
+            option_id: string | null;
+            plan_version: string;
+            question_id: string;
+          }
+        | undefined;
+      if (answer && answer.plan_version === review.planVersion) {
+        source = {
+          id: `slack:${answer.id}`,
+          body: answer.body,
+          authorAccountId: issue.assigneeAccountId ?? "",
+          authorDisplayName: "Slack",
+          created: now,
+        };
+        decision = {
+          raw: answer.body,
+          planVersion: answer.plan_version,
+          decisionId: `${answer.plan_version}-decision`,
+          ...(answer.option_id ? { optionId: answer.option_id } : {}),
+        };
+      }
       const requestIndex = comments.findIndex(
         (comment) =>
           comment.body.includes(DECISION_REQUEST_MARKER) &&
           comment.body.replace(/\r\n/g, "\n").includes(`planVersion: ${review.planVersion}\n`),
       );
-      if (requestIndex >= 0) {
+      if (!source && requestIndex >= 0) {
         const request = comments[requestIndex];
         if (request)
           for (const comment of available) {
@@ -189,6 +238,8 @@ export async function syncPlanningRequest(
       decision ? JSON.stringify(decision) : null,
       now,
     );
+    if (source?.id.startsWith("slack:"))
+      db.prepare("UPDATE slack_answers SET consumed=1 WHERE id=?").run(source.id.slice(6));
     return latestPlanningRequest(db, issue.key);
   })();
 }

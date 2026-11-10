@@ -23,7 +23,13 @@ import {
   reconcileCandidates,
   verifyActiveJobs,
 } from "./scheduler.js";
-import { GITHUB_TOKEN_ENV, JEV_API_KEY_ENV } from "./secrets.js";
+import {
+  GITHUB_TOKEN_ENV,
+  JEV_API_KEY_ENV,
+  SLACK_BOT_TOKEN_ENV,
+  SLACK_SIGNING_SECRET_ENV,
+} from "./secrets.js";
+import { SlackService, type SlackSecrets } from "./slack.js";
 import { buildRouterServer } from "./server.js";
 import { WorkerService } from "./worker-service.js";
 
@@ -68,6 +74,11 @@ export interface RouterDaemonDeps {
   /** The secrets file (`router.env`) the web UI writes replaced secrets to (ADR 0031). Without it
    *  secrets are read-only in the UI. A secret set in the environment stays read-only. */
   secretsPath?: string;
+  slack?: SlackSecrets & {
+    fetch?: typeof fetch;
+    tokenFromEnvironment?: boolean;
+    signingSecretFromEnvironment?: boolean;
+  };
 }
 
 interface Loop {
@@ -97,6 +108,7 @@ export class RouterDaemon {
   readonly workerService: WorkerService;
   readonly adminService: AdminService;
   readonly app: FastifyInstance;
+  readonly slackService: SlackService;
 
   private readonly now: () => string;
   private readonly nowMs: () => number;
@@ -115,6 +127,18 @@ export class RouterDaemon {
     this.now = deps.now ?? (() => new Date().toISOString());
     this.nowMs = deps.nowMs ?? Date.now;
     this.config = deps.config;
+    const slackSecrets = {
+      botToken: deps.slack?.botToken,
+      signingSecret: deps.slack?.signingSecret,
+    };
+    this.slackService = new SlackService({
+      db: deps.db,
+      jira: deps.jira,
+      config: deps.config,
+      secrets: slackSecrets,
+      now: this.now,
+      ...(deps.slack?.fetch ? { fetch: deps.slack.fetch } : {}),
+    });
     this.jevApiKey = deps.jev?.apiKey;
     this.githubToken = deps.github?.token;
     this.schedulerDeps = {
@@ -138,9 +162,26 @@ export class RouterDaemon {
       reconcileNow: () => this.reconcileNow(),
       applyConfig: (config) => this.applyConfig(config),
       github: { webhook: Boolean(deps.github?.webhookSecret), token: () => this.githubToken },
+      slackStatus: () => this.slackService.status(),
       secrets: {
         ...(deps.secretsPath ? { secretsPath: deps.secretsPath } : {}),
         slots: {
+          slackToken: {
+            envKey: SLACK_BOT_TOKEN_ENV,
+            fromEnvironment: deps.slack?.tokenFromEnvironment ?? false,
+            isSet: () => Boolean(slackSecrets.botToken),
+            apply: (value) => {
+              slackSecrets.botToken = value;
+            },
+          },
+          slackSigningSecret: {
+            envKey: SLACK_SIGNING_SECRET_ENV,
+            fromEnvironment: deps.slack?.signingSecretFromEnvironment ?? false,
+            isSet: () => Boolean(slackSecrets.signingSecret),
+            apply: (value) => {
+              slackSecrets.signingSecret = value;
+            },
+          },
           jev: {
             envKey: JEV_API_KEY_ENV,
             fromEnvironment: deps.jev?.fromEnvironment ?? false,
@@ -180,6 +221,7 @@ export class RouterDaemon {
       adminToken: deps.adminToken,
       localUiWithoutToken: this.config.http.localUiWithoutToken === true,
       adminService: this.adminService,
+      slack: { service: this.slackService, signingSecret: () => slackSecrets.signingSecret },
       ...(deps.github?.webhookSecret
         ? {
             github: {
@@ -250,6 +292,7 @@ export class RouterDaemon {
       this.schedulerDeps.config = config;
       this.schedulerDeps.decisionProvider = new RuleDecisionProvider(config.executionAgent);
       this.workerService.setConfig(config);
+      this.slackService.setConfig(config);
       this.adminService.setConfig(config);
       this.deps.logger?.info(
         { layer: "router", workers: config.workers.length, workspaces: config.workspaces.length },
@@ -338,6 +381,7 @@ export class RouterDaemon {
       jira: this.deps.jira,
       now: this.now,
     });
+    await this.slackTick();
     if (report.applied.length || report.blocked.length || report.skipped.length) {
       this.deps.logger?.info(
         {
@@ -351,6 +395,17 @@ export class RouterDaemon {
       );
     }
     return report;
+  }
+
+  slackTick(): Promise<void> {
+    return this.exclusive(async () => {
+      try {
+        await this.slackService.tick();
+        if (this.slackService.reconcileNeeded) this.lastSyncAtMs = undefined;
+      } catch {
+        this.deps.logger?.error({ layer: "router" }, "Slack pass failed; durable work will retry");
+      }
+    });
   }
 
   /** Re-checks open GGJIRA pull requests on GitHub (the webhook fallback, ADR 0027). */

@@ -239,6 +239,10 @@ export const AdminSecretRequestSchema = z.object({ value: z.string().nullable() 
  *  web UI's status and issue-type pickers. */
 export const AdminJiraProjectRequestSchema = z.object({ projectKey: z.string().min(1) });
 
+/** `POST /api/v1/admin/jira/users` — Jira users matching an email or name, so the web UI can turn
+ *  what a person knows into the accountId Router compares with issue assignees. */
+export const AdminJiraUserSearchRequestSchema = z.object({ query: z.string().trim().min(1) });
+
 /** `POST /api/v1/admin/jira/workflow-check` — checks an (unsaved) status mapping against the
  *  project's real transitions. */
 export const AdminWorkflowCheckRequestSchema = z.object({

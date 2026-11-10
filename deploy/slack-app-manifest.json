@@ -1,0 +1,25 @@
+{
+  "display_information": { "name": "GGJIRA", "description": "AI 작업 질문과 진행 상황" },
+  "features": {
+    "bot_user": { "display_name": "GGJIRA", "always_online": false },
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    }
+  },
+  "oauth_config": { "scopes": { "bot": ["chat:write", "im:write", "im:history"] } },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://router.example.com/webhooks/slack",
+      "bot_events": ["message.im"]
+    },
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://router.example.com/webhooks/slack"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

@@ -20,6 +20,7 @@ const FORM_KEYS = new Set([
   "workspaces",
   "workers",
   "planning",
+  "slack",
 ]);
 
 /** The workflow's statuses (ADR 0044, ADR 0047): delegated by status, always planned first. */
@@ -365,7 +366,10 @@ function cleanPlanning(planning = {}) {
 
 export async function renderConfig(root, ctx) {
   const view = await admin("GET", "/config");
+  const slackView = await admin("GET", "/slack");
   const state = structuredClone(view.file || {});
+  state.slack ??= { enabled: false, teamId: "", workspaceIds: [], users: [] };
+  state.slack.users ??= [];
   const advanced = Object.fromEntries(Object.entries(state).filter(([key]) => !FORM_KEYS.has(key)));
   const advancedInput = h("textarea", { rows: "12", spellcheck: "false", class: "code" });
   advancedInput.value = JSON.stringify(advanced, null, 2);
@@ -646,6 +650,105 @@ export async function renderConfig(root, ctx) {
     "워커 추가",
   );
 
+  const slackUsers = listEditor(
+    state.slack,
+    "users",
+    (i) => {
+      const accountPath = `slack.users.${i}.jiraAccountId`;
+      const account = field(state, accountPath, "Jira 담당자 계정 ID", {
+        placeholder: "557058:… 또는 이메일·이름 입력 후 찾기",
+        hint: "이메일이나 이름을 넣고 찾기를 누르면 accountId로 바꿉니다.",
+      });
+      const input = account.querySelector("input");
+      const result = h("div", { class: "full-row" });
+      const choose = (user) => {
+        state.slack.users[i].jiraAccountId = user.accountId;
+        input.value = user.accountId;
+        const email = user.emailAddress ? ` · ${user.emailAddress}` : "";
+        fill(result, notice("ok", `${user.displayName}${email} → ${user.accountId}`));
+      };
+      const lookup = h(
+        "button",
+        {
+          type: "button",
+          class: "btn btn-small",
+          onclick: async () => {
+            const query = input.value.trim();
+            if (!query) return fill(result, notice("warn", "이메일이나 이름을 먼저 입력하세요."));
+            lookup.disabled = true;
+            fill(result, h("p", { class: "muted" }, "Jira에서 찾는 중…"));
+            try {
+              const { users } = await admin("POST", "/jira/users", { query });
+              if (users.length === 1) choose(users[0]);
+              else if (users.length === 0)
+                fill(
+                  result,
+                  notice(
+                    "warn",
+                    "일치하는 Jira 사용자가 없습니다. 이메일이 비공개면 이름으로 찾아 보세요.",
+                  ),
+                );
+              else
+                fill(
+                  result,
+                  h("p", { class: "hint" }, "여러 사용자가 찾아졌습니다. 선택하세요."),
+                  users.map((user) =>
+                    h(
+                      "button",
+                      { type: "button", class: "btn btn-small", onclick: () => choose(user) },
+                      user.emailAddress
+                        ? `${user.displayName} (${user.emailAddress})`
+                        : user.displayName,
+                    ),
+                  ),
+                );
+            } catch (error) {
+              if (error.status === 401) return ctx.logout();
+              fill(result, errorNotice({ message: error.message }));
+            } finally {
+              lookup.disabled = false;
+            }
+          },
+        },
+        "찾기",
+      );
+      account.insertBefore(lookup, account.querySelector(".hint"));
+      return [
+        account,
+        field(state, `slack.users.${i}.slackUserId`, "Slack 사용자 ID", {
+          placeholder: "U0123456789",
+        }),
+        result,
+      ];
+    },
+    () => ({ jiraAccountId: "", slackUserId: "" }),
+    "사용자 연결 추가",
+  );
+  const slackSecrets = [
+    ["slack-token", "Slack Bot Token", "GGJIRA_SLACK_BOT_TOKEN", slackView.token],
+    [
+      "slack-signing-secret",
+      "Slack Signing Secret",
+      "GGJIRA_SLACK_SIGNING_SECRET",
+      slackView.signingSecret,
+    ],
+  ].map(([key, label, envKey, info]) =>
+    secretInput({
+      ctx,
+      info,
+      endpoint: `/secrets/${key}`,
+      id: key,
+      label,
+      noun: "비밀정보",
+      envKey,
+      placeholder: label,
+      replacePlaceholder: "새 값으로 교체",
+      setText: "설정됨",
+      unsetText: "Slack 앱 설정에서 복사해 입력하세요.",
+      removedText: "삭제했습니다.",
+    }),
+  );
+
   const form = h(
     "form",
     { class: "config-form", novalidate: true },
@@ -661,6 +764,40 @@ export async function renderConfig(root, ctx) {
       workspaces,
     ),
     section("계획(PM)", "계획에서 생성할 하위 작업의 유형과 개수를 설정합니다.", planningFields),
+    section(
+      "Slack 작업 대화",
+      "담당자 DM 스레드의 질문·답변을 Jira에도 기록합니다. 활성화 이후 요청한 계획은 추가 질문이 없으면 하위 작업을 포함해 구현을 자동 시작합니다. 최종 완료는 사람이 확인합니다.",
+      h("code", {}, `${location.origin}/webhooks/slack`),
+      h(
+        "div",
+        { class: "grid" },
+        field(state, "slack.enabled", "Slack 연동 및 자동 구현 활성화", { kind: "checkbox" }),
+        field(state, "slack.teamId", "Slack 팀 ID", {
+          placeholder: "T0123456789",
+          hint: "T로 시작하는 ID입니다. 워크스페이스 주소가 아니라, 브라우저 Slack 주소 app.slack.com/client/T…/ 의 T… 부분입니다.",
+        }),
+        field(state, "slack.workspaceIds", "적용할 GGJIRA workspace ID", { kind: "list" }),
+      ),
+      slackUsers,
+      ...slackSecrets,
+      notice(
+        slackView.status?.ready ? "ok" : "warn",
+        slackView.status?.ready
+          ? `연결 설정됨 · 전송 대기 ${slackView.status.pending}건`
+          : "비활성 또는 Slack 비밀정보가 없습니다.",
+      ),
+      ...(slackView.status?.errors || []).map((error) =>
+        notice("warn", `${error.id}: ${error.error}`),
+      ),
+      slackView.missingUsers?.length
+        ? notice("warn", `Slack 사용자 연결 없음: ${slackView.missingUsers.join(", ")}`)
+        : null,
+      h(
+        "p",
+        { class: "hint" },
+        "Slack 앱 manifest와 설치 절차: docs/runbook.md §48. 비밀정보는 별도로 즉시 저장됩니다.",
+      ),
+    ),
     section(
       "GitHub PR 머지 → 통합 검증",
       "AI 통합 대기에서 사람이 PR을 머지하면 대상 브랜치를 검증합니다. 검증 통과 후 AI 구현 완료로 옮기며, Done은 사람이 결정합니다. 웹훅과 주기적 GitHub 조회로 머지를 확인합니다.",
@@ -712,6 +849,7 @@ export async function renderConfig(root, ctx) {
       repositories: state.repositories,
       workspaces: state.workspaces,
       workers: state.workers,
+      slack: state.slack,
       ...(Object.keys(cleanPlanning(state.planning)).length
         ? { planning: cleanPlanning(state.planning) }
         : {}),

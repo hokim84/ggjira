@@ -198,6 +198,7 @@ result 저장 ─▶ [<resultId>]         구현 성공: 댓글 → 실패 라�
 | `router workers list/pair/disable/enable/revoke` | `/workers…`, `/pairing-codes` | pairing code는 10분, 1회. disable은 새 배정만 막고, revoke는 token 무효화와 함께 활성 실행에 취소를 건다 |
 | (웹 UI 워커 추가) | `POST /workers` | 정책을 설정에 추가, 적용, 첫 pairing code 발급(ADR 0025) |
 | (웹 UI 설정) | `POST /jira/project`, `POST /jira/workflow-check` | 프로젝트 상태·하위 이슈 유형 목록, 저장 전 상태 매핑으로 Router가 하는 전이(시작·완료·결정 요청)가 워크플로에 있는지 확인(읽기 전용, `src/router/workflow-check.ts`) |
+| (웹 UI Slack 사용자 연결) | `POST /jira/users` | 이메일·이름으로 Jira 사용자를 찾아 담당자 accountId를 채운다(읽기 전용, 최대 20명) |
 | `router jobs list/show/cancel/retry/resolve` | `/jobs…` | list는 keyset 페이지네이션. retry는 Jira 승인을 재확인한 뒤 새 attempt를 만든다. resolve는 중단 확인 |
 | `router reports list/retry` | `/reports…` | 막힌 보고 배치 재대기 |
 | `router usage` | `GET /executions` | 결과마다 provider 호출(모델·호출 id·종료 사유·토큰·비용)과 원래 요구사항·실행 유형·원인 분류. 미보고는 NULL(ADR 0042) |
@@ -310,6 +311,19 @@ PM 입력에는 답과 함께 최신 질문·선택지를 전달한다. 이전 I
 전이는 재실행하지 않고 skipped로 남겨 운영자가 대조한다. 구현 요청 준비 보류(ADR 0034의 보류)는 없어졌고,
 migration 15가 열려 있던 보류와 그 주의 항목을 닫는다. 일반 실패·대체·메타 라벨은 위임 기능과 별개로 유지한다.
 
+
+## Slack 작업 대화와 자동 구현 승인
+
+ADR 0070은 Slack을 활성화한 workspace와 연결된 담당자의 새 계획 요청에 자동 구현 승인을 추가한다.
+Router의 Slack 서비스가 서명 검증된 `/webhooks/slack` 수신 이벤트를 SQLite inbox에 저장하고,
+담당자 DM 스레드의 버튼·번호·자유 답변을 검증하여 기존 planning request로 연결한다. 질문은 기존 Jira 보고
+저널이 게시하고 Slack에 전달하며, 답변은 답변자·플랜 버전과 함께 Jira에도 기록한다. Worker는 Slack에 접근하지 않는다.
+
+SQLite outbox와 스레드·질문·답변·승인 기록으로 재시작과 중복 이벤트를 처리한다. 최종 플랜의 Jira 보고와
+Slack 전달이 완료되어야 현재 버전의 작업을 자동 승인하고 Jira 구현 상태로 옮긴다. 스케줄러의 실행 계약,
+의존성·가용성·복구 규칙과 최종 수동 Done은 유지한다. 기존 비활성 설정과 과거 계획에는 적용하지 않는다.
+구현 중 결정 요청은 답변을 기록한 후 재계획으로 연결한다. 설정과 비밀정보는 기존 관리 API에서 편집하며
+`GET /api/v1/admin/slack`은 연결 준비·발신 대기·오류·누락된 사용자 연결을 제공한다.
 
 ## FCI 분석과 시계열
 

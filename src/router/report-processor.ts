@@ -462,7 +462,7 @@ async function runStep(
       );
       if (plan.version !== version) throw new PlanApplyError("child publication plan changed");
       const keys = new Map([...ctx.createdKeys, ...ctx.keptKeys]);
-      const baselines: Array<{ taskId: string; entry: string }> = [];
+      const baselines: Array<{ taskId: string; entry: string; key: string; status: string }> = [];
       for (const taskId of plan.taskIds) {
         if (
           db
@@ -485,16 +485,22 @@ async function runStep(
         )
           throw new PlanApplyError(`child contract is not published for ${key}`);
         const entry = await computeApprovalId(jira, child, inProgressStatus);
-        baselines.push({ taskId, entry });
+        baselines.push({ taskId, entry, key, status: child.statusName });
       }
       db.transaction(() => {
-        for (const { taskId, entry } of baselines)
+        for (const { taskId, entry, key, status } of baselines) {
           db.prepare("INSERT OR IGNORE INTO child_approval_baselines VALUES (?,?,?,?)").run(
             step.issueKey,
             version,
             taskId,
             entry,
           );
+          db.prepare("INSERT OR IGNORE INTO slack_publications VALUES (?,?,?)").run(
+            step.batchId,
+            key,
+            status,
+          );
+        }
       })();
       return { status: "applied" };
     }

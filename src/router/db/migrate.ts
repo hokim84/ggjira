@@ -324,6 +324,34 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS fci_history_order ON fci_history_commits(series_id,active,ordinal);`);
     },
   },
+  {
+    version: 24,
+    description: "Durable Slack conversations, replies, deliveries and execution consent",
+    up(db) {
+      db.exec(`
+        CREATE TABLE slack_activation (workspace_id TEXT PRIMARY KEY, cutoff TEXT NOT NULL, request_rowid INTEGER NOT NULL);
+        CREATE TABLE slack_threads (id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, workspace_id TEXT NOT NULL,
+          request_id TEXT NOT NULL, owner TEXT NOT NULL, user_id TEXT NOT NULL, channel TEXT, thread_ts TEXT,
+          created_at TEXT NOT NULL, error TEXT);
+        CREATE INDEX slack_threads_issue ON slack_threads(issue_key);
+        CREATE TABLE slack_thread_requests (request_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES slack_threads(id));
+        CREATE TABLE slack_questions (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES slack_threads(id),
+          request_id TEXT NOT NULL, source_id TEXT NOT NULL, issue_key TEXT NOT NULL, input_hash TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'planning', job_id TEXT,
+          plan_version TEXT NOT NULL, options TEXT NOT NULL, answered_by TEXT);
+        CREATE TABLE slack_inbox (id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+          error TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE slack_answers (id TEXT PRIMARY KEY REFERENCES slack_inbox(id), question_id TEXT NOT NULL UNIQUE REFERENCES slack_questions(id),
+          body TEXT NOT NULL, option_id TEXT, mirrored INTEGER NOT NULL DEFAULT 0, consumed INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE slack_outbox (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES slack_threads(id),
+          payload TEXT NOT NULL, sent_at TEXT, error TEXT, retry_at TEXT, tries INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE slack_approvals (review_id TEXT NOT NULL, issue_key TEXT NOT NULL, owner TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, PRIMARY KEY(review_id,issue_key));
+        CREATE TABLE slack_publications (review_id TEXT NOT NULL, issue_key TEXT NOT NULL, status TEXT NOT NULL,
+          PRIMARY KEY(review_id,issue_key));
+        CREATE TABLE slack_errors (id TEXT PRIMARY KEY, error TEXT NOT NULL);
+      `);
+    },
+  },
 ];
 
 interface MigrationRow {

@@ -32,6 +32,9 @@ import {
   type RouterEnvSecrets,
   RouterSecretsError,
   loadRouterGithubSecrets,
+  loadRouterSlackSecrets,
+  SLACK_BOT_TOKEN_ENV,
+  SLACK_SIGNING_SECRET_ENV,
   loadRouterJevApiKey,
   loadRouterSecrets,
   parseEnvFile,
@@ -216,6 +219,11 @@ async function serve(parsed: ParsedArgs, io: CliIo): Promise<number> {
       tokenFromEnvironment: Boolean(io.env[GITHUB_TOKEN_ENV]),
     },
     jev: { apiKey: jevApiKey, fromEnvironment: Boolean(io.env[JEV_API_KEY_ENV]) },
+    slack: {
+      ...loadRouterSlackSecrets(io.env, secretsPath(parsed, io)),
+      tokenFromEnvironment: Boolean(io.env[SLACK_BOT_TOKEN_ENV]),
+      signingSecretFromEnvironment: Boolean(io.env[SLACK_SIGNING_SECRET_ENV]),
+    },
     secretsPath: secretsPath(parsed, io),
   });
 

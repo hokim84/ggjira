@@ -16,6 +16,21 @@ const RouterEnvSecretsSchema = z.object({
 });
 export type RouterEnvSecrets = z.infer<typeof RouterEnvSecretsSchema>;
 
+export const SLACK_BOT_TOKEN_ENV = "GGJIRA_SLACK_BOT_TOKEN";
+export const SLACK_SIGNING_SECRET_ENV = "GGJIRA_SLACK_SIGNING_SECRET";
+export function loadRouterSlackSecrets(env: NodeJS.ProcessEnv, secretsPath?: string) {
+  let file: Record<string, string> = {};
+  try {
+    if (secretsPath) file = parseEnvFile(readFileSync(secretsPath, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return {
+    botToken: env[SLACK_BOT_TOKEN_ENV] || file[SLACK_BOT_TOKEN_ENV],
+    signingSecret: env[SLACK_SIGNING_SECRET_ENV] || file[SLACK_SIGNING_SECRET_ENV],
+  };
+}
+
 export const SECRET_ENV_KEYS = {
   jiraEmail: "JIRA_EMAIL",
   jiraApiToken: "JIRA_API_TOKEN",

@@ -204,7 +204,7 @@ export interface SecretInfo {
   editable: boolean;
 }
 
-export type SecretSlotId = "jev" | "githubToken";
+export type SecretSlotId = "jev" | "githubToken" | "slackToken" | "slackSigningSecret";
 
 export interface SecretSlot {
   /** The `router.env` / environment variable name. */
@@ -218,6 +218,8 @@ export interface SecretSlot {
 const SECRET_AUDIT_NAMES: Record<SecretSlotId, string> = {
   jev: "jev",
   githubToken: "github-token",
+  slackToken: "slack-token",
+  slackSigningSecret: "slack-signing-secret",
 };
 
 export interface BackupResult {
@@ -247,6 +249,7 @@ export interface AdminServiceDeps {
   secrets?: { secretsPath?: string; slots: Partial<Record<SecretSlotId, SecretSlot>> };
   /** Runs one GitHub pull-request poll now ("지금 확인"). */
   pollGithub?: () => Promise<PullRequestPollReport>;
+  slackStatus?: () => unknown;
 }
 
 export interface AdminAddWorkerResult {
@@ -878,6 +881,21 @@ export class AdminService {
   async jiraProject(projectKey: string): Promise<ProjectWorkflowInfo> {
     return this.callJira(() => inspectProjectWorkflow(this.deps.jira, projectKey));
   }
+
+  /** Jira users matching an email or name (read-only), for the Slack user mapping. */
+  async jiraUsers(query: string): Promise<{
+    users: Array<{ accountId: string; displayName: string; emailAddress: string | null }>;
+  }> {
+    const users = await this.callJira(() => this.deps.jira.searchUsers(query));
+    return {
+      users: users.slice(0, 20).map(({ accountId, displayName, emailAddress }) => ({
+        accountId,
+        displayName,
+        emailAddress,
+      })),
+    };
+  }
+
   async ensureWorkflow(projectKey: string, actor = "admin") {
     const workspace = this.deps.config.workspaces.find((ws) => ws.projectKeys.includes(projectKey));
     if (!workspace)
@@ -1065,6 +1083,24 @@ export class AdminService {
   }
 
   // --- helpers -------------------------------------------------------------------------
+
+  slackInfo() {
+    const missingUsers = this.db
+      .prepare(`SELECT DISTINCT json_extract(input_snapshot,'$.assigneeAccountId') AS accountId
+      FROM planning_requests WHERE rowid IN (SELECT MAX(rowid) FROM planning_requests GROUP BY issue_key)`)
+      .all()
+      .map((row) => row.accountId)
+      .filter(
+        (account) =>
+          account && !this.config.slack?.users.some((user) => user.jiraAccountId === account),
+      );
+    return {
+      token: this.secretInfo("slackToken"),
+      signingSecret: this.secretInfo("slackSigningSecret"),
+      status: this.deps.slackStatus?.() ?? null,
+      missingUsers,
+    };
+  }
 
   secretInfo(id: SecretSlotId): SecretInfo {
     const slot = this.deps.secrets?.slots[id];

@@ -91,6 +91,42 @@ const WorkspaceSchema = z.object({
 });
 export type WorkspaceConfig = z.infer<typeof WorkspaceSchema>;
 
+export const SlackConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    teamId: z.string().trim().default(""),
+    workspaceIds: z.array(z.string().min(1)).default([]),
+    users: z
+      .array(
+        z.object({
+          // Jira issues carry the assignee's accountId, never an email address.
+          jiraAccountId: z
+            .string()
+            .trim()
+            .min(1)
+            .refine((value) => !value.includes("@") && !/\s/.test(value), {
+              message:
+                "Jira accountId is required (e.g. 557058:…), not an email or name; use 찾기 to look it up",
+            }),
+          slackUserId: z.string().regex(/^[UW][A-Z0-9]+$/),
+        }),
+      )
+      .default([]),
+  })
+  .superRefine((value, ctx) => {
+    if (value.enabled && !/^T[A-Z0-9]+$/.test(value.teamId))
+      ctx.addIssue({
+        code: "custom",
+        path: ["teamId"],
+        message: "Slack team ID (T…) is required, not the workspace URL",
+      });
+    for (const key of ["jiraAccountId", "slackUserId"] as const) {
+      if (new Set(value.users.map((user) => user[key])).size !== value.users.length)
+        ctx.addIssue({ code: "custom", path: ["users"], message: `Duplicate ${key}` });
+    }
+  });
+export type SlackConfig = z.infer<typeof SlackConfigSchema>;
+
 /**
  * Admin-declared allowlist for one worker. Actual dispatch also needs the
  * worker's own reported availability to agree — config alone never expands
@@ -215,8 +251,17 @@ export const RouterConfigSchema = z
     github: GithubConfigSchema.default({}),
     scheduling: SchedulingConfigSchema.default({}),
     jev: JevConfigSchema.default({}),
+    slack: SlackConfigSchema.optional(),
   })
   .superRefine((config, ctx) => {
+    for (const workspaceId of config.slack?.workspaceIds ?? []) {
+      if (!config.workspaces.some((workspace) => workspace.id === workspaceId))
+        ctx.addIssue({
+          code: "custom",
+          path: ["slack", "workspaceIds"],
+          message: `Unknown workspace ${workspaceId}`,
+        });
+    }
     const repositoryIds = new Set(config.repositories.map((repo) => repo.id));
     const workerIds = new Set(config.workers.map((worker) => worker.workerId));
     const seenProjectKeys = new Map<string, string>();

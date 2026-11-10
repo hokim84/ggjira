@@ -27,6 +27,69 @@ describe("admin config and check API (web UI)", () => {
     expect(response.statusCode).toBe(401);
   });
 
+  it("persists Slack mappings, rejects unknown workspaces and protects integration status", async () => {
+    const slack = {
+      enabled: true,
+      teamId: "T1",
+      workspaceIds: ["ws1"],
+      users: [{ jiraAccountId: "owner", slackUserId: "U1" }],
+    };
+    expect((await router.adminCall("PUT", "/config", { ...router.config, slack })).statusCode).toBe(
+      200,
+    );
+    expect(JSON.parse(readFileSync(configPath, "utf8")).slack).toEqual(slack);
+    expect(
+      (
+        await router.adminCall("PUT", "/config", {
+          ...router.config,
+          slack: { ...slack, workspaceIds: ["unknown"] },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
+      (await router.app.inject({ method: "GET", url: "/api/v1/admin/slack" })).statusCode,
+    ).toBe(401);
+    expect((await router.adminCall("GET", "/slack")).json()).toMatchObject({
+      token: { set: false },
+      signingSecret: { set: false },
+    });
+  });
+
+  it("rejects an email as the Slack user's Jira account and looks the accountId up", async () => {
+    const slack = {
+      enabled: true,
+      teamId: "T1",
+      workspaceIds: ["ws1"],
+      users: [{ jiraAccountId: "owner@example.com", slackUserId: "U1" }],
+    };
+    const rejected = await router.adminCall("PUT", "/config", { ...router.config, slack });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().issues).toContainEqual(
+      expect.objectContaining({ path: "slack.users.0.jiraAccountId" }),
+    );
+    const wrongTeam = await router.adminCall("PUT", "/config", {
+      ...router.config,
+      slack: { ...slack, teamId: "acme.slack.com", users: [] },
+    });
+    expect(wrongTeam.json().issues).toContainEqual(
+      expect.objectContaining({ path: "slack.teamId" }),
+    );
+
+    router.jira.seedUser({
+      accountId: "557058:owner",
+      displayName: "Owner",
+      emailAddress: "owner@example.com",
+    });
+    const found = await router.adminCall("POST", "/jira/users", { query: "owner@example.com" });
+    expect(found.statusCode).toBe(200);
+    expect(found.json()).toEqual({
+      users: [
+        { accountId: "557058:owner", displayName: "Owner", emailAddress: "owner@example.com" },
+      ],
+    });
+    expect((await router.adminCall("POST", "/jira/users", { query: " " })).statusCode).toBe(400);
+  });
+
   it("returns the file as written, in sync with the running config", async () => {
     const response = await router.adminCall("GET", "/config");
     expect(response.statusCode).toBe(200);

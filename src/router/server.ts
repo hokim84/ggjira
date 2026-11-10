@@ -7,6 +7,7 @@ import {
   AdminAddWorkerRequestSchema,
   AdminCreatePairingCodeRequestSchema,
   AdminJiraProjectRequestSchema,
+  AdminJiraUserSearchRequestSchema,
   AdminReviewJudgmentRequestSchema,
   AdminSecretRequestSchema,
   AdminWorkflowCheckRequestSchema,
@@ -50,6 +51,7 @@ import {
   verifyJiraWebhookSignature,
 } from "./webhook.js";
 import { WorkerApiError, type WorkerService } from "./worker-service.js";
+import { type SlackService, verifySlackSignature } from "./slack.js";
 
 const SIGNATURE_HEADER = "x-hub-signature";
 const DELIVERY_ID_HEADER = "x-atlassian-webhook-identifier";
@@ -77,6 +79,7 @@ export interface RouterServerDeps {
   adminService?: AdminService;
   /** Where the web UI's static files live; defaults to the repo's `web/router-ui/`. */
   webUiRoot?: string;
+  slack?: { service: SlackService; signingSecret: () => string | undefined };
   /** Enables `/webhooks/github` (ADR 0027). */
   github?: {
     webhookSecret: string;
@@ -153,6 +156,22 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
   const now = deps.now ?? (() => new Date().toISOString());
   const app = Fastify();
 
+  app.addContentTypeParser(
+    "application/x-www-form-urlencoded",
+    { parseAs: "buffer" },
+    (_request, body, done) => {
+      const raw = body as Buffer;
+      try {
+        done(null, {
+          raw,
+          parsed: JSON.parse(new URLSearchParams(raw.toString("utf8")).get("payload") ?? "{}"),
+        });
+      } catch {
+        done(new Error("Invalid Slack payload"), undefined);
+      }
+    },
+  );
+
   app.addContentTypeParser("application/json", { parseAs: "buffer" }, (_request, body, done) => {
     const buffer = body as Buffer;
     try {
@@ -171,6 +190,29 @@ export function buildRouterServer(deps: RouterServerDeps): FastifyInstance {
       : {}),
   }));
   registerWebUi(app, deps.webUiRoot);
+
+  if (deps.slack) {
+    app.post("/webhooks/slack", { bodyLimit: 1024 * 1024 }, async (request, reply) => {
+      const { raw, parsed } = request.body as ParsedBody;
+      const secret = deps.slack?.signingSecret();
+      if (
+        !secret ||
+        !verifySlackSignature(
+          raw,
+          headerValue(request.headers["x-slack-request-timestamp"]) ?? "",
+          headerValue(request.headers["x-slack-signature"]) ?? "",
+          secret,
+          Date.parse(now()),
+        )
+      )
+        return reply.code(401).send({ error: "invalid signature" });
+      const payload = parsed as { type?: string; challenge?: string };
+      if (payload?.type === "url_verification" && typeof payload.challenge === "string")
+        return { challenge: payload.challenge };
+      deps.slack?.service.ingest(parsed);
+      return reply.code(200).send();
+    });
+  }
 
   app.post("/webhooks/jira", { bodyLimit: JIRA_WEBHOOK_BODY_LIMIT }, async (request, reply) => {
     const { raw, parsed } = request.body as ParsedBody;
@@ -572,6 +614,19 @@ function registerAdminRoutes(
           actorOf(request),
         ),
       );
+      scope.get("/slack", async () => admin.slackInfo());
+      for (const [path, slot] of [
+        ["slack-token", "slackToken"],
+        ["slack-signing-secret", "slackSigningSecret"],
+      ] as const) {
+        scope.put(`/secrets/${path}`, async (request) =>
+          admin.setSecret(
+            slot,
+            parseBody(AdminSecretRequestSchema, request.body).value,
+            actorOf(request),
+          ),
+        );
+      }
       scope.post("/github/poll", async () => admin.pollGithubNow());
       scope.get<IdParams>("/jobs/:id", async (request) => admin.showJob(request.params.id));
       scope.post<IdParams>("/jobs/:id/cancel", async (request) =>
@@ -651,6 +706,9 @@ function registerAdminRoutes(
       scope.post("/config/apply", async (request) => admin.applyConfigFile(actorOf(request)));
       scope.post("/jira/project", async (request) =>
         admin.jiraProject(parseBody(AdminJiraProjectRequestSchema, request.body).projectKey),
+      );
+      scope.post("/jira/users", async (request) =>
+        admin.jiraUsers(parseBody(AdminJiraUserSearchRequestSchema, request.body).query),
       );
       scope.post("/jira/workflow-check", async (request) => {
         const body = parseBody(AdminWorkflowCheckRequestSchema, request.body);
