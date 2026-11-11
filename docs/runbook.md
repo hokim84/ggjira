@@ -134,6 +134,12 @@ docker compose logs -f router
 
 ## 16-1. Router 배포 (Cloudflare Tunnel)
 
+셋업 연결 테스트에 `<!DOCTYPE html>` 또는 Cloudflare `502: Bad gateway`가 표시되면
+`/health`와 `/api/v1/setup/*` 응답을 구분해 확인한다. 이전 Router는 Jira 실패를 502로 반환해
+Cloudflare HTML 오류 화면으로 대체될 수 있었다. ADR 0070 이후에는 `424` JSON의 `jira_error`로
+원래 오류를 표시한다. `Jira request failed with status 401`이면 Jira 사이트 URL, 계정 이메일,
+API token을 확인한다. `/health` 자체가 실패하면 터널 origin 주소와 Docker 네트워크부터 확인한다.
+
 `docker-compose.cloudflare.yml`은 Router와 `cloudflared`만 띄운다. 서버에 여는 포트가 없고, TLS는
 Cloudflare가 맡는다. Caddy 구성(§16) 대신 쓴다. 준비물: Cloudflare에 연결된 도메인, Docker Engine + Compose.
 

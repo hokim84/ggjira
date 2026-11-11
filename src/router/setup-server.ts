@@ -85,7 +85,9 @@ async function callJira<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
-    throw new SetupError(502, "jira_error", error instanceof Error ? error.message : String(error));
+    // Cloudflare can replace an origin 502 with its HTML gateway error page.
+    // Keep dependency failures distinct so the wizard receives the Jira error as JSON.
+    throw new SetupError(424, "jira_error", error instanceof Error ? error.message : String(error));
   }
 }
 

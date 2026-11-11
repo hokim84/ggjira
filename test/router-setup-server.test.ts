@@ -102,7 +102,7 @@ describe("setup server", () => {
     expect(statuses.json()).toEqual({ statuses: ["To Do", "AI 작업 요청", "작업 중", "Done"] });
   });
 
-  it("answers 502 when Jira rejects the credentials", async () => {
+  it("preserves Jira failure details with 424 instead of a proxy gateway error", async () => {
     jira.getMyself = async () => {
       throw new Error("401 Unauthorized");
     };
@@ -112,7 +112,8 @@ describe("setup server", () => {
       headers: auth,
       payload: credentials,
     });
-    expect(response.statusCode).toBe(502);
+    expect(response.statusCode).toBe(424);
+    expect(response.headers["content-type"]).toContain("application/json");
     expect(response.json()).toMatchObject({ error: "jira_error", message: "401 Unauthorized" });
   });
 
