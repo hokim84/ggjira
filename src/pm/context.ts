@@ -48,7 +48,9 @@ export function findHumanDecision(
   });
   if (!reply) return undefined;
 
-  const match = reply.body.match(/decision\s*:\s*([A-Za-z0-9._-]+)/i);
+  const match = reply.body.match(
+    /decision\s*:\s*([A-Za-z0-9_-](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?)/i,
+  );
   const number = replyNumber(reply.body);
   const optionId = number === undefined ? match?.[1] : numberedOptions(requestBody)?.[number - 1];
   return {
@@ -59,8 +61,26 @@ export function findHumanDecision(
   };
 }
 
+/** Whether a comment body is a single-choice decision reply (`2`, `2번.`, `'2번'`, `Decision: opt-a.`),
+ *  not an arbitrary discussion sentence. */
+export function isDecisionChoiceReply(body: string): boolean {
+  return /^['"‘’“”]?\s*(?:[+-]?\d+\s*(?:번)?|Decision\s*:\s*[A-Za-z0-9_-](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?)\s*[.!]*\s*['"‘’“”]?$/iu.test(
+    body.trim(),
+  );
+}
+
+/** Whether a comment body is the standalone action command (`재시도` or `재계획`), allowing
+ *  surrounding quotes/whitespace and trailing punctuation (`.`, `!`). */
+export function isCommentCommand(body: string, command: "재시도" | "재계획"): boolean {
+  const pattern =
+    command === "재시도"
+      ? /^['"‘’“”]?\s*재시도\s*[.!]*\s*['"‘’“”]?$/u
+      : /^['"‘’“”]?\s*재계획\s*[.!]*\s*['"‘’“”]?$/u;
+  return pattern.test(body.trim());
+}
+
 function replyNumber(body: string): number | undefined {
-  const match = body.trim().match(/^([+-]?\d+)\s*(?:번)?$/u);
+  const match = body.trim().match(/^['"‘’“”]?\s*([+-]?\d+)\s*(?:번)?\s*[.!]*\s*['"‘’“”]?$/u);
   return match ? Number(match[1]) : undefined;
 }
 

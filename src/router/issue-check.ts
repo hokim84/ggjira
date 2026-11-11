@@ -8,7 +8,7 @@ import type { IssueRequirements } from "../issue/requirements.js";
 import { JiraApiError } from "../jira/client.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraComment, JiraIssue } from "../jira/types.js";
-import { findHumanDecision } from "../pm/context.js";
+import { findHumanDecision, isCommentCommand } from "../pm/context.js";
 import {
   parentPlanRequirements,
   planTaskRequirements,
@@ -324,7 +324,7 @@ async function retryApprovalId(
   const reply = comments.find(
     (comment) =>
       comment.authorAccountId === issue.assigneeAccountId &&
-      comment.body.trim() === "재시도" &&
+      isCommentCommand(comment.body, "재시도") &&
       comment.created > last.updated_at &&
       !db
         .prepare("SELECT 1 FROM workflow_retry_comments WHERE issue_key=? AND comment_id=?")

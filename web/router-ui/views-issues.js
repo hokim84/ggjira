@@ -383,6 +383,7 @@ export function renderIssues(root, ctx) {
   const notesEl = h("div");
   let notesKey = null;
   let requestedKey = null;
+  let openReviewNotes = () => {};
 
   function openJob(view) {
     if (!view.openJob) return h("span", { class: "muted" }, "실행 중인 작업 없음");
@@ -476,6 +477,15 @@ export function renderIssues(root, ctx) {
             : null,
         ),
       );
+    if (view.latestFailureLog)
+      resultEl.append(
+        h(
+          "details",
+          { class: "panel" },
+          h("summary", {}, `실패 상세 로그 보기 (${view.latestFailureLog.path})`),
+          h("pre", { class: "preview" }, view.latestFailureLog.content),
+        ),
+      );
     const currentFci = (view.fci ?? []).filter((a) => a.profile?.staticAnalysis && !a.superseded);
     if (currentFci.length)
       resultEl.append(
@@ -519,12 +529,19 @@ export function renderIssues(root, ctx) {
         body,
       );
       let loaded = false;
-      section.addEventListener("toggle", () => {
-        if (section.open && !loaded) {
+      const ensureLoaded = () => {
+        if (!loaded) {
           loaded = true;
           renderIssueReview(body, ctx, key);
         }
+      };
+      section.addEventListener("toggle", () => {
+        if (section.open) ensureLoaded();
       });
+      openReviewNotes = () => {
+        section.open = true;
+        ensureLoaded();
+      };
       fill(notesEl, section);
     }
     // Router's own records do not need Jira, so they show even when the Jira read fails.
@@ -534,6 +551,11 @@ export function renderIssues(root, ctx) {
     ])
       .then(([reviews, attention]) => {
         if (requestedKey !== key || !historyEl.isConnected) return;
+        if (
+          attention.items.some((item) => item.status === "open" && item.kind === "review_required")
+        ) {
+          openReviewNotes();
+        }
         fill(
           historyEl,
           attentionSection(attention.items),
@@ -556,7 +578,10 @@ export function renderIssues(root, ctx) {
       });
     try {
       const view = await admin("GET", `/issues/${encoded}`);
-      if (requestedKey === key && resultEl.isConnected) draw(view);
+      if (requestedKey === key && resultEl.isConnected) {
+        draw(view);
+        if (view.delegation?.humanCheck?.length) openReviewNotes();
+      }
     } catch (error) {
       if (requestedKey !== key) return;
       if (error.status === 401) return ctx.logout();
@@ -595,6 +620,32 @@ export function renderIssues(root, ctx) {
     else load(key);
   });
 
+  const syncButton = h(
+    "button",
+    {
+      type: "button",
+      class: "btn btn-small title-action",
+      onclick: async () => {
+        syncButton.disabled = true;
+        clear(messageEl);
+        try {
+          await Promise.all([
+            admin("POST", "/reconcile"),
+            admin("POST", "/github/poll").catch(() => null),
+          ]);
+          const current = requestedKey || keyInput.value.trim().toUpperCase();
+          if (current) await load(current);
+        } catch (error) {
+          if (error.status === 401) return ctx.logout();
+          messageEl.append(errorNotice(error));
+        } finally {
+          syncButton.disabled = false;
+        }
+      },
+    },
+    "지금 동기화",
+  );
+
   fill(
     root,
     h(
@@ -602,6 +653,7 @@ export function renderIssues(root, ctx) {
       { class: "title-row" },
       h("h1", {}, "작업 상세"),
       h("small", { class: "muted" }, "15초마다 갱신"),
+      syncButton,
     ),
     form,
     h(

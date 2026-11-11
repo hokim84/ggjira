@@ -24,6 +24,15 @@ describe("web UI static serving", () => {
     const js = await app.inject({ method: "GET", url: "/ui/app.js" });
     expect(js.statusCode).toBe(200);
     expect(js.headers["content-type"]).toContain("text/javascript");
+    const statusView = await app.inject({ method: "GET", url: "/ui/views-status.js" });
+    expect(statusView.statusCode).toBe(200);
+    expect(statusView.body).toContain("지금 동기화");
+    expect(statusView.body).toContain('admin("POST", "/reconcile")');
+    const issuesView = await app.inject({ method: "GET", url: "/ui/views-issues.js" });
+    expect(issuesView.statusCode).toBe(200);
+    expect(issuesView.body).toContain("지금 동기화");
+    expect(issuesView.body).toContain("openReviewNotes()");
+    expect(issuesView.body).toContain("실패 상세 로그 보기");
     const css = await app.inject({ method: "GET", url: "/ui/style.css" });
     expect(css.headers["content-type"]).toContain("text/css");
   });

@@ -3,7 +3,12 @@ import type { RouterDatabase } from "./db/connection.js";
 import { normalizeExecutionText } from "../issue/input-hash.js";
 import type { JiraGateway } from "../jira/gateway.js";
 import type { JiraComment, JiraIssue } from "../jira/types.js";
-import { type HumanDecision, findHumanDecision } from "../pm/context.js";
+import {
+  type HumanDecision,
+  findHumanDecision,
+  isCommentCommand,
+  isDecisionChoiceReply,
+} from "../pm/context.js";
 import { DECISION_REQUEST_MARKER } from "../pm/marker.js";
 import { requirementDescription } from "../pm/plan-render.js";
 import { computeApprovalId } from "./approval.js";
@@ -98,7 +103,7 @@ export async function syncPlanningRequest(
         !comments.some(
           (comment) =>
             humanComment(comment, issue) &&
-            comment.body.trim() === "재계획" &&
+            isCommentCommand(comment.body, "재계획") &&
             comment.created > live.createdAt,
         )
       )
@@ -188,7 +193,7 @@ export async function syncPlanningRequest(
           for (const comment of available) {
             if (comments.indexOf(comment) <= requestIndex) continue;
             // Automatic continuation is a choice, never an arbitrary discussion comment.
-            if (!/^(?:\d+\s*(?:번)?|Decision:\s*\S+)$/i.test(comment.body.trim())) continue;
+            if (!isDecisionChoiceReply(comment.body)) continue;
             const parsed = findHumanDecision([request, comment], "", issue.assigneeAccountId);
             if (
               parsed?.optionId &&
@@ -208,7 +213,7 @@ export async function syncPlanningRequest(
     ) {
       const failedAt = job?.updatedAt ?? review?.createdAt ?? previous.created_at;
       source = available.find(
-        (comment) => comment.body.trim() === "재시도" && comment.created > failedAt,
+        (comment) => isCommentCommand(comment.body, "재시도") && comment.created > failedAt,
       );
     }
     if (!source) return previous;

@@ -94,6 +94,8 @@ export function planTaskIds(plan: Plan): string[] {
 
 export const PLAN_START = "{noformat}[GGJIRA:PLAN:START]{noformat}";
 export const PLAN_END = "{noformat}[GGJIRA:PLAN:END]{noformat}";
+export const PLAN_BLOCK_NOTICE =
+  "_이 영역은 GGJIRA가 자동 갱신하는 표시 전용 블록입니다. 요구사항을 수정해 다시 계획하려면 이 블록 위쪽의 설명을 고치세요._";
 
 /** Router's display block is not a human requirement edit (ADR 0050). */
 export function requirementDescription(description: string | null): string {
@@ -113,6 +115,7 @@ export function renderParentPlan(
 ): string {
   const managed = [
     PLAN_START,
+    PLAN_BLOCK_NOTICE,
     renderSections([
       {
         heading: "GGJIRA Plan",

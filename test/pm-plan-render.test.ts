@@ -6,7 +6,11 @@ import {
   planTaskRequirements,
 } from "../src/pm/contract.js";
 import { type PlanTaskSchema, PlanSchema } from "../src/pm/plan.js";
-import { renderParentPlan } from "../src/pm/plan-render.js";
+import {
+  PLAN_BLOCK_NOTICE,
+  renderParentPlan,
+  requirementDescription,
+} from "../src/pm/plan-render.js";
 
 type PlanTask = z.infer<typeof PlanTaskSchema>;
 
@@ -93,7 +97,9 @@ describe("the contract a run is held to comes from the approved plan (ADR 0047)"
       plan,
     );
     expect(description.startsWith("Please fix the typo")).toBe(true);
+    expect(description).toContain(PLAN_BLOCK_NOTICE);
     expect(description).toContain("h2. Acceptance Criteria\n* The button reads Save");
+    expect(requirementDescription(description)).toBe("Please fix the typo on the settings page.");
   });
 });
 

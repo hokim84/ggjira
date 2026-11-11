@@ -31,9 +31,10 @@ export const WORKER_USAGE = `ggjira worker <command>
   the repository they work in, not CLAUDE.md or AGENTS.md from folders above it.
 
   start [--home <dir>]             run the worker; the first time it asks (in the terminal) for
-                                   the Router address, LLM CLI, pairing code and repository
-                                   folders, then writes the config. Non-terminal: pass
-                                   --router, --pairing-code [--provider claude-code|codex]
+                                   the Router address, LLM CLI, pairing code, repository folders
+                                   and validation commands, then writes the config. Non-terminal:
+                                   pass --router, --pairing-code [--provider claude-code|codex]
+                                   [--validate-command <cmd>]
   setup --pairing-code <code> [--router <url>] [--name <name>] [--home <dir>] [--force]
                                    pair with Router; writes the credential (and a starter
                                    config when the home has none yet)
@@ -187,6 +188,7 @@ export async function runWorkerCli(args: string[], io: CliIo): Promise<number> {
           "pairing-code": { type: "string" },
           router: { type: "string" },
           provider: { type: "string" },
+          "validate-command": { type: "string" },
           name: { type: "string" },
           force: { type: "boolean" },
         }),

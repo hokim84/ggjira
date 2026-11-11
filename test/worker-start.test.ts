@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type CliIo, parseCommandArgs } from "../src/cli-io.js";
 import { CloneUrlSchema } from "../src/contracts/api.js";
-import { prepareWorkerStart } from "../src/worker-runtime/start.js";
+import { expandHome, prepareWorkerStart } from "../src/worker-runtime/start.js";
 import { loadWorkerConfig, resolveWorkerConfig } from "../src/worker-runtime/config.js";
 import { loadWorkerCredential } from "../src/worker-runtime/credential.js";
 import { chooseProvider, workerConfigFromProfile } from "../src/worker-runtime/ops.js";
@@ -23,6 +23,7 @@ const START_OPTIONS = {
   "pairing-code": { type: "string" },
   router: { type: "string" },
   provider: { type: "string" },
+  "validate-command": { type: "string" },
   name: { type: "string" },
   credential: { type: "string" },
   force: { type: "boolean" },
@@ -193,6 +194,7 @@ describe("worker start against a running Router", () => {
       "wrong-code", // rejected, code not used up → asked again
       pairingCode,
       "", // Enter: clone to the default folder
+      "npm test", // validation command
     ]);
     const io = captureIo();
     const config = await prepareWorkerStart(home, noFlags, io, {
@@ -207,12 +209,14 @@ describe("worker start against a running Router", () => {
       script.asked.some((q) => q.includes("1) Claude Code") && q.includes("2) OpenAI Codex")),
     ).toBe(true);
     expect(script.asked.filter((q) => q.startsWith("페어링 코드"))).toHaveLength(2);
+    expect(script.asked.some((q) => q.includes("검증 명령"))).toBe(true);
     expect(io.stderr.join("\n")).toContain("페어링 코드가 맞지 않거나 만료됐습니다");
 
     const written = loadWorkerConfig(home);
     expect(written.providers[0]).toMatchObject({ id: "default", type: "codex" });
     const repo = written.repositories[0];
     expect(repo?.path).toBe(path.join(workerDir, "repositories", "repo1", "repo"));
+    expect(repo?.validateCommand).toBe("npm test");
     expect(existsSync(path.join(repo?.path ?? "", "README.md"))).toBe(true);
     const credential = loadWorkerCredential(path.join(workerDir, "credential.json"));
     expect(credential.workerId).toBe("laptop-1");
@@ -228,29 +232,48 @@ describe("worker start against a running Router", () => {
     await router.adminCall("PUT", "/config", { ...router.config, repositories: [{ id: "repo1" }] });
     const pairingCode = await addWorker("laptop-2");
     const home = path.join(dir, "w2");
-    const configPath = path.join(home, "worker.config.json");
-    const script = scripted([url, pairingCode, path.join(dir, "no-such-folder"), source]);
-    const config = await prepareWorkerStart(home, noFlags, captureIo(), {
+    const script = scripted([url, pairingCode, path.join(dir, "no-such-folder"), "~/source", ""]);
+    const io = captureIo();
+    io.env = { USERPROFILE: dir };
+    const config = await prepareWorkerStart(home, noFlags, io, {
       ask: script.ask,
       commandRuns: (command) => command === "claude",
     });
     expect(config?.repositories[0]?.path).toBe(source);
-    expect(script.asked.at(-1)).toContain("clone해 둔 폴더의 전체 경로");
+    expect(config?.repositories[0]?.validateCommand).toBeNull();
+    expect(script.asked).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("clone해 둔 폴더의 전체 경로"),
+        expect.stringContaining("검증 명령"),
+      ]),
+    );
+    expect(expandHome("~\\repo", { USERPROFILE: "C:\\Users\\alice" })).toBe(
+      path.join("C:\\Users\\alice", "repo"),
+    );
   });
 
   it("flags still work without a terminal", async () => {
     const pairingCode = await addWorker("server-1");
     const home = path.join(dir, "w3");
-    const configPath = path.join(home, "worker.config.json");
     const config = await prepareWorkerStart(
       home,
       parseCommandArgs(
-        ["--router", url, "--pairing-code", pairingCode, "--provider", "claude-code"],
+        [
+          "--router",
+          url,
+          "--pairing-code",
+          pairingCode,
+          "--provider",
+          "claude-code",
+          "--validate-command",
+          "npm run check",
+        ],
         START_OPTIONS,
       ),
       captureIo(),
     );
     expect(config?.providers[0]?.type).toBe("claude-code");
+    expect(config?.repositories[0]?.validateCommand).toBe("npm run check");
     expect(existsSync(path.join(home, "repositories", "repo1", "repo", "README.md"))).toBe(true);
   });
 

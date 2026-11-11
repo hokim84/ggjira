@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { type CliIo, type ParsedArgs, stringOption, UsageError } from "../cli-io.js";
 import type { WorkerProfile } from "../contracts/api.js";
@@ -37,9 +37,12 @@ export interface WorkerStartDeps {
 
 const DEFAULT_ROUTER_URL = "http://127.0.0.1:8787";
 
-function expandHome(input: string): string {
-  if (input === "~") return process.env.HOME ?? input;
-  if (input.startsWith("~/")) return path.join(process.env.HOME ?? "~", input.slice(2));
+export function expandHome(input: string, env: NodeJS.ProcessEnv = process.env): string {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  if (input === "~") return home || input;
+  if (input.startsWith("~/") || input.startsWith("~\\")) {
+    return path.join(home || "~", input.slice(2));
+  }
   return input;
 }
 
@@ -170,7 +173,7 @@ async function chooseRepositoryPaths(input: {
       question,
       async (answer) => {
         if (!answer) return repo.cloneUrl ? { dir: undefined } : "경로를 입력하세요";
-        const dir = path.resolve(expandHome(answer));
+        const dir = path.resolve(expandHome(answer, io.env));
         if (!existsSync(dir) || !statSync(dir).isDirectory()) return `${dir} 폴더가 없습니다`;
         if (!(await isGit(dir)))
           io.err(
@@ -191,7 +194,31 @@ function notInteractive(): UsageError {
   );
 }
 
-type RawConfig = { repositories: Array<{ id: string; path?: string }> };
+type RawConfig = {
+  repositories: Array<{ id: string; path?: string; validateCommand?: string | null }>;
+};
+
+async function chooseValidateCommands(input: {
+  profile: WorkerProfile;
+  parsed: ParsedArgs;
+  ask?: Ask | undefined;
+}): Promise<Record<string, string | null>> {
+  const { profile, parsed, ask } = input;
+  const given = stringOption(parsed, "validate-command");
+  const commands: Record<string, string | null> = {};
+  for (const repo of profile.repositories) {
+    if (given !== undefined) {
+      commands[repo.id] = given.trim() || null;
+      continue;
+    }
+    if (!ask) continue;
+    const answer = (
+      await ask(`저장소 "${repo.id}" 검증 명령 (예: npm test, pytest / 건너뛰려면 Enter): `)
+    ).trim();
+    commands[repo.id] = answer || null;
+  }
+  return commands;
+}
 
 async function firstRunSetup(
   home: string,
@@ -227,6 +254,11 @@ async function firstRunSetup(
     ask,
     isGit: deps.isGitRepository ?? isGitRepository,
   });
+  const validateCommands = await chooseValidateCommands({
+    profile: paired.profile,
+    parsed,
+    ask,
+  });
   const config = workerConfigFromProfile({
     routerUrl,
     profile: paired.profile,
@@ -235,6 +267,7 @@ async function firstRunSetup(
   for (const repo of config.repositories) {
     const chosen = repoPaths[repo.id];
     if (chosen) repo.path = chosen;
+    if (repo.id in validateCommands) repo.validateCommand = validateCommands[repo.id] ?? null;
   }
   writeWorkerConfig(paths.config, config);
   io.out(`

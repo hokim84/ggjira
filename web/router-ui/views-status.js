@@ -80,9 +80,33 @@ export async function renderDashboard(root) {
     admin("GET", `/tasks?offset=${offset}&limit=30`),
   ]);
   const { jobs, workers, queue, webhooks, reports, recoveryRequired } = status;
+  const syncMessage = h("div");
+  const syncButton = h(
+    "button",
+    {
+      type: "button",
+      class: "btn btn-small title-action",
+      onclick: async () => {
+        syncButton.disabled = true;
+        clear(syncMessage);
+        try {
+          await Promise.all([
+            admin("POST", "/reconcile"),
+            admin("POST", "/github/poll").catch(() => null),
+          ]);
+          await renderDashboard(root);
+        } catch (error) {
+          syncMessage.append(errorNotice(error));
+          syncButton.disabled = false;
+        }
+      },
+    },
+    "지금 동기화",
+  );
   fill(
     root,
-    h("h1", {}, "대시보드"),
+    h("div", { class: "title-row" }, h("h1", {}, "대시보드"), syncButton),
+    syncMessage,
     h(
       "div",
       { class: "cards" },

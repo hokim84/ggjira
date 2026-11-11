@@ -106,9 +106,9 @@ describe("single AI review workflow", () => {
     router.jira.seedComment("KAN-1", { body: "Let's discuss", authorAccountId: "user-1" });
     await router.reconcile();
     expect(latestPlanningRequest(router.db, "KAN-1")?.id).toBe(original);
-    router.jira.seedComment("KAN-1", { body: "2번", authorAccountId: "user-1" });
+    router.jira.seedComment("KAN-1", { body: "2번.", authorAccountId: "user-1" });
     const next = await start();
-    expect(next.planningContext?.humanDecision).toMatchObject({ raw: "2번", optionId: "nosql" });
+    expect(next.planningContext?.humanDecision).toMatchObject({ raw: "2번.", optionId: "nosql" });
     await finish(next);
     await router.restart();
     expect((await router.reconcile()).jobsCreated).toEqual([]);
@@ -144,10 +144,17 @@ describe("single AI review workflow", () => {
       created: "2000-01-01T00:00:00Z",
     });
     await finish(first, singlePlan(), "failed");
+    const failedView = await router.admin.issueView("KAN-1");
+    expect(failedView.latestFailureLog).toMatchObject({
+      attemptId: first.attemptId,
+      path: expect.stringContaining(`KAN-1-${first.attemptId}.log`),
+      content: expect.stringContaining("issue: KAN-1"),
+    });
     expect((await router.reconcile()).jobsCreated).toEqual([]);
     router.jira.seedComment("KAN-1", { body: "재시도", authorAccountId: "other" });
+    router.jira.seedComment("KAN-1", { body: "재시도는 내일 합시다", authorAccountId: "user-1" });
     expect((await router.reconcile()).jobsCreated).toEqual([]);
-    router.jira.seedComment("KAN-1", { body: "재시도", authorAccountId: "user-1" });
+    router.jira.seedComment("KAN-1", { body: "‘재시도.’", authorAccountId: "user-1" });
     const next = await start();
     expect(next.kind).toBe("planning");
     expect(next.approvalId).not.toBe(first.approvalId);

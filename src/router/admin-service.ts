@@ -1,4 +1,4 @@
-import { mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import type { RouterDatabase } from "./db/connection.js";
 import type { z } from "zod";
@@ -867,7 +867,35 @@ export class AdminService {
             pullRequest: result.pullRequest ?? null,
           }
         : null;
-      return { ...view, latestResult, fci: tasks.map((t) => this.fci().detail(t.id)) };
+      const failureStep = this.db
+        .prepare(
+          "SELECT attempt_id, params FROM report_steps WHERE issue_key=? AND kind='failure-log' AND job_id=(SELECT id FROM jobs WHERE issue_key=? ORDER BY created_at DESC,rowid DESC LIMIT 1) ORDER BY created_at DESC,rowid DESC LIMIT 1",
+        )
+        .get(view.issueKey, view.issueKey) as { attempt_id: string; params: string } | undefined;
+      let latestFailureLog: IssueView["latestFailureLog"] = null;
+      if (failureStep) {
+        const parsed = JSON.parse(failureStep.params) as { path?: string; body?: string };
+        const logPath = typeof parsed.path === "string" ? parsed.path : "";
+        let content = typeof parsed.body === "string" ? parsed.body : "";
+        if (logPath) {
+          try {
+            if (existsSync(logPath)) content = readFileSync(logPath, "utf8");
+          } catch {
+            // Fall back to the journaled failure-log body when the file is unreadable.
+          }
+        }
+        latestFailureLog = {
+          attemptId: failureStep.attempt_id,
+          path: logPath,
+          content: content.slice(0, 65_536),
+        };
+      }
+      return {
+        ...view,
+        latestResult,
+        latestFailureLog,
+        fci: tasks.map((t) => this.fci().detail(t.id)),
+      };
     } catch (error) {
       throw toAdminError(error);
     }
