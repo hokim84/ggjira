@@ -990,8 +990,15 @@ export class AdminService {
       repos: githubRepositoriesToCheck(config, listPullRequestRepos(this.deps.db)),
       token: this.deps.github?.token?.(),
     };
+    const slack = this.deps.secrets
+      ? {
+          botTokenSet: this.secretInfo("slackToken").set,
+          signingSecretSet: this.secretInfo("slackSigningSecret").set,
+        }
+      : undefined;
     const items = await runRouterCheck(this.deps.jira, config, {
       github,
+      ...(slack ? { slack } : {}),
       ...(issueKey ? { issueKey } : {}),
     });
     if (config.jira.baseUrl !== this.startedWith.jira.baseUrl) {

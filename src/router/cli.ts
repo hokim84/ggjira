@@ -281,8 +281,17 @@ async function check(parsed: ParsedArgs, io: CliIo): Promise<number> {
     repos: githubRepositoriesToCheck(config, pullRequestReposOf(config.db.path)),
     token: loadRouterGithubSecrets(io.env, secretsPath(parsed, io)).token,
   };
+  const slackSecrets = loadRouterSlackSecrets(io.env, secretsPath(parsed, io));
+  const slack = {
+    botTokenSet: Boolean(slackSecrets.botToken),
+    signingSecretSet: Boolean(slackSecrets.signingSecret),
+  };
   items.push(
-    ...(await runRouterCheck(jira, config, { github, ...(issueKey ? { issueKey } : {}) })),
+    ...(await runRouterCheck(jira, config, {
+      github,
+      slack,
+      ...(issueKey ? { issueKey } : {}),
+    })),
   );
   return printCheckItems(io, items);
 }

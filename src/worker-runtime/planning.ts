@@ -4,7 +4,12 @@ import type { JobEnvelope } from "../contracts/envelope.js";
 import { PLAN_JSON_SCHEMA, parsePlan } from "../pm/plan.js";
 import { buildPlanningPrompt } from "../pm/prompt.js";
 import type { UsageReading, WorkerProvider, WorkerResult } from "../worker/provider.js";
-import { createWorktree, integrationTarget, isGitRepository } from "../worker/worktree.js";
+import {
+  createWorktree,
+  integrationTarget,
+  isGitRepository,
+  removeWorktree,
+} from "../worker/worktree.js";
 import type { WorkerRepositoryConfig } from "./config.js";
 import type { ExecutionOutcome } from "./executor.js";
 import type { ExecutionStage } from "./progress.js";
@@ -38,6 +43,7 @@ export async function executePlanningEnvelope(
   // A throwaway worktree keeps the model reading the base branch rather than whatever is
   // checked out in the shared repository; planning never commits, so the branch stays empty.
   let cwd = deps.repository.path;
+  let worktreePath: string | undefined;
   if (await isGitRepository(deps.repository.path)) {
     const branch = `ggjira-pm/${issue.key}-${envelope.attemptId.slice(0, 8)}`;
     try {
@@ -47,8 +53,10 @@ export async function executePlanningEnvelope(
         deps.repository.baseBranch,
         [],
       );
-      cwd = (await createWorktree(deps.repository.path, targetSha, branch, deps.worktreesRoot))
-        .path;
+      worktreePath = (
+        await createWorktree(deps.repository.path, targetSha, branch, deps.worktreesRoot)
+      ).path;
+      cwd = worktreePath;
     } catch (error) {
       return {
         status: "failed",
@@ -94,6 +102,9 @@ export async function executePlanningEnvelope(
     );
   } catch (error) {
     return { status: "failed", summary: "Provider crashed.", failureReason: errorMessage(error) };
+  } finally {
+    if (worktreePath)
+      await removeWorktree(deps.repository.path, worktreePath).catch(() => undefined);
   }
 
   if (deps.signal.aborted) {

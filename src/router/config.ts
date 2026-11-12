@@ -106,7 +106,7 @@ export const SlackConfigSchema = z
             .min(1)
             .refine((value) => !value.includes("@") && !/\s/.test(value), {
               message:
-                "Jira accountId is required (e.g. 557058:…), not an email or name; use 찾기 to look it up",
+                "Jira accountId is required (e.g. 557058:…), not an email or name; use 찾기 in the web UI or edit slack.users in router.config.json",
             }),
           slackUserId: z.string().regex(/^[UW][A-Z0-9]+$/),
         }),

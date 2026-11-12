@@ -99,7 +99,7 @@ describe("Slack conversations and execution consent", () => {
     await process();
     return job;
   }
-  async function finish(job: JobEnvelope, plan: object, status = "planned") {
+  async function finish(job: JobEnvelope, plan?: object, status = "planned") {
     const response = await router.post(
       `/api/v1/jobs/${job.jobId}/result`,
       {
@@ -109,7 +109,7 @@ describe("Slack conversations and execution consent", () => {
         resultId: `r-${job.attemptId}`,
         status,
         summary: "Plan",
-        plan,
+        ...(plan ? { plan } : {}),
       },
       worker.token,
     );
@@ -143,8 +143,8 @@ describe("Slack conversations and execution consent", () => {
   it("mirrors a choice, continues in one thread, then automatically starts a final plan once", async () => {
     const question = await ask();
     expect(sent.some((message) => String(message.text).includes("SQLite"))).toBe(true);
-    answer(question, "2");
-    answer(question, "2");
+    answer(question, "2.");
+    answer(question, "2.");
     await slack.tick();
     expect(
       router.jira.comments.filter((comment) => comment.body.includes("Slack 답변")),
@@ -164,6 +164,10 @@ describe("Slack conversations and execution consent", () => {
     expect(implementation.kind).toBe("implementation");
     await slack.tick();
     expect(sent.some((message) => String(message.text).includes("구현 시작"))).toBe(true);
+    await finish(implementation, undefined, "succeeded");
+    await slack.tick();
+    expect(sent.some((message) => String(message.text).includes("구현 · 완료"))).toBe(true);
+    expect(sent.some((message) => String(message.text).includes("검토 대기"))).toBe(false);
   });
   it("supports readable button answers and free text follow-up questions", async () => {
     const first = await ask();
@@ -252,6 +256,9 @@ describe("Slack conversations and execution consent", () => {
     const question = await ask();
     answer(question, "1", "U2", "wrong-user");
     answer(question, "9", "U1", "invalid");
+    answer(question, "9.", "U1", "invalid-dot");
+    answer(question, "0", "U1", "invalid-zero");
+    answer(question, "-1", "U1", "invalid-negative");
     await slack.tick();
     expect(router.db.prepare("SELECT COUNT(*) n FROM slack_answers").get()?.n).toBe(0);
     await router.jira.assignIssue("KAN-1", "new-owner");

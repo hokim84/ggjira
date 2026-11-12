@@ -546,13 +546,16 @@ export class SlackService {
           continue;
         }
         const options = JSON.parse(question.options as string) as DecisionRequest["options"];
-        const number = input.text?.trim().match(/^(\d+)\s*(?:번)?$/)?.[1];
+        const number = input.text
+          ?.trim()
+          .match(/^['"‘’“”]?\s*([+-]?\d+)\s*(?:번)?\s*[.!]*\s*['"‘’“”]?$/u)?.[1];
+        const parsedNumber = number !== undefined ? Number(number) : undefined;
         const option = input.option
           ? options.find((item) => item.id === input.option)
-          : number
-            ? options[Number(number) - 1]
+          : parsedNumber !== undefined && parsedNumber >= 1
+            ? options[parsedNumber - 1]
             : undefined;
-        if ((input.option || number) && !option) {
+        if ((input.option || number !== undefined) && !option) {
           reject("선택지에 있는 번호를 입력해주세요.");
           continue;
         }
@@ -767,13 +770,21 @@ export class SlackService {
             .get(key) as Row | undefined;
           if (!job || (job.created_at as string) < request.created_at) continue;
           const state = job.state as string;
+          const kindLabel =
+            job.kind === "planning"
+              ? "계획"
+              : job.kind === "assemble_pr"
+                ? "통합 PR 생성"
+                : job.kind === "integration_check"
+                  ? "통합 검증"
+                  : "구현";
           for (const attempt of db
             .prepare(
               "SELECT id FROM attempts WHERE job_id=? AND started_at IS NOT NULL ORDER BY rowid",
             )
             .all(job.id as string)) {
             this.enqueue(thread.id as string, `started:${thread.id}:${attempt.id}`, {
-              text: `${key} · ${job.kind === "planning" ? "계획 시작" : job.kind === "integration_check" ? "통합 검증 시작" : "구현 시작"}`,
+              text: `${key} · ${kindLabel} 시작`,
             });
           }
           const resultRow = db
@@ -827,8 +838,8 @@ export class SlackService {
           }
           const label = (
             {
-              running: "구현 시작",
-              succeeded: "검토 대기",
+              running: `${kindLabel} 시작`,
+              succeeded: job.kind === "assemble_pr" ? "완료·PR 병합 대기" : "완료",
               failed: "실패·확인 필요",
               timed_out: "실행 시간 초과",
               recovery_required: "실행 중단·복구 확인 필요",
@@ -841,7 +852,7 @@ export class SlackService {
             thread.id as string,
             `job:${thread.id}:${job.id}:${job.current_attempt_id}:${state}`,
             {
-              text: `${key} · ${job.kind === "planning" ? "계획" : job.kind === "integration_check" ? "통합 검증" : "구현"} · ${label}`,
+              text: `${key} · ${kindLabel} · ${label}`,
             },
           );
         }

@@ -2,7 +2,7 @@ import type { JiraGateway } from "../jira/gateway.js";
 import { githubRepoSlug } from "../worker/worktree.js";
 import type { RouterConfig, WorkspaceConfig } from "./config.js";
 import type { FetchLike } from "./github.js";
-import { checkWorkflowHops } from "./workflow-check.js";
+import { checkWorkflowHops, routerWorkflowHops } from "./workflow-check.js";
 
 /**
  * `ggjira router check`: confirms the Router config matches the real Jira before `serve`
@@ -110,21 +110,9 @@ async function checkProject(
 
 /** What each status's issue must be able to reach next for Router's own transitions. */
 function expectedNextStatuses(workspace: WorkspaceConfig, current: string): string[] {
-  const { workflow } = workspace;
-  const next = new Map<string, string[]>([
-    [workflow.requestStatus, [workflow.planningInProgressStatus]],
-    [workflow.planningInProgressStatus, [workflow.inProgressStatus]],
-    [
-      workflow.inProgressStatus,
-      [workflow.integrationPendingStatus, workflow.implementationCompleteStatus],
-    ],
-    [workflow.integrationPendingStatus, [workflow.implementationCompleteStatus]],
-    [workflow.implementationCompleteStatus, [workflow.doneStatus]],
-    ...(workflow.doneStatus
-      ? [[workflow.implementationCompleteStatus, [workflow.doneStatus]] as [string, string[]]]
-      : []),
-  ]);
-  return next.get(current) ?? [];
+  return routerWorkflowHops(workspace.workflow)
+    .filter((hop) => hop.from === current)
+    .map((hop) => hop.to);
 }
 
 async function checkSampleIssue(
@@ -252,6 +240,8 @@ export async function runRouterCheck(
     issueKey?: string;
     /** GitHub repositories to check (`githubRepositoriesToCheck`) and the token Router polls with. */
     github?: { repos: readonly string[]; token?: string | undefined; fetch?: FetchLike };
+    /** Slack secret presence when `config.slack.enabled` is true. */
+    slack?: { botTokenSet: boolean; signingSecretSet: boolean };
   } = {},
 ): Promise<CheckItem[]> {
   const items: CheckItem[] = [];
@@ -288,6 +278,26 @@ export async function runRouterCheck(
       level: "warn",
       message: "no workers declared in config; nothing can be dispatched",
     });
+  }
+
+  if (config.slack?.enabled && opts.slack) {
+    if (!opts.slack.botTokenSet || !opts.slack.signingSecretSet) {
+      items.push({
+        level: "fail",
+        message:
+          "slack.enabled is true, but GGJIRA_SLACK_BOT_TOKEN and/or GGJIRA_SLACK_SIGNING_SECRET are not set",
+      });
+    } else if (config.slack.users.length === 0) {
+      items.push({
+        level: "warn",
+        message: "slack.enabled is true, but no slack.users mappings are configured",
+      });
+    } else {
+      items.push({
+        level: "ok",
+        message: `Slack secrets are set (${config.slack.users.length} user mapping(s) in workspace(s) ${config.slack.workspaceIds.join(", ")})`,
+      });
+    }
   }
 
   if (opts.github) items.push(...(await checkGithubRepositories(opts.github)));

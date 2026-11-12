@@ -381,6 +381,7 @@ export class RouterDaemon {
       jira: this.deps.jira,
       now: this.now,
     });
+    if (report.applied.length > 0) this.lastSyncAtMs = undefined;
     await this.slackTick();
     if (report.applied.length || report.blocked.length || report.skipped.length) {
       this.deps.logger?.info(

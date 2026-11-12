@@ -250,6 +250,8 @@ describe("RouterDaemon", () => {
     ]);
     expect((await jira.getIssue("KAN-1")).statusName).toBe("AI 계획중");
     expect(listJobReportSteps(db, envelope.jobId).every((s) => s.status === "applied")).toBe(true);
+    // Applying report steps immediately unblocks the next syncTick without waiting for backgroundIntervalMs.
+    expect(await daemon.syncTick()).toBeDefined();
 
     // The Router's own report is not a withdrawal of approval.
     await daemon.verifyTick();

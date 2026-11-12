@@ -87,6 +87,42 @@ describe("router check", () => {
         `no transition from "${IN_PROGRESS_STATUS}" to "AI 통합 대기"`,
       ),
     });
+
+    jira.seedIssue({ key: "KAN-3", statusName: "AI 구현 완료", projectKey: "KAN" }, []);
+    const implComplete = await runRouterCheck(jira, config, { issueKey: "KAN-3" });
+    expect(implComplete).toContainEqual({
+      level: "fail",
+      message: expect.stringContaining(`no transition from "AI 구현 완료" to "${REQUEST_STATUS}"`),
+    });
+  });
+
+  it("checks Slack secrets and user mappings when Slack is enabled", async () => {
+    const jira = jiraWithProject(ALL_STATUSES);
+    const slackConfig = {
+      ...config,
+      slack: {
+        ...config.slack,
+        enabled: true,
+        teamId: "T1",
+        workspaceIds: ["ws1"],
+        users: [{ jiraAccountId: "owner-1", slackUserId: "U1" }],
+      },
+    };
+    const missingToken = await runRouterCheck(jira, slackConfig, {
+      slack: { botTokenSet: false, signingSecretSet: true },
+    });
+    expect(missingToken).toContainEqual({
+      level: "fail",
+      message:
+        "slack.enabled is true, but GGJIRA_SLACK_BOT_TOKEN and/or GGJIRA_SLACK_SIGNING_SECRET are not set",
+    });
+    const ok = await runRouterCheck(jira, slackConfig, {
+      slack: { botTokenSet: true, signingSecretSet: true },
+    });
+    expect(ok).toContainEqual({
+      level: "ok",
+      message: "Slack secrets are set (1 user mapping(s) in workspace(s) ws1)",
+    });
   });
 
   it("stops at authentication when Jira rejects the credentials", async () => {

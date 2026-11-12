@@ -1,4 +1,4 @@
-# ADR 0070 — 셋업 Jira 실패는 424 JSON으로 반환
+# ADR 0071 — 셋업 Jira 실패는 424 JSON으로 반환
 
 ## Context
 

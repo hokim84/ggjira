@@ -9,12 +9,13 @@ import {
 import type { UsageReading, WorkerProvider } from "../worker/provider.js";
 import { runValidateCommand } from "../worker/validate.js";
 import {
+  commitIsAncestor,
   createWorktree,
   hasUncommittedChanges,
   integrationTarget,
   isGitRepository,
+  removeWorktree,
   revParse,
-  commitIsAncestor,
 } from "../worker/worktree.js";
 import type { WorkerRepositoryConfig } from "./config.js";
 import type { ExecutionOutcome } from "./executor.js";
@@ -33,6 +34,7 @@ export async function executeQualityEnvelope(
     onProgress?: (stage: ExecutionStage) => void;
   },
 ): Promise<ExecutionOutcome> {
+  let cwd: string | undefined;
   try {
     const context = envelope.qualityContext;
     if (!context || !(await isGitRepository(deps.repository.path)))
@@ -52,7 +54,7 @@ export async function executeQualityEnvelope(
     }
     if (!(await commitIsAncestor(deps.repository.path, targetSha, branchTip)))
       throw new Error("pinned merge target is no longer on the target branch");
-    const cwd = (
+    cwd = (
       await createWorktree(
         deps.repository.path,
         targetSha,
@@ -105,5 +107,7 @@ export async function executeQualityEnvelope(
       summary: "병합 후 통합 검증을 완료하지 못했습니다.",
       failureReason: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    if (cwd) await removeWorktree(deps.repository.path, cwd).catch(() => undefined);
   }
 }
